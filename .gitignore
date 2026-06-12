@@ -1,0 +1,15 @@
+Loinc_*/
+*.zip
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+data/
+/loinc-browser
+/dist/
+
+.DS_Store
+
+web/node_modules/
+web/dist/
+web/.svelte-kit/
