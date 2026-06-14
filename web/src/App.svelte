@@ -807,6 +807,23 @@
 		return relationshipGraph?.sharedConcepts ?? [];
 	}
 
+	function directRelationshipCount() {
+		if (!selectedTerm) return 0;
+		return (
+			(selectedTerm.parts?.length ?? 0) +
+			(selectedTerm.answerLists?.length ?? 0) +
+			(selectedTerm.panels?.length ?? 0) +
+			(selectedTerm.groups?.length ?? 0) +
+			(selectedTerm.hierarchy?.length ?? 0) +
+			(selectedTerm.mapTo?.length ?? 0) +
+			(relationshipGraph?.incomingMapTo?.length ?? 0)
+		);
+	}
+
+	function graphVisibleLimitMax() {
+		return Math.max(sharedConcepts().length, Math.ceil(directRelationshipCount() / 2), 8);
+	}
+
 	function openBrowseDrawer() {
 		facetsCollapsed = false;
 		browseDrawerOpen = true;
@@ -1685,14 +1702,16 @@
 					</div>
 					<div class="flex items-center gap-2">
 						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
-						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= sharedConcepts().length} on:click={() => (graphVisibleConceptLimit = Math.min(sharedConcepts().length, graphVisibleConceptLimit + 4))}>More</Button>
+						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= graphVisibleLimitMax()} on:click={() => (graphVisibleConceptLimit = Math.min(graphVisibleLimitMax(), graphVisibleConceptLimit + 4))}>More</Button>
 						<Button variant="ghost" size="icon" ariaLabel="Close relationship graph" on:click={() => (graphViewerOpen = false)}><X size={16} /></Button>
 					</div>
 				</div>
 				<RelationshipGraph
 					term={selectedTerm}
+					graph={relationshipGraph}
 					concepts={sharedConcepts()}
 					maxConcepts={graphVisibleConceptLimit}
+					maxDirectRelationships={graphVisibleConceptLimit * 2}
 					maxTermsPerConcept={3}
 					onOpenTerm={(loincNum) => openTerm(loincNum)}
 					onBrowseConcept={browseConcept}
