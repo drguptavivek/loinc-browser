@@ -373,6 +373,9 @@ func parseMCPConfig(args []string) (mcpConfig, error) {
 }
 
 func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) error {
+	if err := ensureDatabaseDir(dbPath); err != nil {
+		return err
+	}
 	hasData, err := databaseHasTerms(dbPath)
 	if err != nil {
 		return err
@@ -400,6 +403,17 @@ func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) 
 		return err
 	}
 	fmt.Printf("Auto-imported %d LOINC terms from %s into %s\n", summary.TermCount, zipPath, dbPath)
+	return nil
+}
+
+func ensureDatabaseDir(dbPath string) error {
+	dir := filepath.Dir(dbPath)
+	if dir == "." || strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create database directory %s: %w", dir, err)
+	}
 	return nil
 }
 

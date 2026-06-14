@@ -281,6 +281,18 @@ func TestEnsureDatabaseFromLocalZipImportsWhenDatabaseMissing(t *testing.T) {
 	}
 }
 
+func TestEnsureDatabaseFromLocalZipCreatesDatabaseDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	dbPath := filepath.Join(cwd, "missing-data-dir", "loinc.sqlite")
+
+	if err := ensureDatabaseFromLocalZip(context.Background(), cwd, dbPath); err != nil {
+		t.Fatalf("ensure database with missing directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(dbPath)); err != nil {
+		t.Fatalf("expected database directory to be created: %v", err)
+	}
+}
+
 func TestEnsureDatabaseFromLocalZipDoesNotOverwriteExistingData(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "Loinc_Test.zip"), testCLIReleaseZip(t, "5000-1", "New zip term"), 0o600); err != nil {
