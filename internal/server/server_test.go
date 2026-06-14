@@ -307,8 +307,15 @@ func TestMarkdownDocsRoutes(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("expected %s to return 200, got %d", path, resp.StatusCode)
 		}
-		if contentType := resp.Header.Get("content-type"); contentType != "text/markdown; charset=utf-8" {
+		if contentType := resp.Header.Get("content-type"); contentType != "text/html; charset=utf-8" {
 			t.Fatalf("unexpected content type for %s: %q", path, contentType)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read %s body: %v", path, err)
+		}
+		if !strings.Contains(string(body), "<pre>") {
+			t.Fatalf("expected %s to render markdown in an HTML page", path)
 		}
 	}
 }

@@ -15,6 +15,26 @@ Licensed LOINC release files and generated SQLite databases must stay out of git
 - Repository skill file at `skills/loinc-mcp/SKILL.md` helps agents connect to the local MCP server.
 - Release packages contain code and docs only. Licensed LOINC data and generated databases are not bundled.
 
+## Screenshots
+
+### Browser UI
+
+![LOINC Browser hierarchy browser](docs/screenshots/hierarchy-browser.jpg)
+
+### Search And Term Detail
+
+![LOINC Browser hemoglobin search](docs/screenshots/ui-search.jpg)
+
+![LOINC Browser term detail](docs/screenshots/ui-term-detail.jpg)
+
+![LOINC Browser Cytoscape relationship graph](docs/screenshots/relationships-graph.jpg)
+
+### API And MCP Docs
+
+![LOINC Browser Swagger API docs](docs/screenshots/api-swagger.jpg)
+
+![LOINC Browser MCP guide](docs/screenshots/mcp-guide.jpg)
+
 ## Getting Started Quickly
 
 1. Download the `v0.90` binary for your platform from GitHub Releases.

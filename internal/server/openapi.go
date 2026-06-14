@@ -469,6 +469,7 @@ var openAPISpec = map[string]any{
 				"panelItems":       map[string]any{"type": "array", "items": ref("TermAccessory")},
 				"groups":           map[string]any{"type": "array", "items": ref("TermAccessory")},
 				"hierarchy":        map[string]any{"type": "array", "items": ref("TermAccessory")},
+				"sharedConcepts":   map[string]any{"type": "array", "items": ref("RelationshipConcept")},
 				"_links":           linksSchema(),
 			}),
 			"TermFit": object(map[string]any{

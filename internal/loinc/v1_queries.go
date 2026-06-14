@@ -87,6 +87,11 @@ func (s *Store) TermRelationshipGroups(ctx context.Context, loincNum string) (Te
 	if err := rows.Err(); err != nil {
 		return TermRelationshipGroups{}, fmt.Errorf("iterate mapped-from rows for %s: %w", term.LOINCNum, err)
 	}
+	graph, err := s.TermRelationships(ctx, term.LOINCNum)
+	if err != nil {
+		return TermRelationshipGroups{}, err
+	}
+	groups.SharedConcepts = graph.SharedConcepts
 	return groups, nil
 }
 

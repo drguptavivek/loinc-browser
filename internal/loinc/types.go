@@ -169,16 +169,17 @@ type TermRelationshipGraph struct {
 }
 
 type TermRelationshipGroups struct {
-	LOINCNum         string          `json:"loincNum"`
-	MapTo            []MapTo         `json:"mapTo"`
-	MappedFrom       []MapTo         `json:"mappedFrom"`
-	Parts            []TermAccessory `json:"parts"`
-	AnswerLists      []TermAccessory `json:"answerLists"`
-	PanelMemberships []TermAccessory `json:"panelMemberships"`
-	PanelItems       []TermAccessory `json:"panelItems"`
-	Groups           []TermAccessory `json:"groups"`
-	Hierarchy        []TermAccessory `json:"hierarchy"`
-	Links            Links           `json:"_links,omitempty"`
+	LOINCNum         string                `json:"loincNum"`
+	MapTo            []MapTo               `json:"mapTo"`
+	MappedFrom       []MapTo               `json:"mappedFrom"`
+	Parts            []TermAccessory       `json:"parts"`
+	AnswerLists      []TermAccessory       `json:"answerLists"`
+	PanelMemberships []TermAccessory       `json:"panelMemberships"`
+	PanelItems       []TermAccessory       `json:"panelItems"`
+	Groups           []TermAccessory       `json:"groups"`
+	Hierarchy        []TermAccessory       `json:"hierarchy"`
+	SharedConcepts   []RelationshipConcept `json:"sharedConcepts"`
+	Links            Links                 `json:"_links,omitempty"`
 }
 
 type RelationshipConcept struct {

@@ -26,6 +26,7 @@
 	import FilterChip from '$lib/components/FilterChip.svelte';
 	import HierarchyTree from '$lib/components/HierarchyTree.svelte';
 	import MultiSelectDropdown from '$lib/components/MultiSelectDropdown.svelte';
+	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import type { PaneAPI } from 'paneforge';
 	import {
@@ -46,7 +47,7 @@
 		type SearchResult,
 		type Term,
 		type TermAccessory,
-	type RelationshipConcept,
+		type RelationshipConcept,
 		type TermRelationshipGraph,
 		type HierarchyNode,
 		type TermSummary,
@@ -101,16 +102,7 @@
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
 	let graphViewerOpen = false;
-	let activeGraphConceptCode = '';
 	let graphVisibleConceptLimit = 8;
-	let graphZoom = 1;
-	let graphPanX = 0;
-	let graphPanY = 0;
-	let graphPanning = false;
-	let graphPanStartX = 0;
-	let graphPanStartY = 0;
-	let graphPanOriginX = 0;
-	let graphPanOriginY = 0;
 	let facetsCollapsed = false;
 	let browsePane: PaneAPI | null = null;
 	let browseDrawerOpen = false;
@@ -189,15 +181,11 @@
 
 			window.addEventListener('popstate', handlePopState);
 			window.addEventListener('pointermove', handleTableResize);
-			window.addEventListener('pointermove', handleGraphPan);
 			window.addEventListener('pointerup', stopTableResize);
-			window.addEventListener('pointerup', stopGraphPan);
 			return () => {
 				window.removeEventListener('popstate', handlePopState);
 				window.removeEventListener('pointermove', handleTableResize);
-				window.removeEventListener('pointermove', handleGraphPan);
 				window.removeEventListener('pointerup', stopTableResize);
-			window.removeEventListener('pointerup', stopGraphPan);
 		};
 	});
 
@@ -373,9 +361,7 @@
 		detailOpen = true;
 		graphViewerOpen = false;
 		sharedConceptsOpen = false;
-		activeGraphConceptCode = '';
 		graphVisibleConceptLimit = 8;
-		resetGraphViewport();
 		relationshipGraph = null;
 		relationshipsLoaded = false;
 		relationshipsLoading = false;
@@ -819,87 +805,6 @@
 
 	function sharedConcepts() {
 		return relationshipGraph?.sharedConcepts ?? [];
-	}
-
-	function graphConcepts() {
-		return sharedConcepts()
-			.filter((concept) => concept.relatedTotal > 0 || (concept.relatedTerms?.length ?? 0) > 0)
-			.slice(0, graphVisibleConceptLimit);
-	}
-
-	function graphRelatedTerms(concept: RelationshipConcept) {
-		const expanded = graphConceptKey(concept) === activeGraphConceptCode;
-		return (concept.relatedTerms ?? []).slice(0, expanded ? 6 : 2);
-	}
-
-	function graphConceptKey(concept: RelationshipConcept) {
-		return `${concept.kind}:${concept.code || concept.title}`;
-	}
-
-	function toggleGraphConcept(concept: RelationshipConcept) {
-		const key = graphConceptKey(concept);
-		activeGraphConceptCode = activeGraphConceptCode === key ? '' : key;
-	}
-
-	function graphAngle(index: number, total: number) {
-		return (Math.PI * 2 * index) / Math.max(total, 1) - Math.PI / 2;
-	}
-
-	function graphX(index: number, total: number, radius: number) {
-		return 320 + Math.cos(graphAngle(index, total)) * radius;
-	}
-
-	function graphY(index: number, total: number, radius: number) {
-		return 230 + Math.sin(graphAngle(index, total)) * radius;
-	}
-
-	function graphRelatedX(index: number, total: number, relatedIndex: number, relatedTotal: number) {
-		const angle = graphAngle(index, total);
-		const spread = (relatedIndex - (relatedTotal - 1) / 2) * 24;
-		return 320 + Math.cos(angle) * 260 + Math.cos(angle + Math.PI / 2) * spread;
-	}
-
-	function graphRelatedY(index: number, total: number, relatedIndex: number, relatedTotal: number) {
-		const angle = graphAngle(index, total);
-		const spread = (relatedIndex - (relatedTotal - 1) / 2) * 24;
-		return 230 + Math.sin(angle) * 260 + Math.sin(angle + Math.PI / 2) * spread;
-	}
-
-	function handleGraphKey(event: KeyboardEvent, action: () => void) {
-		if (event.key === 'Enter' || event.key === ' ') {
-			event.preventDefault();
-			action();
-		}
-	}
-
-	function zoomGraph(delta: number) {
-		graphZoom = Math.min(2.4, Math.max(0.55, Number((graphZoom + delta).toFixed(2))));
-	}
-
-	function resetGraphViewport() {
-		graphZoom = 1;
-		graphPanX = 0;
-		graphPanY = 0;
-		graphPanning = false;
-	}
-
-	function startGraphPan(event: PointerEvent) {
-		if (event.button !== 0) return;
-		graphPanning = true;
-		graphPanStartX = event.clientX;
-		graphPanStartY = event.clientY;
-		graphPanOriginX = graphPanX;
-		graphPanOriginY = graphPanY;
-	}
-
-	function handleGraphPan(event: PointerEvent) {
-		if (!graphPanning) return;
-		graphPanX = graphPanOriginX + (event.clientX - graphPanStartX) / graphZoom;
-		graphPanY = graphPanOriginY + (event.clientY - graphPanStartY) / graphZoom;
-	}
-
-	function stopGraphPan() {
-		graphPanning = false;
 	}
 
 	function openBrowseDrawer() {
@@ -1781,115 +1686,17 @@
 					<div class="flex items-center gap-2">
 						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
 						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= sharedConcepts().length} on:click={() => (graphVisibleConceptLimit = Math.min(sharedConcepts().length, graphVisibleConceptLimit + 4))}>More</Button>
-						<Button variant="outline" size="sm" on:click={() => zoomGraph(-0.15)}>Zoom out</Button>
-						<span class="w-12 text-center text-xs tabular-nums text-zinc-500">{Math.round(graphZoom * 100)}%</span>
-						<Button variant="outline" size="sm" on:click={() => zoomGraph(0.15)}>Zoom in</Button>
-						<Button variant="outline" size="sm" on:click={resetGraphViewport}>Reset view</Button>
 						<Button variant="ghost" size="icon" ariaLabel="Close relationship graph" on:click={() => (graphViewerOpen = false)}><X size={16} /></Button>
 					</div>
 				</div>
-				<div class="grid min-h-0 flex-1 gap-0 overflow-auto lg:grid-cols-[minmax(0,2fr)_360px]">
-					<div class="min-h-[620px] overflow-auto bg-zinc-50 p-4">
-						<svg
-							class={`h-[680px] min-w-[920px] rounded-md border border-zinc-200 bg-white ${graphPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
-							viewBox="0 0 640 460"
-							role="img"
-							aria-label="LOINC relationship graph"
-							on:pointerdown={startGraphPan}
-						>
-							<defs>
-								<marker id="graph-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="3">
-									<path d="M0,0 L0,6 L8,3 z" fill="#a1a1aa"></path>
-								</marker>
-							</defs>
-							<g transform={`translate(${graphPanX} ${graphPanY}) scale(${graphZoom})`}>
-							{#each graphConcepts() as concept, i}
-								<line x1="320" y1="230" x2={graphX(i, graphConcepts().length, 150)} y2={graphY(i, graphConcepts().length, 150)} stroke="#d4d4d8" stroke-width="1.5" marker-end="url(#graph-arrow)" />
-								{#each graphRelatedTerms(concept) as related, j}
-									<line x1={graphX(i, graphConcepts().length, 150)} y1={graphY(i, graphConcepts().length, 150)} x2={graphRelatedX(i, graphConcepts().length, j, graphRelatedTerms(concept).length)} y2={graphRelatedY(i, graphConcepts().length, j, graphRelatedTerms(concept).length)} stroke="#e4e4e7" stroke-width="1" />
-								{/each}
-							{/each}
-							<circle cx="320" cy="230" r="48" fill="#18181b"></circle>
-							<text x="320" y="225" text-anchor="middle" class="fill-white font-mono text-[14px] font-semibold">{selectedTerm.loincNum}</text>
-							<text x="320" y="244" text-anchor="middle" class="fill-zinc-300 text-[10px]">selected term</text>
-							{#each graphConcepts() as concept, i}
-								<g
-									role="button"
-									tabindex="0"
-									class="cursor-pointer outline-none"
-									on:click={(event) => {
-										event.stopPropagation();
-										toggleGraphConcept(concept);
-									}}
-									on:keydown={(event) => handleGraphKey(event, () => toggleGraphConcept(concept))}
-								>
-									<circle
-										cx={graphX(i, graphConcepts().length, 150)}
-										cy={graphY(i, graphConcepts().length, 150)}
-										r={graphConceptKey(concept) === activeGraphConceptCode ? 43 : 35}
-										fill={graphConceptKey(concept) === activeGraphConceptCode ? '#e4e4e7' : '#f4f4f5'}
-										stroke={graphConceptKey(concept) === activeGraphConceptCode ? '#18181b' : '#a1a1aa'}
-										stroke-width={graphConceptKey(concept) === activeGraphConceptCode ? 2 : 1}
-									></circle>
-									<text x={graphX(i, graphConcepts().length, 150)} y={graphY(i, graphConcepts().length, 150) - 4} text-anchor="middle" class="pointer-events-none fill-zinc-800 text-[10px] font-semibold">{concept.kind}</text>
-									<text x={graphX(i, graphConcepts().length, 150)} y={graphY(i, graphConcepts().length, 150) + 11} text-anchor="middle" class="pointer-events-none fill-zinc-500 text-[9px]">{concept.relatedTotal}</text>
-								</g>
-								{#each graphRelatedTerms(concept) as related, j}
-									<g
-										role="button"
-										tabindex="0"
-										class="cursor-pointer outline-none"
-										on:click={(event) => {
-											event.stopPropagation();
-											openTerm(related.loincNum);
-										}}
-										on:keydown={(event) => handleGraphKey(event, () => openTerm(related.loincNum))}
-									>
-										<circle cx={graphRelatedX(i, graphConcepts().length, j, graphRelatedTerms(concept).length)} cy={graphRelatedY(i, graphConcepts().length, j, graphRelatedTerms(concept).length)} r="24" fill="#ffffff" stroke="#d4d4d8"></circle>
-										<text x={graphRelatedX(i, graphConcepts().length, j, graphRelatedTerms(concept).length)} y={graphRelatedY(i, graphConcepts().length, j, graphRelatedTerms(concept).length) + 3} text-anchor="middle" class="pointer-events-none fill-zinc-700 font-mono text-[8px]">{related.loincNum}</text>
-									</g>
-								{/each}
-							{/each}
-							</g>
-						</svg>
-					</div>
-					<aside class="min-h-0 overflow-auto border-t border-zinc-200 p-4 lg:border-l lg:border-t-0">
-						<div class="mb-3 flex items-center justify-between gap-2">
-							<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Visible concepts</h3>
-							<span class="text-xs text-zinc-500">{graphConcepts().length} of {sharedConcepts().length}</span>
-						</div>
-						<div class="flex flex-col gap-3">
-							{#if graphConcepts().length === 0}
-								<EmptyState title="No graph links" body="This term has no shared concept neighborhoods to draw." />
-							{:else}
-								{#each graphConcepts() as concept}
-									<section class={`rounded-md border p-3 ${graphConceptKey(concept) === activeGraphConceptCode ? 'border-zinc-900 bg-zinc-50' : 'border-zinc-200'}`}>
-										<div class="break-words text-sm font-medium text-zinc-950">{accessoryTitle(concept)}</div>
-										<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
-											<span>{concept.kind}</span>
-											{#if concept.code}<span class="font-mono">{concept.code}</span>{/if}
-											<span>{concept.relatedTotal.toLocaleString()} other terms</span>
-										</div>
-										<div class="mt-2 flex flex-wrap gap-3">
-											<button type="button" class="text-xs font-medium text-zinc-700 hover:underline" on:click={() => toggleGraphConcept(concept)}>{graphConceptKey(concept) === activeGraphConceptCode ? 'Collapse node' : 'Expand node'}</button>
-											<button type="button" class="text-xs font-medium text-zinc-700 hover:underline" on:click={() => browseConcept(concept)}>Browse concept</button>
-										</div>
-										{#if graphRelatedTerms(concept).length}
-											<div class="mt-2 flex flex-col gap-1.5">
-												{#each graphRelatedTerms(concept) as related}
-													<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-xs hover:bg-zinc-100" on:click={() => openTerm(related.loincNum)}>
-														<span class="font-mono font-semibold text-zinc-900">{related.loincNum}</span>
-														<span class="mt-0.5 block break-words text-zinc-600">{termSummaryLabel(related)}</span>
-													</button>
-												{/each}
-											</div>
-										{/if}
-									</section>
-								{/each}
-							{/if}
-						</div>
-					</aside>
-				</div>
+				<RelationshipGraph
+					term={selectedTerm}
+					concepts={sharedConcepts()}
+					maxConcepts={graphVisibleConceptLimit}
+					maxTermsPerConcept={3}
+					onOpenTerm={(loincNum) => openTerm(loincNum)}
+					onBrowseConcept={browseConcept}
+				/>
 			</section>
 		</div>
 	{/if}

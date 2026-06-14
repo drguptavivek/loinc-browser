@@ -200,6 +200,14 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 		t.Fatalf("expected shared LP1 primary part concept with related 1002-7, got %#v", graph.SharedConcepts)
 	}
 
+	groups, err := store.TermRelationshipGroups(ctx, "1000-1")
+	if err != nil {
+		t.Fatalf("term relationship groups failed: %v", err)
+	}
+	if !hasRelatedConcept(groups.SharedConcepts, "part-primary", "LP1", "1002-7") {
+		t.Fatalf("expected v1 relationship groups to include shared LP1 graph concept with related 1002-7, got %#v", groups.SharedConcepts)
+	}
+
 	accessories, err := store.BrowseAccessories(ctx, AccessoryBrowseParams{Kind: "part-primary", Query: "glucose", Limit: 10})
 	if err != nil {
 		t.Fatalf("browse normalized accessories failed: %v", err)

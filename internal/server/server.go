@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -711,10 +712,41 @@ func (a *app) markdownDoc(name string, scope string) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, fmt.Errorf("documentation file not found: %s", path))
 			return
 		}
-		w.Header().Set("content-type", "text/markdown; charset=utf-8")
+		w.Header().Set("content-type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		_, _ = w.Write([]byte(renderMarkdownDocHTML(name, string(data))))
 	}
+}
+
+func renderMarkdownDocHTML(name string, markdown string) string {
+	title := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	lines := strings.Split(markdown, "\n")
+	for _, line := range lines {
+		if heading, ok := strings.CutPrefix(strings.TrimSpace(line), "# "); ok {
+			title = heading
+			break
+		}
+	}
+	return fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>%s</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f8fafc; color: #18181b; }
+    main { max-width: 920px; margin: 0 auto; padding: 32px 24px 56px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    a { color: #0369a1; }
+  </style>
+</head>
+<body>
+  <main>
+    <pre>%s</pre>
+  </main>
+</body>
+</html>`, html.EscapeString(title), html.EscapeString(markdown))
 }
 
 func (a *app) agentDocsDir() string {
