@@ -5,7 +5,7 @@ DEV_WEB_PORT ?= 5173
 VERSION ?= dev
 RELEASE ?= ./Loinc_2.82
 
-.PHONY: help install web check test build serve dev dev-api dev-web ingest reingest release clean
+.PHONY: help install web check test build serve mcp dev dev-api dev-web ingest reingest release clean
 
 help:
 	@echo "Targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  make check            Run Go tests, Svelte check, and frontend build"
 	@echo "  make build            Build local $(APP_NAME) binary"
 	@echo "  make serve            Serve browser on ADDR=$(ADDR) with DB=$(DB)"
+	@echo "  make mcp              Run stdio MCP server with DB=$(DB)"
 	@echo "  make dev              Run Go API reload watcher and Vite HMR server"
 	@echo "  make dev-api          Run Go API with local source-change restart"
 	@echo "  make dev-web          Run Vite HMR on DEV_WEB_PORT=$(DEV_WEB_PORT)"
@@ -41,6 +42,9 @@ build: web
 
 serve: web
 	go run ./cmd/loinc-browser serve --db $(DB) --addr $(ADDR)
+
+mcp:
+	go run ./cmd/loinc-browser mcp --db $(DB) --docs-dir ./docs/agent
 
 dev:
 	$(MAKE) -j2 dev-api dev-web

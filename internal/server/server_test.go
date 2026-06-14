@@ -142,6 +142,50 @@ func TestV1API(t *testing.T) {
 	}
 }
 
+func TestMCPRouteCanBeEnabledWithoutBreakingAPI(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeServerTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := loinc.Ingest(ctx, loinc.IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	store, err := loinc.OpenStore(dbPath, loinc.StoreOptions{CacheEntries: 4})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	docsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_CONCEPTS.md"), []byte("# Concepts\n"), 0o644); err != nil {
+		t.Fatalf("write concepts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_AGENT_GUIDE.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("write guide: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_LICENSE_NOTE.md"), []byte("# License\n"), 0o644); err != nil {
+		t.Fatalf("write license: %v", err)
+	}
+
+	testServer := httptest.NewServer(New(Options{Store: store, EnableMCP: true, MCPPath: "/mcp", DocsDir: docsDir}))
+	defer testServer.Close()
+
+	var health map[string]any
+	getJSON(t, testServer.URL+"/api/v1/health", &health)
+	if health["ok"] != true {
+		t.Fatalf("expected v1 health with mcp enabled, got %#v", health)
+	}
+
+	resp, err := http.Post(testServer.URL+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
+	if err != nil {
+		t.Fatalf("post mcp initialize: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 500 {
+		t.Fatalf("expected MCP route to handle request, got status %d", resp.StatusCode)
+	}
+}
+
 func TestOpenAPISpec(t *testing.T) {
 	handler := New(Options{})
 	server := httptest.NewServer(handler)

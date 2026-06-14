@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"loinc-browser/internal/loinc"
+	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/server"
 	"loinc-browser/web"
 )
@@ -35,11 +38,28 @@ func run(args []string) error {
 		return runIngest(args[2:])
 	case "serve":
 		return runServe(args[2:])
+	case "mcp":
+		return runMCP(args[2:])
 	case "-h", "--help", "help":
 		return usage()
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[1], usageText())
 	}
+}
+
+type serveConfig struct {
+	DBPath       string
+	Addr         string
+	CacheEntries int
+	EnableMCP    bool
+	MCPPath      string
+	DocsDir      string
+}
+
+type mcpConfig struct {
+	DBPath       string
+	CacheEntries int
+	DocsDir      string
 }
 
 func runIngest(args []string) error {
@@ -64,17 +84,14 @@ func runServe(args []string) error {
 	if err := loadDotEnv(".env"); err != nil {
 		return err
 	}
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
-	addr := flags.String("addr", defaultServeAddr(), "HTTP listen address")
-	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
-	if err := flags.Parse(args); err != nil {
+	cfg, err := parseServeConfig(args)
+	if err != nil {
 		return err
 	}
-	if err := ensureDatabaseFromLocalZip(context.Background(), ".", *dbPath); err != nil {
+	if err := ensureDatabaseFromLocalZip(context.Background(), ".", cfg.DBPath); err != nil {
 		return err
 	}
-	store, err := loinc.OpenStore(*dbPath, loinc.StoreOptions{CacheEntries: *cacheEntries})
+	store, err := loinc.OpenStore(cfg.DBPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
 	if err != nil {
 		return err
 	}
@@ -87,12 +104,71 @@ func runServe(args []string) error {
 	handler := server.New(server.Options{
 		Store:        store,
 		Assets:       assets,
-		DBPath:       *dbPath,
+		DBPath:       cfg.DBPath,
 		UploadDir:    "./data/uploads",
-		CacheEntries: *cacheEntries,
+		CacheEntries: cfg.CacheEntries,
+		EnableMCP:    cfg.EnableMCP,
+		MCPPath:      cfg.MCPPath,
+		DocsDir:      cfg.DocsDir,
 	})
-	fmt.Printf("Serving LOINC browser on http://localhost%s\n", *addr)
-	return http.ListenAndServe(*addr, handler)
+	fmt.Printf("Serving LOINC browser on http://localhost%s\n", cfg.Addr)
+	if cfg.EnableMCP {
+		fmt.Printf("Serving LOINC MCP over HTTP at http://localhost%s%s\n", cfg.Addr, cfg.MCPPath)
+	}
+	return http.ListenAndServe(cfg.Addr, handler)
+}
+
+func parseServeConfig(args []string) (serveConfig, error) {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
+	addr := flags.String("addr", defaultServeAddr(), "HTTP listen address")
+	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
+	enableMCP := flags.Bool("mcp", false, "enable local MCP over HTTP")
+	mcpPath := flags.String("mcp-path", "/mcp", "HTTP MCP route path")
+	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
+	if err := flags.Parse(args); err != nil {
+		return serveConfig{}, err
+	}
+	return serveConfig{
+		DBPath:       *dbPath,
+		Addr:         *addr,
+		CacheEntries: *cacheEntries,
+		EnableMCP:    *enableMCP,
+		MCPPath:      normalizePathFlag(*mcpPath),
+		DocsDir:      *docsDir,
+	}, nil
+}
+
+func runMCP(args []string) error {
+	if err := loadDotEnv(".env"); err != nil {
+		return err
+	}
+	cfg, err := parseMCPConfig(args)
+	if err != nil {
+		return err
+	}
+	store, err := loinc.OpenStore(cfg.DBPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	mcpServer := loincmcp.New(loincmcp.Options{
+		Store:       store,
+		DocsDir:     cfg.DocsDir,
+		OpenAPIJSON: server.OpenAPIJSON,
+	})
+	return mcpServer.Run(context.Background(), &mcp.StdioTransport{})
+}
+
+func parseMCPConfig(args []string) (mcpConfig, error) {
+	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
+	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
+	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
+	if err := flags.Parse(args); err != nil {
+		return mcpConfig{}, err
+	}
+	return mcpConfig{DBPath: *dbPath, CacheEntries: *cacheEntries, DocsDir: *docsDir}, nil
 }
 
 func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) error {
@@ -244,6 +320,24 @@ func defaultServeAddr() string {
 	return ":8080"
 }
 
+func defaultAgentDocsDir() string {
+	if dir := strings.TrimSpace(os.Getenv("LOINC_AGENT_DOCS_DIR")); dir != "" {
+		return dir
+	}
+	return "./docs/agent"
+}
+
+func normalizePathFlag(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/mcp"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
 func usage() error {
 	fmt.Print(usageText())
 	return nil
@@ -253,9 +347,12 @@ func usageText() string {
 	return `Usage:
   loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc-normalized.sqlite
   loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080
+  loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080 --mcp
+  loinc-browser mcp --db ./data/loinc-normalized.sqlite --docs-dir ./docs/agent
 
 Environment:
   LOINC_BROWSER_ADDR=:8080
   PORT=8080
+  LOINC_AGENT_DOCS_DIR=./docs/agent
 `
 }

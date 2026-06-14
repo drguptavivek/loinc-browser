@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"loinc-browser/internal/loinc"
+	loincmcp "loinc-browser/internal/mcpserver"
 )
 
 type Options struct {
@@ -18,6 +19,9 @@ type Options struct {
 	DBPath       string
 	UploadDir    string
 	CacheEntries int
+	EnableMCP    bool
+	MCPPath      string
+	DocsDir      string
 }
 
 func New(options Options) http.Handler {
@@ -71,8 +75,27 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
+	if options.EnableMCP {
+		mcpServer := loincmcp.New(loincmcp.Options{
+			Store:       options.Store,
+			DocsDir:     options.DocsDir,
+			OpenAPIJSON: OpenAPIJSON,
+		})
+		mux.Handle(normalizeMCPPath(options.MCPPath), loincmcp.StreamableHTTPHandler(mcpServer))
+	}
 	mux.HandleFunc("/", app.frontend)
 	return mux
+}
+
+func normalizeMCPPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/mcp"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 type app struct {
@@ -618,6 +641,14 @@ func (a *app) v1SourceOrganization(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) openapi(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, openAPISpec)
+}
+
+func OpenAPIJSON() string {
+	data, err := json.MarshalIndent(openAPISpec, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 func (a *app) swaggerDocs(w http.ResponseWriter, r *http.Request) {

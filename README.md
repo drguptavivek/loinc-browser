@@ -135,6 +135,26 @@ curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:8080/api/import/upload'
 
 Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`.
 
+## MCP
+
+The Go binary can expose the local LOINC database to agents through MCP over both stdio and HTTP.
+
+Stdio:
+
+```bash
+./loinc-browser mcp --db ./data/loinc-normalized.sqlite --docs-dir ./docs/agent
+```
+
+HTTP, alongside the browser and `/api/v1`:
+
+```bash
+./loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080 --mcp
+```
+
+The default HTTP MCP route is `http://localhost:8080/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time. The repository skill for agents is `skills/loinc-mcp/SKILL.md`.
+
+See `docs/MCP.md` for tool/resource names, connection examples, and context-optimization guidance.
+
 ## Check
 
 ```bash

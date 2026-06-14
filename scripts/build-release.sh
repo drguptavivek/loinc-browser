@@ -45,7 +45,8 @@ for target in "${targets[@]}"; do
     -o "${binary}" \
     ./cmd/loinc-browser
 
-  cp README.md AGENTS.md .env.example "${package_dir}/"
+  cp README.md AGENTS.md ERD.md .env.example "${package_dir}/"
+  cp -R docs skills "${package_dir}/"
   cat > "${package_dir}/INSTALL.md" <<EOF
 # ${APP_NAME} ${VERSION}
 

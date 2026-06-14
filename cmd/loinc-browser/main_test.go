@@ -43,6 +43,39 @@ func TestDefaultAddrUsesPortWhenAddrMissing(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentDocsDirUsesEnv(t *testing.T) {
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "/tmp/loinc-agent-docs")
+	if got := defaultAgentDocsDir(); got != "/tmp/loinc-agent-docs" {
+		t.Fatalf("expected env docs dir, got %q", got)
+	}
+}
+
+func TestParseServeConfigAcceptsMCPFlags(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	cfg, err := parseServeConfig([]string{"--db", "test.sqlite", "--addr", ":18080", "--mcp", "--mcp-path", "/local-mcp", "--docs-dir", "docs/custom"})
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+	if cfg.DBPath != "test.sqlite" || cfg.Addr != ":18080" || !cfg.EnableMCP || cfg.MCPPath != "/local-mcp" || cfg.DocsDir != "docs/custom" {
+		t.Fatalf("unexpected serve config: %#v", cfg)
+	}
+}
+
+func TestParseMCPConfigAcceptsFlags(t *testing.T) {
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	cfg, err := parseMCPConfig([]string{"--db", "test.sqlite", "--cache-entries", "64", "--docs-dir", "docs/custom"})
+	if err != nil {
+		t.Fatalf("parse mcp config: %v", err)
+	}
+	if cfg.DBPath != "test.sqlite" || cfg.CacheEntries != 64 || cfg.DocsDir != "docs/custom" {
+		t.Fatalf("unexpected mcp config: %#v", cfg)
+	}
+}
+
 func TestEnsureDatabaseFromLocalZipImportsWhenDatabaseMissing(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "Loinc_Test.zip"), testCLIReleaseZip(t, "4000-1", "Bootstrap glucose term"), 0o600); err != nil {
