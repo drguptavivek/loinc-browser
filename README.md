@@ -110,6 +110,24 @@ curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:9005/api/import/upload'
 
 Swagger UI is served at `http://localhost:9005/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:9005/openapi.json`. See `docs/API.md` for the structured v1 API guide.
 
+## High-Level Relationship Model
+
+The browser treats `LoincTable/Loinc.csv` as the canonical term table. Everything else enriches those terms with normalized relationships or source metadata:
+
+- `loinc_map_to`: direct term-to-term replacement links, mainly for deprecated terms.
+- `parts` and `loinc_part_links`: term-to-concept links for component, property, system, method, and other semantic parts.
+- `answer_lists`, `answer_list_answers`, and `loinc_answer_list_links`: answer-list identity, answer rows, and term usage.
+- `panel_items`: parent-child term relationships for panels, forms, and their member observations.
+- `parent_groups`, `loinc_groups`, and `group_loinc_terms`: value-set style groupings that collect related LOINC terms.
+- `hierarchy_concepts`, `hierarchy_occurrences`, `hierarchy_edges`, `hierarchy_closure`, and `hierarchy_subtree_terms`: path-preserving hierarchy browsing and fast branch-scoped term queries.
+- Source organizations: copyright, source, and terms-of-use metadata for imported source references.
+
+The v1 API exposes focused resources for term search, term detail, grouped relationships, hierarchy nodes, panel items, answer lists, parts, groups, and source/copyright metadata. Hierarchy browsing uses `hierarchy_occurrences.node_id` so duplicate hierarchy concept codes are safe to browse.
+
+The app also supports **Browse by rank**, based on LOINC's `COMMON_TEST_RANK` and `COMMON_ORDER_RANK` fields. Ranked browsing can use observation or order rank mode, limits results to positive ranks when requested, and orders the most frequently used LOINC codes first. Unranked terms remain searchable through normal search and facet browsing.
+
+See `ERD.md` for the fuller relationship diagram and storage model.
+
 ## License and Attribution
 
 This repository contains application code and documentation only. It does not include the LOINC release, generated SQLite databases, or redistributed LOINC Licensed Materials.
@@ -181,24 +199,6 @@ The importer requires these release files and fails if any are missing:
 - `AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv`
 
 The ingest schema is normalized-only for relationship data. v1 API endpoints read these tables directly; there are no compatibility relationship tables or raw JSON fallback columns.
-
-## High-Level Relationship Model
-
-The browser treats `LoincTable/Loinc.csv` as the canonical term table. Everything else enriches those terms with normalized relationships or source metadata:
-
-- `loinc_map_to`: direct term-to-term replacement links, mainly for deprecated terms.
-- `parts` and `loinc_part_links`: term-to-concept links for component, property, system, method, and other semantic parts.
-- `answer_lists`, `answer_list_answers`, and `loinc_answer_list_links`: answer-list identity, answer rows, and term usage.
-- `panel_items`: parent-child term relationships for panels, forms, and their member observations.
-- `parent_groups`, `loinc_groups`, and `group_loinc_terms`: value-set style groupings that collect related LOINC terms.
-- `hierarchy_concepts`, `hierarchy_occurrences`, `hierarchy_edges`, `hierarchy_closure`, and `hierarchy_subtree_terms`: path-preserving hierarchy browsing and fast branch-scoped term queries.
-- Source organizations: copyright, source, and terms-of-use metadata for imported source references.
-
-The v1 API exposes focused resources for term search, term detail, grouped relationships, hierarchy nodes, panel items, answer lists, parts, groups, and source/copyright metadata. Hierarchy browsing uses `hierarchy_occurrences.node_id` so duplicate hierarchy concept codes are safe to browse.
-
-The app also supports **Browse by rank**, based on LOINC's `COMMON_TEST_RANK` and `COMMON_ORDER_RANK` fields. Ranked browsing can use observation or order rank mode, limits results to positive ranks when requested, and orders the most frequently used LOINC codes first. Unranked terms remain searchable through normal search and facet browsing.
-
-See `ERD.md` for the fuller relationship diagram and storage model.
 
 ## Check
 
