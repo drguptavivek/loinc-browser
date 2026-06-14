@@ -1,8 +1,18 @@
 # LOINC Browser
 
-Local browser for a licensed LOINC release. The code imports every term row from `LoincTable/Loinc.csv` into SQLite, preserves all columns from each row for the term detail view, imports useful relationship/accessory artifacts when present, builds an FTS5 index over the searchable LOINC fields, and serves a Svelte search UI from a Go binary.
+Local browser for a licensed LOINC release. The code imports every term row from `LoincTable/Loinc.csv` into typed SQLite columns, imports required relationship/accessory artifacts into normalized foreign-key tables, builds an FTS5 index over the searchable LOINC fields, and serves a Svelte search UI from a Go binary.
 
 Licensed LOINC release files and generated SQLite databases must stay out of git.
+
+## License and Attribution
+
+This repository contains application code and documentation only. It does not include the LOINC release, generated SQLite databases, or redistributed LOINC Licensed Materials.
+
+LOINC content is owned by its respective rights holders and remains governed by the [LOINC Copyright Notice and License](https://loinc.org/kb/license/). When you use this browser with a local LOINC release, the following LOINC notice applies:
+
+> This material contains content from LOINC (http://loinc.org). LOINC is Copyright © Regenstrief Institute, Inc. and the Logical Observation Identifiers Names and Codes (LOINC) Committee and is available at no cost under the license at http://loinc.org/license. LOINC® is a registered United States trademark of Regenstrief Institute, Inc.
+
+Third-party content surfaced from LOINC release fields, including `EXTERNAL_COPYRIGHT_NOTICE`, remains subject to the relevant third-party copyright and terms. Project documentation and non-LOINC explanatory text may be reused with attribution under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Project source: [GitHub](https://github.com/drguptavivek/LOINC).
 
 ## Quick Start
 
@@ -14,11 +24,11 @@ make serve
 
 Open `http://localhost:8080`.
 
-The default database is `./data/loinc.sqlite` and the default address is `:8080`. Override either value when needed:
+The default database is `./data/loinc-normalized.sqlite` and the default address is `:8080`. Override either value when needed:
 
 ```bash
-make ingest RELEASE=./Loinc_2.82 DB=./data/loinc.sqlite
-make serve DB=./data/loinc.sqlite ADDR=:9090
+make ingest RELEASE=./Loinc_2.82 DB=./data/loinc-normalized.sqlite
+make serve DB=./data/loinc-normalized.sqlite ADDR=:9090
 ```
 
 The serve address can also come from `.env`:
@@ -31,7 +41,7 @@ PORT=8080
 
 See `.env.example` for the supported keys.
 
-The browser includes a local loader for uploading a licensed LOINC release zip. Uploaded releases are extracted under `data/uploads/`, ingested into the configured SQLite database, and remain outside git. Search results hide `STATUS=DEPRECATED` by default unless the `DEPRECATED` status facet is explicitly selected.
+The browser includes a local loader for uploading a licensed LOINC release zip. Uploaded releases are extracted under `data/uploads/`, ingested into the configured SQLite database, and remain outside git. v1 term lists exclude `STATUS=INACTIVE` by default; pass `status=INACTIVE` to search inactive terms, or `status=*` to include every status.
 
 On `serve`, if the configured database is missing or has no `loinc_terms` data, the app looks for a local `Loinc*.zip` within the project directory or one nested release directory and imports it automatically. Existing populated databases are not overwritten.
 
@@ -40,58 +50,90 @@ On `serve`, if the configured database is missing or has no `loinc_terms` data, 
 Release packages contain only the application binary and documentation. They do not contain LOINC release data or a generated database.
 
 ```bash
-./loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc.sqlite
-./loinc-browser serve --db ./data/loinc.sqlite --addr :8080
+./loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc-normalized.sqlite
+./loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080
 ```
 
 If a local `Loinc*.zip` is present and the database is empty, `serve` can auto-ingest it on first run.
 
-When available in the release, the importer also loads:
+## Development Mode
+
+Use Vite during UI work so Svelte changes hot-reload without rebuilding embedded assets:
+
+```bash
+make dev
+```
+
+This starts two processes:
+
+- Go API on `http://localhost:8080`, restarted when Go source files change
+- Vite HMR UI on `http://localhost:5173`, proxying `/api` and `/openapi.json` to the Go API
+
+You can also run them separately:
+
+```bash
+make dev-api
+make dev-web
+```
+
+Override ports when needed:
+
+```bash
+make dev ADDR=:9090 DEV_WEB_PORT=5174
+```
+
+The importer requires these release files and fails if any are missing:
 
 - `LoincTable/MapTo.csv` for deprecated-term replacement mappings
 - `LoincTable/SourceOrganization.csv` for source/copyright metadata
+- `AccessoryFiles/PartFile/Part.csv`
 - `AccessoryFiles/PartFile/LoincPartLink_Primary.csv`
 - `AccessoryFiles/PartFile/LoincPartLink_Supplementary.csv`
+- `AccessoryFiles/AnswerFile/AnswerList.csv`
 - `AccessoryFiles/AnswerFile/LoincAnswerListLink.csv`
 - `AccessoryFiles/PanelsAndForms/PanelsAndForms.csv`
+- `AccessoryFiles/GroupFile/ParentGroup.csv`
+- `AccessoryFiles/GroupFile/Group.csv`
 - `AccessoryFiles/GroupFile/GroupLoincTerms.csv`
 - `AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv`
 
-Term detail loads the core LOINC fields first. Relationship details are lazy-loaded on demand with `include=relationships` or through the relationship graph endpoint. Loaded relationship details include `mapTo`, `parts`, `answerLists`, `panels`, `groups`, and `hierarchy`; the relationship graph endpoint also exposes incoming `MapTo` links and shared concept neighborhoods so a term can be explored in either direction. Lazy-loaded relationship graphs are cached in memory, so reopening the same term's graph avoids repeating the heavier SQLite relationship traversal.
+The ingest schema is normalized-only for relationship data. v1 API endpoints read these tables directly; there are no compatibility relationship tables or raw JSON fallback columns.
 
 ## High-Level Relationship Model
 
-The browser treats `LoincTable/Loinc.csv` as the canonical term table. Everything else enriches those terms with relationships or source metadata:
+The browser treats `LoincTable/Loinc.csv` as the canonical term table. Everything else enriches those terms with normalized relationships or source metadata:
 
-- `MapTo.csv`: direct term-to-term replacement links, mainly for deprecated terms. The app exposes both directions: this term maps to another term, and other terms map to this term.
-- LOINC parts: term-to-concept links for component, property, system, method, and other semantic parts. Shared parts are used as neighborhoods so a selected term can reveal other terms using the same concept.
-- Answer list links: term-to-answer-list relationships for terms with coded response options.
-- Panels and forms: parent-child term relationships for panels, forms, and their member observations.
-- Groups: value-set style groupings that collect related LOINC terms under a group concept.
-- Component hierarchy by system: hierarchy rows that support tree-style exploration and broader/narrower navigation.
+- `loinc_map_to`: direct term-to-term replacement links, mainly for deprecated terms.
+- `parts` and `loinc_part_links`: term-to-concept links for component, property, system, method, and other semantic parts.
+- `answer_lists`, `answer_list_answers`, and `loinc_answer_list_links`: answer-list identity, answer rows, and term usage.
+- `panel_items`: parent-child term relationships for panels, forms, and their member observations.
+- `parent_groups`, `loinc_groups`, and `group_loinc_terms`: value-set style groupings that collect related LOINC terms.
+- `hierarchy_concepts`, `hierarchy_occurrences`, `hierarchy_edges`, `hierarchy_closure`, and `hierarchy_subtree_terms`: path-preserving hierarchy browsing and fast branch-scoped term queries.
 - Source organizations: copyright, source, and terms-of-use metadata for imported source references.
 
-In the UI, the term detail drawer shows the direct relationships for the selected term plus shared concept neighborhoods. The relationship browser can also browse relationship rows independently by kind, code, title, or LOINC number.
+The v1 API exposes focused resources for term search, term detail, grouped relationships, hierarchy nodes, panel items, answer lists, parts, groups, and source/copyright metadata. Hierarchy browsing uses `hierarchy_occurrences.node_id` so duplicate hierarchy concept codes are safe to browse.
+
+The app also supports **Browse by rank**, based on LOINC's `COMMON_TEST_RANK` and `COMMON_ORDER_RANK` fields. Ranked browsing can use observation or order rank mode, limits results to positive ranks when requested, and orders the most frequently used LOINC codes first. Unranked terms remain searchable through normal search and facet browsing.
 
 See `ERD.md` for the fuller relationship diagram and storage model.
 
 ## API
 
-The same server exposes JSON endpoints for scripts and other apps.
+The same server exposes JSON endpoints for scripts and other apps. The `/api/v1` routes are the normalized API surface for EMR form-builder workflows.
+See `docs/API.md` for the structured v1 API guide, including route groups, shared filters, pagination, HATEOAS links, hierarchy browsing, panels, answer lists, parts, groups, and copyright/source workflows.
 
 ```bash
-curl 'http://localhost:8080/api/search?q=glucose%20plasma&status=ACTIVE&limit=5'
-curl 'http://localhost:8080/api/terms/14749-6'
-curl 'http://localhost:8080/api/terms/14749-6?include=relationships'
-curl 'http://localhost:8080/api/terms/14749-6/relationships'
-curl 'http://localhost:8080/api/accessories?kind=part-primary&q=glucose&limit=5'
-curl 'http://localhost:8080/api/facets'
-curl 'http://localhost:8080/api/source-organizations'
+curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
+curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&limit=10'
+curl 'http://localhost:8080/api/v1/terms/14749-6'
+curl 'http://localhost:8080/api/v1/terms/14749-6/relationships'
+curl 'http://localhost:8080/api/v1/hierarchy/roots'
+curl 'http://localhost:8080/api/v1/answer-lists/search?q=positive'
+curl 'http://localhost:8080/api/v1/source-organizations'
 curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:8080/api/import/upload'
-curl 'http://localhost:8080/openapi.json'
 ```
 
-The OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`.
+Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`.
 
 ## Check
 

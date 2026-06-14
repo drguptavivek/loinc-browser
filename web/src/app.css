@@ -31,12 +31,29 @@ button {
 	letter-spacing: 0;
 }
 
+@media (max-width: 1023.98px) {
+	[data-loinc-shell-pane-group],
+	[data-loinc-shell-pane] {
+		display: contents !important;
+		overflow: visible !important;
+	}
+}
+
 .facet-pane {
-	width: 100%;
+	width: min(75vw, 88vw);
+	max-width: 88vw;
+}
+
+@media (min-width: 640px) and (max-width: 1023.98px) {
+	.facet-pane {
+		width: min(50vw, calc(100vw - 2rem));
+		max-width: calc(100vw - 2rem);
+	}
 }
 
 @media (min-width: 1024px) {
 	.facet-pane {
-		width: var(--facet-width, 280px);
+		width: 100%;
+		max-width: none;
 	}
 }

@@ -10,7 +10,11 @@ export type SearchResult = {
 	class: string;
 	status: string;
 	orderObs: string;
+	commonTestRank: number;
+	commonOrderRank: number;
+	usageTypes: string[];
 	rank: number;
+	_links?: Links;
 };
 
 export type SearchResponse = {
@@ -18,8 +22,12 @@ export type SearchResponse = {
 	total: number;
 	limit: number;
 	offset: number;
+	hasMore: boolean;
 	query: string;
+	_links?: Links;
 };
+
+export type Links = Record<string, string>;
 
 export type Term = {
 	loincNum: string;
@@ -38,6 +46,10 @@ export type Term = {
 	relatedNames: string;
 	orderObs: string;
 	displayName: string;
+	commonTestRank: number;
+	commonOrderRank: number;
+	usageTypes: string[];
+	_links?: Links;
 	fields: Record<string, string>;
 	mapTo?: MapTo[];
 	parts?: TermAccessory[];
@@ -65,9 +77,17 @@ export type TermSummary = {
 	loincNum: string;
 	longCommonName: string;
 	shortName: string;
+	displayName?: string;
 	status: string;
+	orderObs: string;
+	usageTypes: string[];
+	commonTestRank: number;
+	commonOrderRank: number;
 	system: string;
 	class: string;
+	scale?: string;
+	property?: string;
+	_links?: Links;
 };
 
 export type RelationshipConcept = {
@@ -82,9 +102,18 @@ export type RelationshipConcept = {
 
 export type TermRelationshipGraph = {
 	loincNum: string;
-	outgoingMapTo: MapTo[];
-	incomingMapTo: MapTo[];
-	sharedConcepts: RelationshipConcept[];
+	outgoingMapTo?: MapTo[];
+	incomingMapTo?: MapTo[];
+	sharedConcepts?: RelationshipConcept[];
+	mapTo?: MapTo[];
+	mappedFrom?: MapTo[];
+	parts?: TermAccessory[];
+	answerLists?: TermAccessory[];
+	panelMemberships?: TermAccessory[];
+	panelItems?: TermAccessory[];
+	groups?: TermAccessory[];
+	hierarchy?: TermAccessory[];
+	_links?: Links;
 };
 
 export type AccessoryRecord = TermAccessory & {
@@ -99,8 +128,42 @@ export type AccessoryBrowseResponse = {
 	total: number;
 	limit: number;
 	offset: number;
+	hasMore: boolean;
 	query: string;
 	kind: string;
+	_links?: Links;
+};
+
+export type HierarchyNode = {
+	nodeId: string;
+	code: string;
+	label: string;
+	parentNodeId: string;
+	parentCode: string;
+	pathKey: string;
+	path: string;
+	termCount: number;
+	childCount: number;
+	isTerm: boolean;
+	hasChildren: boolean;
+	_links?: Links;
+};
+
+export type HierarchyChildrenResponse = {
+	parentNodeId: string;
+	parentCode: string;
+	query: string;
+	results: HierarchyNode[];
+	_links?: Links;
+};
+
+export type HierarchyNodePage = {
+	results: HierarchyNode[];
+	total: number;
+	limit: number;
+	offset: number;
+	hasMore: boolean;
+	_links?: Links;
 };
 
 export type Facets = {
@@ -147,6 +210,11 @@ export type SearchParams = {
 	method?: string | string[];
 	property?: string;
 	orderObs?: string | string[];
+	rankedOnly?: boolean;
+	hierarchyNodeId?: string;
+	usageType?: 'any' | 'observation' | 'order';
+	rankMode?: 'observation' | 'order';
+	sort?: 'relevance' | 'usage' | 'alpha';
 	limit?: number;
 	offset?: number;
 };
@@ -171,16 +239,15 @@ export function searchTerms(params: SearchParams): Promise<SearchResponse> {
 			query.set(key, String(value));
 		}
 	}
-	return requestJSON<SearchResponse>(`/api/search?${query.toString()}`);
+	return requestJSON<SearchResponse>(`/api/v1/terms/search?${query.toString()}`);
 }
 
-export function getTerm(loincNum: string, includeRelationships = false): Promise<Term> {
-	const suffix = includeRelationships ? '?include=relationships' : '';
-	return requestJSON<Term>(`/api/terms/${encodeURIComponent(loincNum)}${suffix}`);
+export function getTerm(loincNum: string): Promise<Term> {
+	return requestJSON<Term>(`/api/v1/terms/${encodeURIComponent(loincNum)}`);
 }
 
 export function getTermRelationships(loincNum: string): Promise<TermRelationshipGraph> {
-	return requestJSON<TermRelationshipGraph>(`/api/terms/${encodeURIComponent(loincNum)}/relationships`);
+	return requestJSON<TermRelationshipGraph>(`/api/v1/terms/${encodeURIComponent(loincNum)}/relationships`);
 }
 
 export function getFacets(): Promise<Facets> {
@@ -196,7 +263,25 @@ export function browseAccessories(params: { kind?: string; q?: string; limit?: n
 	for (const [key, value] of Object.entries(params)) {
 		if (value !== undefined && value !== '') query.set(key, String(value));
 	}
-	return requestJSON<AccessoryBrowseResponse>(`/api/accessories?${query.toString()}`);
+	return requestJSON<AccessoryBrowseResponse>(`/api/v1/accessories?${query.toString()}`);
+}
+
+export function getHierarchyChildren(params: { parentNodeId?: string; q?: string } = {}): Promise<HierarchyChildrenResponse> {
+	const query = new URLSearchParams();
+	if (params.q) query.set('q', params.q);
+	const suffix = query.toString() ? `?${query.toString()}` : '';
+	if (params.parentNodeId) {
+		return requestJSON<HierarchyChildrenResponse>(`/api/v1/hierarchy/nodes/${encodeURIComponent(params.parentNodeId)}/children${suffix}`);
+	}
+	return requestJSON<HierarchyChildrenResponse>(`/api/v1/hierarchy/roots${suffix}`);
+}
+
+export function getHierarchyNode(nodeId: string): Promise<HierarchyNode> {
+	return requestJSON<HierarchyNode>(`/api/v1/hierarchy/nodes/${encodeURIComponent(nodeId)}`);
+}
+
+export function getHierarchyParents(nodeId: string): Promise<HierarchyNodePage> {
+	return requestJSON<HierarchyNodePage>(`/api/v1/hierarchy/nodes/${encodeURIComponent(nodeId)}/parents`);
 }
 
 export async function uploadReleaseZip(file: File): Promise<UploadImportResponse> {

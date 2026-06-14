@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,7 +49,11 @@ func Ingest(ctx context.Context, options IngestOptions) (IngestSummary, error) {
 		return IngestSummary{}, fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
 
+	if err := configureIngestPragmas(ctx, db); err != nil {
+		return IngestSummary{}, err
+	}
 	if err := createSchema(ctx, db); err != nil {
 		return IngestSummary{}, err
 	}
@@ -58,7 +62,10 @@ func Ingest(ctx context.Context, options IngestOptions) (IngestSummary, error) {
 	if err != nil {
 		return IngestSummary{}, err
 	}
-	if err := importOptionalReleaseFiles(ctx, db, options.ReleaseDir); err != nil {
+	if err := importRequiredReleaseFiles(ctx, db, options.ReleaseDir); err != nil {
+		return IngestSummary{}, err
+	}
+	if err := finalizeIngestDatabase(ctx, db); err != nil {
 		return IngestSummary{}, err
 	}
 
@@ -82,10 +89,26 @@ func Ingest(ctx context.Context, options IngestOptions) (IngestSummary, error) {
 	}, nil
 }
 
+func configureIngestPragmas(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`pragma foreign_keys = off`,
+		`pragma journal_mode = off`,
+		`pragma synchronous = off`,
+		`pragma temp_store = memory`,
+		`pragma cache_size = -262144`,
+		`pragma locking_mode = exclusive`,
+		`pragma mmap_size = 268435456`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("configure ingest sqlite pragma %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
 func createSchema(ctx context.Context, db *sql.DB) error {
 	statements := []string{
-		`pragma journal_mode = delete`,
-		`pragma synchronous = normal`,
 		`create table loinc_terms (
 			loinc_num text primary key,
 			component text not null default '',
@@ -104,8 +127,7 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 			definition text not null default '',
 			display_name text not null default '',
 			common_test_rank integer not null default 0,
-			common_order_rank integer not null default 0,
-			raw_json text not null default '{}'
+			common_order_rank integer not null default 0
 		)`,
 		`create virtual table loinc_terms_fts using fts5(
 			loinc_num,
@@ -123,49 +145,237 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 			class,
 			tokenize = 'unicode61'
 		)`,
-		`create index idx_loinc_class on loinc_terms(class)`,
-		`create index idx_loinc_status on loinc_terms(status)`,
-		`create index idx_loinc_system on loinc_terms(system)`,
-		`create index idx_loinc_scale on loinc_terms(scale)`,
-		`create index idx_loinc_property on loinc_terms(property)`,
-		`create index idx_loinc_order_obs on loinc_terms(order_obs)`,
 		`create table import_meta (
 			key text primary key,
 			value text not null
-		)`,
-		`create table map_to (
-			loinc_num text not null,
-			map_to text not null,
+		) without rowid`,
+		`create table parts (
+			part_number text primary key,
+			part_type_name text not null default '',
+			part_name text not null default '',
+			part_display_name text not null default '',
+			status text not null default ''
+		) without rowid`,
+		`create table loinc_part_links (
+			loinc_num text not null references loinc_terms(loinc_num),
+			part_number text not null references parts(part_number),
+			link_set text not null,
+			part_name text not null default '',
+			part_code_system text not null default '',
+			part_type_name text not null default '',
+			link_type_name text not null default '',
+			property text not null default '',
+			primary key(loinc_num, part_number, link_set, link_type_name, property)
+		) without rowid`,
+		`create table answer_lists (
+			answer_list_id text primary key,
+			answer_list_name text not null default '',
+			answer_list_oid text not null default '',
+			ext_defined_yn text not null default '',
+			ext_defined_answer_list_code_system text not null default '',
+			ext_defined_answer_list_link text not null default ''
+		) without rowid`,
+		`create table answer_list_answers (
+			answer_list_id text not null references answer_lists(answer_list_id),
+			answer_string_id text not null default '',
+			local_answer_code text not null default '',
+			local_answer_code_system text not null default '',
+			sequence_number integer not null default 0,
+			display_text text not null default '',
+			ext_code_id text not null default '',
+			ext_code_display_name text not null default '',
+			ext_code_system text not null default '',
+			ext_code_system_version text not null default '',
+			subsequent_text_prompt text not null default '',
+			description text not null default '',
+			score text not null default '',
+			primary key(answer_list_id, sequence_number, answer_string_id, display_text)
+		) without rowid`,
+		`create table loinc_answer_list_links (
+			loinc_num text not null references loinc_terms(loinc_num),
+			answer_list_id text not null references answer_lists(answer_list_id),
+			answer_list_name text not null default '',
+			answer_list_link_type text not null default '',
+			applicable_context text not null default '',
+			primary key(loinc_num, answer_list_id, answer_list_link_type, applicable_context)
+		) without rowid`,
+		`create table loinc_map_to (
+			loinc_num text not null references loinc_terms(loinc_num),
+			target_loinc_num text not null references loinc_terms(loinc_num),
 			comment text not null default '',
-			primary key(loinc_num, map_to)
+			primary key(loinc_num, target_loinc_num)
+		) without rowid`,
+		`create table panel_items (
+			parent_loinc_num text not null references loinc_terms(loinc_num),
+			child_loinc_num text not null references loinc_terms(loinc_num),
+			parent_id text not null default '',
+			item_id text not null default '',
+			sequence integer not null default 0,
+			parent_name text not null default '',
+			child_name text not null default '',
+			display_name_for_form text not null default '',
+			observation_required_in_panel text not null default '',
+			entry_type text not null default '',
+			data_type_in_form text not null default '',
+			answer_list_id_override text references answer_lists(answer_list_id),
+			primary key(parent_loinc_num, sequence, child_loinc_num, item_id)
+		) without rowid`,
+		`create table parent_groups (
+			parent_group_id text primary key,
+			parent_group text not null default '',
+			status text not null default ''
+		) without rowid`,
+		`create table loinc_groups (
+			group_id text primary key,
+			parent_group_id text not null references parent_groups(parent_group_id),
+			group_name text not null default '',
+			archetype text not null default '',
+			status text not null default '',
+			version_first_released text not null default ''
+		) without rowid`,
+		`create table group_loinc_terms (
+			group_id text not null references loinc_groups(group_id),
+			loinc_num text not null references loinc_terms(loinc_num),
+			category text not null default '',
+			archetype text not null default '',
+			long_common_name text not null default '',
+			primary key(group_id, loinc_num)
+		) without rowid`,
+		`create table hierarchy_concepts (
+			code text primary key,
+			label text not null default '',
+			node_kind text not null default 'hierarchy_only',
+			loinc_num text references loinc_terms(loinc_num),
+			part_number text references parts(part_number)
+		) without rowid`,
+		`create table hierarchy_occurrences (
+			node_id integer primary key autoincrement,
+			code text not null references hierarchy_concepts(code),
+			parent_node_id integer references hierarchy_occurrences(node_id),
+			path_key text not null,
+			occurrence_ordinal integer not null default 1,
+			path_to_root text not null default '',
+			sequence integer not null default 0,
+			depth integer not null default 0,
+			direct_term_count integer not null default 0,
+			subtree_term_count integer not null default 0,
+			unique(path_key, occurrence_ordinal)
 		)`,
+		`create table hierarchy_edges (
+			parent_node_id integer not null references hierarchy_occurrences(node_id),
+			child_node_id integer not null references hierarchy_occurrences(node_id),
+			sequence integer not null default 0,
+			primary key(parent_node_id, child_node_id)
+		) without rowid`,
+		`create table hierarchy_closure (
+			ancestor_node_id integer not null references hierarchy_occurrences(node_id),
+			descendant_node_id integer not null references hierarchy_occurrences(node_id),
+			depth integer not null,
+			primary key(ancestor_node_id, descendant_node_id)
+		) without rowid`,
+		`create index idx_hierarchy_closure_descendant on hierarchy_closure(descendant_node_id, ancestor_node_id)`,
+		`create table hierarchy_subtree_terms (
+			node_id integer not null references hierarchy_occurrences(node_id),
+			loinc_num text not null references loinc_terms(loinc_num),
+			descendant_node_id integer not null references hierarchy_occurrences(node_id),
+			distance integer not null,
+			primary key(node_id, distance, loinc_num, descendant_node_id)
+		) without rowid`,
 		`create table source_organizations (
 			id text primary key,
 			copyright_id text not null default '',
 			name text not null default '',
 			copyright text not null default '',
 			terms_of_use text not null default '',
-			url text not null default '',
-			raw_json text not null default '{}'
-		)`,
-		`create table term_accessories (
-			id integer primary key autoincrement,
-			kind text not null,
-			loinc_num text not null,
-			code text not null default '',
-			title text not null default '',
-			subtitle text not null default '',
-			raw_json text not null default '{}'
-		)`,
-		`create index idx_term_accessories_loinc_kind on term_accessories(loinc_num, kind)`,
-		`create index idx_term_accessories_kind_title on term_accessories(kind, title, code)`,
-		`create index idx_term_accessories_kind_code_loinc on term_accessories(kind, code, loinc_num)`,
-		`create index idx_term_accessories_kind_id on term_accessories(kind, id)`,
+			url text not null default ''
+		) without rowid`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("create schema: %w", err)
 		}
+	}
+	return nil
+}
+
+func finalizeIngestDatabase(ctx context.Context, db *sql.DB) error {
+	if err := createPostImportIndexes(ctx, db); err != nil {
+		return err
+	}
+	if err := validateForeignKeys(ctx, db); err != nil {
+		return err
+	}
+	statements := []string{
+		`pragma analysis_limit = 1000`,
+		`pragma optimize`,
+		`pragma foreign_keys = on`,
+		`pragma locking_mode = normal`,
+		`pragma journal_mode = wal`,
+		`pragma synchronous = normal`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("finalize ingest sqlite database %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
+func createPostImportIndexes(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`create index idx_loinc_class on loinc_terms(class)`,
+		`create index idx_loinc_status on loinc_terms(status)`,
+		`create index idx_loinc_system on loinc_terms(system)`,
+		`create index idx_loinc_scale on loinc_terms(scale)`,
+		`create index idx_loinc_property on loinc_terms(property)`,
+		`create index idx_loinc_order_obs on loinc_terms(order_obs)`,
+		`create index idx_loinc_common_test_rank on loinc_terms(common_test_rank, long_common_name, loinc_num) where common_test_rank > 0`,
+		`create index idx_loinc_common_order_rank on loinc_terms(common_order_rank, long_common_name, loinc_num) where common_order_rank > 0`,
+		`create index idx_loinc_part_links_part on loinc_part_links(part_number, link_set, loinc_num)`,
+		`create index idx_loinc_answer_list_links_list on loinc_answer_list_links(answer_list_id, loinc_num)`,
+		`create index idx_loinc_map_to_target on loinc_map_to(target_loinc_num)`,
+		`create index idx_panel_items_child on panel_items(child_loinc_num, parent_loinc_num)`,
+		`create index idx_group_loinc_terms_loinc on group_loinc_terms(loinc_num, group_id)`,
+		`create index idx_hierarchy_concepts_loinc on hierarchy_concepts(loinc_num)`,
+		`create index idx_hierarchy_concepts_part on hierarchy_concepts(part_number)`,
+		`create index idx_hierarchy_occurrences_parent on hierarchy_occurrences(parent_node_id, sequence)`,
+		`create index idx_hierarchy_occurrences_code on hierarchy_occurrences(code)`,
+		`create index idx_hierarchy_edges_child on hierarchy_edges(child_node_id, parent_node_id)`,
+		`create index idx_hierarchy_closure_ancestor on hierarchy_closure(ancestor_node_id, depth, descendant_node_id)`,
+		`create index idx_hierarchy_subtree_terms_loinc on hierarchy_subtree_terms(loinc_num, node_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create post-import index: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateForeignKeys(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `pragma foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("run foreign key check: %w", err)
+	}
+	defer rows.Close()
+	var problems []string
+	for rows.Next() {
+		var table string
+		var rowID any
+		var parent string
+		var fkID int
+		if err := rows.Scan(&table, &rowID, &parent, &fkID); err != nil {
+			return fmt.Errorf("scan foreign key check row: %w", err)
+		}
+		if len(problems) < 10 {
+			problems = append(problems, fmt.Sprintf("%s rowid=%v parent=%s fk=%d", table, rowID, parent, fkID))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate foreign key check rows: %w", err)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("foreign key check failed: %s", strings.Join(problems, "; "))
 	}
 	return nil
 }
@@ -199,8 +409,8 @@ func importLoincCSV(ctx context.Context, db *sql.DB, csvPath string) (int, error
 	termStmt, err := tx.PrepareContext(ctx, `insert into loinc_terms (
 		loinc_num, component, property, time_aspect, system, scale, method, class,
 		status, consumer_name, related_names, short_name, order_obs, long_common_name,
-		definition, display_name, common_test_rank, common_order_rank, raw_json
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		definition, display_name, common_test_rank, common_order_rank
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare term insert: %w", err)
 	}
@@ -229,10 +439,6 @@ func importLoincCSV(ctx context.Context, db *sql.DB, csvPath string) (int, error
 		if loincNum == "" {
 			continue
 		}
-		raw, err := json.Marshal(fields)
-		if err != nil {
-			return 0, fmt.Errorf("encode row %s: %w", loincNum, err)
-		}
 		values := normalizedValues(fields)
 		if _, err := termStmt.ExecContext(ctx,
 			loincNum,
@@ -253,7 +459,6 @@ func importLoincCSV(ctx context.Context, db *sql.DB, csvPath string) (int, error
 			values.DisplayName,
 			parseRank(fields["COMMON_TEST_RANK"]),
 			parseRank(fields["COMMON_ORDER_RANK"]),
-			string(raw),
 		); err != nil {
 			return 0, fmt.Errorf("insert term %s: %w", loincNum, err)
 		}
@@ -283,44 +488,36 @@ func importLoincCSV(ctx context.Context, db *sql.DB, csvPath string) (int, error
 	return count, nil
 }
 
-func importOptionalReleaseFiles(ctx context.Context, db *sql.DB, releaseDir string) error {
+func importRequiredReleaseFiles(ctx context.Context, db *sql.DB, releaseDir string) error {
 	importers := []struct {
 		path string
 		fn   func(context.Context, *sql.DB, string) error
 	}{
 		{filepath.Join(releaseDir, "LoincTable", "MapTo.csv"), importMapToCSV},
 		{filepath.Join(releaseDir, "LoincTable", "SourceOrganization.csv"), importSourceOrganizationCSV},
+		{filepath.Join(releaseDir, "AccessoryFiles", "PartFile", "Part.csv"), importPartCSV},
 		{filepath.Join(releaseDir, "AccessoryFiles", "PartFile", "LoincPartLink_Primary.csv"), func(ctx context.Context, db *sql.DB, path string) error {
-			return importTermAccessoryCSV(ctx, db, path, accessoryImportSpec{
-				Kind: "part-primary", LOINCColumn: "LoincNumber", CodeColumn: "PartNumber", TitleColumn: "PartName",
-				SubtitleColumns: []string{"PartTypeName", "LinkTypeName"},
-			})
+			return importPartLinkCSV(ctx, db, path, "primary")
 		}},
 		{filepath.Join(releaseDir, "AccessoryFiles", "PartFile", "LoincPartLink_Supplementary.csv"), func(ctx context.Context, db *sql.DB, path string) error {
-			return importTermAccessoryCSV(ctx, db, path, accessoryImportSpec{
-				Kind: "part-supplementary", LOINCColumn: "LoincNumber", CodeColumn: "PartNumber", TitleColumn: "PartName",
-				SubtitleColumns: []string{"PartTypeName", "LinkTypeName"},
-			})
+			return importPartLinkCSV(ctx, db, path, "supplementary")
 		}},
+		{filepath.Join(releaseDir, "AccessoryFiles", "AnswerFile", "AnswerList.csv"), importAnswerListCSV},
 		{filepath.Join(releaseDir, "AccessoryFiles", "AnswerFile", "LoincAnswerListLink.csv"), func(ctx context.Context, db *sql.DB, path string) error {
-			return importTermAccessoryCSV(ctx, db, path, accessoryImportSpec{
-				Kind: "answer-list", LOINCColumn: "LoincNumber", CodeColumn: "AnswerListId", TitleColumn: "AnswerListName",
-				SubtitleColumns: []string{"AnswerListLinkType", "ApplicableContext"},
-			})
+			return importAnswerListLinkCSV(ctx, db, path)
 		}},
 		{filepath.Join(releaseDir, "AccessoryFiles", "PanelsAndForms", "PanelsAndForms.csv"), importPanelsAndFormsCSV},
+		{filepath.Join(releaseDir, "AccessoryFiles", "GroupFile", "ParentGroup.csv"), importParentGroupCSV},
+		{filepath.Join(releaseDir, "AccessoryFiles", "GroupFile", "Group.csv"), importGroupCSV},
 		{filepath.Join(releaseDir, "AccessoryFiles", "GroupFile", "GroupLoincTerms.csv"), func(ctx context.Context, db *sql.DB, path string) error {
-			return importTermAccessoryCSV(ctx, db, path, accessoryImportSpec{
-				Kind: "group", LOINCColumn: "LoincNumber", CodeColumn: "GroupId", TitleColumn: "LongCommonName",
-				SubtitleColumns: []string{"Category", "Archetype"},
-			})
+			return importGroupLoincTermsCSV(ctx, db, path)
 		}},
 		{filepath.Join(releaseDir, "AccessoryFiles", "ComponentHierarchyBySystem", "ComponentHierarchyBySystem.csv"), importHierarchyCSV},
 	}
 	for _, importer := range importers {
 		if _, err := os.Stat(importer.path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				continue
+				return fmt.Errorf("required release file %s is missing", importer.path)
 			}
 			return err
 		}
@@ -337,7 +534,7 @@ func importMapToCSV(ctx context.Context, db *sql.DB, csvPath string) error {
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `insert or ignore into map_to(loinc_num, map_to, comment) values (?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into loinc_map_to(loinc_num, target_loinc_num, comment) values (?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -349,9 +546,175 @@ func importMapToCSV(ctx context.Context, db *sql.DB, csvPath string) error {
 		if loincNum == "" || mapTo == "" {
 			return nil
 		}
-		_, err := stmt.ExecContext(ctx, loincNum, mapTo, fields["COMMENT"])
-		if err != nil {
+		if _, err := stmt.ExecContext(ctx, loincNum, mapTo, fields["COMMENT"]); err != nil {
 			return fmt.Errorf("insert MapTo %s -> %s: %w", loincNum, mapTo, err)
+		}
+		return nil
+	}, tx)
+}
+
+func importPartCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or replace into parts(
+		part_number, part_type_name, part_name, part_display_name, status
+	) values (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		partNumber := strings.TrimSpace(fields["PartNumber"])
+		if partNumber == "" {
+			return nil
+		}
+		if _, err := stmt.ExecContext(ctx,
+			partNumber,
+			fields["PartTypeName"],
+			fields["PartName"],
+			fields["PartDisplayName"],
+			fields["Status"],
+		); err != nil {
+			return fmt.Errorf("insert part %s: %w", partNumber, err)
+		}
+		return nil
+	}, tx)
+}
+
+func importPartLinkCSV(ctx context.Context, db *sql.DB, csvPath string, linkSet string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into loinc_part_links(
+		loinc_num, part_number, link_set, part_name, part_code_system, part_type_name, link_type_name, property
+	) values (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		loincNum := strings.TrimSpace(fields["LoincNumber"])
+		partNumber := strings.TrimSpace(fields["PartNumber"])
+		if loincNum == "" || partNumber == "" {
+			return nil
+		}
+		if _, err := stmt.ExecContext(ctx,
+			loincNum,
+			partNumber,
+			linkSet,
+			fields["PartName"],
+			fields["PartCodeSystem"],
+			fields["PartTypeName"],
+			fields["LinkTypeName"],
+			fields["Property"],
+		); err != nil {
+			return fmt.Errorf("insert normalized %s part link %s -> %s: %w", linkSet, loincNum, partNumber, err)
+		}
+		return nil
+	}, tx)
+}
+
+func importAnswerListCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	listStmt, err := tx.PrepareContext(ctx, `insert into answer_lists(
+		answer_list_id, answer_list_name, answer_list_oid, ext_defined_yn,
+		ext_defined_answer_list_code_system, ext_defined_answer_list_link
+	) values (?, ?, ?, ?, ?, ?)
+	on conflict(answer_list_id) do update set
+		answer_list_name = excluded.answer_list_name,
+		answer_list_oid = excluded.answer_list_oid,
+		ext_defined_yn = excluded.ext_defined_yn,
+		ext_defined_answer_list_code_system = excluded.ext_defined_answer_list_code_system,
+		ext_defined_answer_list_link = excluded.ext_defined_answer_list_link`)
+	if err != nil {
+		return err
+	}
+	defer listStmt.Close()
+	answerStmt, err := tx.PrepareContext(ctx, `insert or ignore into answer_list_answers(
+		answer_list_id, answer_string_id, local_answer_code, local_answer_code_system,
+		sequence_number, display_text, ext_code_id, ext_code_display_name, ext_code_system,
+		ext_code_system_version, subsequent_text_prompt, description, score
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer answerStmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		answerListID := strings.TrimSpace(fields["AnswerListId"])
+		if answerListID == "" {
+			return nil
+		}
+		if _, err := listStmt.ExecContext(ctx,
+			answerListID,
+			fields["AnswerListName"],
+			fields["AnswerListOID"],
+			fields["ExtDefinedYN"],
+			fields["ExtDefinedAnswerListCodeSystem"],
+			fields["ExtDefinedAnswerListLink"],
+		); err != nil {
+			return fmt.Errorf("insert answer list %s: %w", answerListID, err)
+		}
+		if _, err := answerStmt.ExecContext(ctx,
+			answerListID,
+			fields["AnswerStringId"],
+			fields["LocalAnswerCode"],
+			fields["LocalAnswerCodeSystem"],
+			parseRank(fields["SequenceNumber"]),
+			fields["DisplayText"],
+			fields["ExtCodeId"],
+			fields["ExtCodeDisplayName"],
+			fields["ExtCodeSystem"],
+			fields["ExtCodeSystemVersion"],
+			fields["SubsequentTextPrompt"],
+			fields["Description"],
+			fields["Score"],
+		); err != nil {
+			return fmt.Errorf("insert answer list answer %s/%s: %w", answerListID, fields["AnswerStringId"], err)
+		}
+		return nil
+	}, tx)
+}
+
+func importAnswerListLinkCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into loinc_answer_list_links(
+		loinc_num, answer_list_id, answer_list_name, answer_list_link_type, applicable_context
+	) values (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		loincNum := strings.TrimSpace(fields["LoincNumber"])
+		answerListID := strings.TrimSpace(fields["AnswerListId"])
+		if loincNum == "" || answerListID == "" {
+			return nil
+		}
+		if _, err := stmt.ExecContext(ctx,
+			loincNum,
+			answerListID,
+			fields["AnswerListName"],
+			fields["AnswerListLinkType"],
+			fields["ApplicableContext"],
+		); err != nil {
+			return fmt.Errorf("insert normalized answer list link %s -> %s: %w", loincNum, answerListID, err)
 		}
 		return nil
 	}, tx)
@@ -364,20 +727,16 @@ func importSourceOrganizationCSV(ctx context.Context, db *sql.DB, csvPath string
 	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `insert or replace into source_organizations(
-		id, copyright_id, name, copyright, terms_of_use, url, raw_json
-	) values (?, ?, ?, ?, ?, ?, ?)`)
+		id, copyright_id, name, copyright, terms_of_use, url
+	) values (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	return readCSVRows(csvPath, func(header []string, record []string) error {
 		fields := recordMap(header, record)
-		raw, err := json.Marshal(fields)
-		if err != nil {
-			return err
-		}
 		_, err = stmt.ExecContext(ctx,
-			fields["ID"], fields["COPYRIGHT_ID"], fields["NAME"], fields["COPYRIGHT"], fields["TERMS_OF_USE"], fields["URL"], string(raw),
+			fields["ID"], fields["COPYRIGHT_ID"], fields["NAME"], fields["COPYRIGHT"], fields["TERMS_OF_USE"], fields["URL"],
 		)
 		if err != nil {
 			return fmt.Errorf("insert source organization %s: %w", fields["ID"], err)
@@ -386,95 +745,426 @@ func importSourceOrganizationCSV(ctx context.Context, db *sql.DB, csvPath string
 	}, tx)
 }
 
-type accessoryImportSpec struct {
-	Kind            string
-	LOINCColumn     string
-	CodeColumn      string
-	TitleColumn     string
-	SubtitleColumns []string
-}
-
-func importTermAccessoryCSV(ctx context.Context, db *sql.DB, csvPath string, spec accessoryImportSpec) error {
-	tx, stmt, err := prepareTermAccessoryImport(ctx, db)
+func importPanelsAndFormsCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into panel_items(
+		parent_loinc_num, child_loinc_num, parent_id, item_id, sequence, parent_name, child_name,
+		display_name_for_form, observation_required_in_panel, entry_type, data_type_in_form,
+		answer_list_id_override
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
 	defer stmt.Close()
 	return readCSVRows(csvPath, func(header []string, record []string) error {
 		fields := recordMap(header, record)
-		return insertTermAccessory(ctx, stmt, spec.Kind, fields[spec.LOINCColumn], fields[spec.CodeColumn], fields[spec.TitleColumn], joinFields(fields, spec.SubtitleColumns), fields)
+		parent := strings.TrimSpace(fields["ParentLoinc"])
+		child := strings.TrimSpace(fields["Loinc"])
+		if parent != "" && child != "" && parent != child {
+			if _, err := stmt.ExecContext(ctx,
+				parent,
+				child,
+				fields["ParentId"],
+				fields["ID"],
+				parseRank(fields["SEQUENCE"]),
+				fields["ParentName"],
+				fields["LoincName"],
+				fields["DisplayNameForForm"],
+				fields["ObservationRequiredInPanel"],
+				fields["EntryType"],
+				fields["DataTypeInForm"],
+				nullableString(fields["AnswerListIdOverride"]),
+			); err != nil {
+				return fmt.Errorf("insert normalized panel item %s -> %s: %w", parent, child, err)
+			}
+		}
+		return nil
 	}, tx)
 }
 
-func importPanelsAndFormsCSV(ctx context.Context, db *sql.DB, csvPath string) error {
-	tx, stmt, err := prepareTermAccessoryImport(ctx, db)
+func importParentGroupCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or replace into parent_groups(parent_group_id, parent_group, status) values (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
 	defer stmt.Close()
 	return readCSVRows(csvPath, func(header []string, record []string) error {
 		fields := recordMap(header, record)
-		parent := fields["ParentLoinc"]
-		child := fields["Loinc"]
-		if child != "" {
-			if err := insertTermAccessory(ctx, stmt, "panel-membership", child, parent, fields["ParentName"], "Parent panel", fields); err != nil {
-				return err
-			}
+		parentGroupID := strings.TrimSpace(fields["ParentGroupId"])
+		if parentGroupID == "" {
+			return nil
 		}
-		if parent != "" && child != "" && parent != child {
-			if err := insertTermAccessory(ctx, stmt, "panel-child", parent, child, fields["LoincName"], joinFields(fields, []string{"SEQUENCE", "ObservationRequiredInPanel", "EntryType"}), fields); err != nil {
-				return err
-			}
+		if _, err := stmt.ExecContext(ctx, parentGroupID, fields["ParentGroup"], fields["Status"]); err != nil {
+			return fmt.Errorf("insert parent group %s: %w", parentGroupID, err)
+		}
+		return nil
+	}, tx)
+}
+
+func importGroupCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or replace into loinc_groups(
+		group_id, parent_group_id, group_name, archetype, status, version_first_released
+	) values (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		groupID := strings.TrimSpace(fields["GroupId"])
+		if groupID == "" {
+			return nil
+		}
+		if _, err := stmt.ExecContext(ctx,
+			groupID,
+			fields["ParentGroupId"],
+			fields["Group"],
+			fields["Archetype"],
+			fields["Status"],
+			fields["VersionFirstReleased"],
+		); err != nil {
+			return fmt.Errorf("insert group %s: %w", groupID, err)
+		}
+		return nil
+	}, tx)
+}
+
+func importGroupLoincTermsCSV(ctx context.Context, db *sql.DB, csvPath string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into group_loinc_terms(
+		group_id, loinc_num, category, archetype, long_common_name
+	) values (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	return readCSVRows(csvPath, func(header []string, record []string) error {
+		fields := recordMap(header, record)
+		loincNum := strings.TrimSpace(fields["LoincNumber"])
+		groupID := strings.TrimSpace(fields["GroupId"])
+		if loincNum == "" || groupID == "" {
+			return nil
+		}
+		if _, err := stmt.ExecContext(ctx,
+			groupID,
+			loincNum,
+			fields["Category"],
+			fields["Archetype"],
+			fields["LongCommonName"],
+		); err != nil {
+			return fmt.Errorf("insert normalized group term %s -> %s: %w", groupID, loincNum, err)
 		}
 		return nil
 	}, tx)
 }
 
 func importHierarchyCSV(ctx context.Context, db *sql.DB, csvPath string) error {
-	tx, stmt, err := prepareTermAccessoryImport(ctx, db)
+	file, err := os.Open(csvPath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", filepath.Base(csvPath), err)
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("read %s header: %w", filepath.Base(csvPath), err)
+	}
+	var hierarchyRows []hierarchyCSVRow
+	for row := 2; ; row++ {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read %s row %d: %w", filepath.Base(csvPath), row, err)
+		}
+		fields := recordMap(header, record)
+		code := strings.TrimSpace(fields["CODE"])
+		if code == "" {
+			continue
+		}
+		pathToRoot := strings.TrimSpace(fields["PATH_TO_ROOT"])
+		pathKey := code
+		if pathToRoot != "" {
+			pathKey = pathToRoot + "." + code
+		}
+		hierarchyRows = append(hierarchyRows, hierarchyCSVRow{
+			code:          code,
+			label:         fields["CODE_TEXT"],
+			pathToRoot:    pathToRoot,
+			pathKey:       pathKey,
+			parentPathKey: pathToRoot,
+			sequence:      parseRank(fields["SEQUENCE"]),
+			depth:         hierarchyPathDepth(pathKey),
+		})
+	}
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	defer stmt.Close()
-	return readCSVRows(csvPath, func(header []string, record []string) error {
-		fields := recordMap(header, record)
-		code := fields["CODE"]
-		if !loincNumberRegexp.MatchString(code) {
-			return nil
-		}
-		return insertTermAccessory(ctx, stmt, "hierarchy", code, fields["IMMEDIATE_PARENT"], fields["CODE_TEXT"], fields["PATH_TO_ROOT"], fields)
-	}, tx)
+	if err := importNormalizedHierarchyRows(ctx, tx, hierarchyRows); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-func prepareTermAccessoryImport(ctx context.Context, db *sql.DB) (*sql.Tx, *sql.Stmt, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	stmt, err := tx.PrepareContext(ctx, `insert into term_accessories(kind, loinc_num, code, title, subtitle, raw_json) values (?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		_ = tx.Rollback()
-		return nil, nil, err
-	}
-	return tx, stmt, nil
+type hierarchyCSVRow struct {
+	code          string
+	label         string
+	pathToRoot    string
+	pathKey       string
+	parentPathKey string
+	ordinal       int
+	sequence      int
+	depth         int
 }
 
-func insertTermAccessory(ctx context.Context, stmt *sql.Stmt, kind string, loincNum string, code string, title string, subtitle string, fields map[string]string) error {
-	if strings.TrimSpace(loincNum) == "" {
+func importNormalizedHierarchyRows(ctx context.Context, tx *sql.Tx, rows []hierarchyCSVRow) error {
+	if len(rows) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(fields)
+	termCodes, err := loadKeySet(ctx, tx, `select loinc_num from loinc_terms`)
+	if err != nil {
+		return fmt.Errorf("load LOINC term keys for hierarchy: %w", err)
+	}
+	partCodes, err := loadKeySet(ctx, tx, `select part_number from parts`)
+	if err != nil {
+		return fmt.Errorf("load part keys for hierarchy: %w", err)
+	}
+	pathCounts := map[string]int{}
+	for i := range rows {
+		pathCounts[rows[i].pathKey]++
+		rows[i].ordinal = pathCounts[rows[i].pathKey]
+	}
+
+	conceptRows := make(map[string]hierarchyCSVRow)
+	for _, row := range rows {
+		if existing, ok := conceptRows[row.code]; ok && existing.label != "" {
+			continue
+		}
+		conceptRows[row.code] = row
+	}
+	conceptCodes := make([]string, 0, len(conceptRows))
+	for code := range conceptRows {
+		conceptCodes = append(conceptCodes, code)
+	}
+	sort.Strings(conceptCodes)
+
+	conceptStmt, err := tx.PrepareContext(ctx, `insert or replace into hierarchy_concepts(
+		code, label, node_kind, loinc_num, part_number
+	) values (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
-	_, err = stmt.ExecContext(ctx, kind, loincNum, code, title, subtitle, string(raw))
+	defer conceptStmt.Close()
+	for _, code := range conceptCodes {
+		row := conceptRows[code]
+		nodeKind := "hierarchy_only"
+		var loincNum any
+		var partNumber any
+		if termCodes[code] {
+			nodeKind = "term"
+			loincNum = code
+		} else if partCodes[code] {
+			nodeKind = "part"
+			partNumber = code
+		}
+		if _, err := conceptStmt.ExecContext(ctx, code, row.label, nodeKind, loincNum, partNumber); err != nil {
+			return fmt.Errorf("insert hierarchy concept %s: %w", code, err)
+		}
+	}
+
+	occurrenceStmt, err := tx.PrepareContext(ctx, `insert into hierarchy_occurrences(
+		code, parent_node_id, path_key, occurrence_ordinal, path_to_root, sequence, depth
+	) values (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("insert %s accessory for %s: %w", kind, loincNum, err)
+		return err
+	}
+	defer occurrenceStmt.Close()
+
+	pathToFirstNodeID := map[string]int64{}
+	nodeIDByRow := make([]int64, len(rows))
+	for i, row := range rows {
+		var parentNodeID any
+		if row.parentPathKey != "" {
+			if id, ok := pathToFirstNodeID[row.parentPathKey]; ok {
+				parentNodeID = id
+			}
+		}
+		result, err := occurrenceStmt.ExecContext(ctx,
+			row.code,
+			parentNodeID,
+			row.pathKey,
+			row.ordinal,
+			row.pathToRoot,
+			row.sequence,
+			row.depth,
+		)
+		if err != nil {
+			return fmt.Errorf("insert hierarchy occurrence %s: %w", row.pathKey, err)
+		}
+		nodeID, err := result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("read hierarchy occurrence id %s: %w", row.pathKey, err)
+		}
+		nodeIDByRow[i] = nodeID
+		if _, ok := pathToFirstNodeID[row.pathKey]; !ok {
+			pathToFirstNodeID[row.pathKey] = nodeID
+		}
+	}
+
+	edgeStmt, err := tx.PrepareContext(ctx, `insert or ignore into hierarchy_edges(parent_node_id, child_node_id, sequence) values (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer edgeStmt.Close()
+	for i, row := range rows {
+		if row.parentPathKey == "" {
+			continue
+		}
+		parentNodeID, ok := pathToFirstNodeID[row.parentPathKey]
+		if !ok {
+			continue
+		}
+		if _, err := edgeStmt.ExecContext(ctx, parentNodeID, nodeIDByRow[i], row.sequence); err != nil {
+			return fmt.Errorf("insert hierarchy edge %s -> %s: %w", row.parentPathKey, row.pathKey, err)
+		}
+	}
+
+	if err := buildHierarchyClosure(ctx, tx); err != nil {
+		return err
+	}
+	if err := buildHierarchySubtreeTerms(ctx, tx); err != nil {
+		return err
+	}
+	return updateHierarchyCounts(ctx, tx)
+}
+
+func buildHierarchyClosure(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `insert or ignore into hierarchy_closure(ancestor_node_id, descendant_node_id, depth)
+		select node_id, node_id, 0 from hierarchy_occurrences`); err != nil {
+		return fmt.Errorf("insert hierarchy self closure: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `select node_id, parent_node_id from hierarchy_occurrences where parent_node_id is not null order by depth, sequence, node_id`)
+	if err != nil {
+		return fmt.Errorf("load hierarchy parent links: %w", err)
+	}
+	defer rows.Close()
+
+	type edge struct {
+		child  int64
+		parent int64
+	}
+	var edges []edge
+	for rows.Next() {
+		var item edge
+		if err := rows.Scan(&item.child, &item.parent); err != nil {
+			return fmt.Errorf("scan hierarchy parent link: %w", err)
+		}
+		edges = append(edges, item)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hierarchy parent links: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into hierarchy_closure(ancestor_node_id, descendant_node_id, depth)
+		select ancestor_node_id, ?, depth + 1 from hierarchy_closure where descendant_node_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, item := range edges {
+		if _, err := stmt.ExecContext(ctx, item.child, item.parent); err != nil {
+			return fmt.Errorf("insert hierarchy closure for node %d: %w", item.child, err)
+		}
 	}
 	return nil
+}
+
+func buildHierarchySubtreeTerms(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `insert or ignore into hierarchy_subtree_terms(node_id, loinc_num, descendant_node_id, distance)
+		select c.ancestor_node_id, hc.loinc_num, c.descendant_node_id, c.depth
+		from hierarchy_closure c
+		join hierarchy_occurrences ho on ho.node_id = c.descendant_node_id
+		join hierarchy_concepts hc on hc.code = ho.code
+		where hc.node_kind = 'term' and hc.loinc_num is not null`); err != nil {
+		return fmt.Errorf("insert hierarchy subtree terms: %w", err)
+	}
+	return nil
+}
+
+func updateHierarchyCounts(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `update hierarchy_occurrences
+		set direct_term_count = (
+			select count(*)
+			from hierarchy_edges e
+			join hierarchy_occurrences child on child.node_id = e.child_node_id
+			join hierarchy_concepts concept on concept.code = child.code
+			where e.parent_node_id = hierarchy_occurrences.node_id
+				and concept.node_kind = 'term'
+		),
+		subtree_term_count = (
+			select count(distinct loinc_num)
+			from hierarchy_subtree_terms
+			where node_id = hierarchy_occurrences.node_id
+		)`); err != nil {
+		return fmt.Errorf("update hierarchy counts: %w", err)
+	}
+	return nil
+}
+
+func loadKeySet(ctx context.Context, tx *sql.Tx, query string) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		out[value] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func hierarchyPathDepth(pathKey string) int {
+	if strings.TrimSpace(pathKey) == "" {
+		return 0
+	}
+	return strings.Count(pathKey, ".")
+}
+
+func nullableString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func readCSVRows(csvPath string, visit func(header []string, record []string) error, tx *sql.Tx) error {
@@ -502,17 +1192,6 @@ func readCSVRows(csvPath string, visit func(header []string, record []string) er
 		}
 	}
 	return tx.Commit()
-}
-
-func joinFields(fields map[string]string, names []string) string {
-	var parts []string
-	for _, name := range names {
-		value := strings.TrimSpace(fields[name])
-		if value != "" {
-			parts = append(parts, value)
-		}
-	}
-	return strings.Join(parts, " / ")
 }
 
 type normalizedTermValues struct {

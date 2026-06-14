@@ -16,15 +16,21 @@
 		label: string;
 		value: string;
 		count: number;
+		totalCount: number;
+		selectable: boolean;
 		children: FacetNode[];
 	};
 
 	let expanded = true;
 	let facetQuery = '';
 	let page = 0;
+	let lastEntries: [string, number][] | null = null;
+	let cachedTree: FacetNode[] = [];
+	let expandedKeys = new Set<string>();
 
 	$: normalizedQuery = facetQuery.trim().toLowerCase();
-	$: tree = buildTree(entries);
+	$: tree = cachedBuildTree(entries);
+	$: ensureActiveExpansion(active, tree);
 	$: filteredTree = normalizedQuery ? filterTree(tree, normalizedQuery) : tree;
 	$: pageCount = Math.max(1, Math.ceil(filteredTree.length / pageSize));
 	$: if (page > pageCount - 1) page = pageCount - 1;
@@ -35,10 +41,23 @@
 		page = 0;
 	}
 
+	function cachedBuildTree(values: [string, number][]) {
+		if (values === lastEntries) return cachedTree;
+		lastEntries = values;
+		cachedTree = buildTree(values);
+		return cachedTree;
+	}
+
 	function splitFacet(value: string) {
 		if (value.includes('>')) return value.split('>').map((part) => part.trim()).filter(Boolean);
 		if (value.includes('.')) return value.split('.').map((part) => part.trim()).filter(Boolean);
 		return [value];
+	}
+
+	function delimiterFor(value: string) {
+		if (value.includes('>')) return '>';
+		if (value.includes('.')) return '.';
+		return '';
 	}
 
 	function buildTree(values: [string, number][]) {
@@ -47,26 +66,43 @@
 
 		for (const [value, count] of values) {
 			const parts = splitFacet(value);
+			const delimiter = delimiterFor(value);
 			let path = '';
 			let siblings = roots;
 
 			for (let index = 0; index < parts.length; index += 1) {
-				path = path ? `${path}${value.includes('>') ? '>' : '.'}${parts[index]}` : parts[index];
+				path = path && delimiter ? `${path}${delimiter}${parts[index]}` : parts[index];
 				let node = byKey.get(path);
 				if (!node) {
-					node = { key: path, label: parts[index], value: path, count: 0, children: [] };
+					node = { key: path, label: parts[index], value: path, count: 0, totalCount: 0, selectable: false, children: [] };
 					byKey.set(path, node);
 					siblings.push(node);
 				}
 				if (index === parts.length - 1) {
 					node.value = value;
 					node.count = count;
+					node.selectable = count > 0;
 				}
 				siblings = node.children;
 			}
 		}
 
+		for (const node of roots) calculateTotals(node);
+		sortNodes(roots);
 		return roots;
+	}
+
+	function calculateTotals(node: FacetNode) {
+		node.totalCount = node.count + node.children.reduce((total, child) => total + calculateTotals(child), 0);
+		return node.totalCount;
+	}
+
+	function sortNodes(nodes: FacetNode[]) {
+		nodes.sort((left, right) => {
+			if (right.totalCount !== left.totalCount) return right.totalCount - left.totalCount;
+			return left.label.localeCompare(right.label);
+		});
+		for (const node of nodes) sortNodes(node.children);
 	}
 
 	function filterTree(nodes: FacetNode[], needle: string): FacetNode[] {
@@ -81,51 +117,95 @@
 			.filter((node): node is FacetNode => node !== null);
 	}
 
+	function ensureActiveExpansion(value: string, nodes: FacetNode[]) {
+		if (!value || nodes.length === 0) return;
+		const path = findPath(nodes, value);
+		if (path.length === 0) return;
+		let changed = false;
+		const next = new Set(expandedKeys);
+		for (const key of path.slice(0, -1)) {
+			if (!next.has(key)) {
+				next.add(key);
+				changed = true;
+			}
+		}
+		if (changed) expandedKeys = next;
+	}
+
+	function findPath(nodes: FacetNode[], value: string, current: string[] = []): string[] {
+		for (const node of nodes) {
+			const nextPath = [...current, node.key];
+			if (node.value === value) return nextPath;
+			const childPath = findPath(node.children, value, nextPath);
+			if (childPath.length > 0) return childPath;
+		}
+		return [];
+	}
+
 	function isActivePath(node: FacetNode) {
 		return active === node.value || active.startsWith(`${node.value}>`) || active.startsWith(`${node.value}.`);
 	}
 
 	function isNodeExpanded(node: FacetNode) {
-		return normalizedQuery !== '' || isActivePath(node);
+		return normalizedQuery !== '' || expandedKeys.has(node.key) || isActivePath(node);
+	}
+
+	function toggleNode(node: FacetNode) {
+		const next = new Set(expandedKeys);
+		if (next.has(node.key)) {
+			next.delete(node.key);
+		} else {
+			next.add(node.key);
+		}
+		expandedKeys = next;
+	}
+
+	function pickNode(node: FacetNode) {
+		if (!node.selectable) return;
+		onPick(kind, node.value);
 	}
 </script>
 
 {#snippet facetNode(node: FacetNode, level = 0)}
 	<div>
 		{#if node.children.length > 0}
-			<details class="group" open={isNodeExpanded(node)}>
-				<summary
-					class="grid w-full cursor-pointer list-none grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-1 rounded-md hover:bg-zinc-50 [&::-webkit-details-marker]:hidden"
+			<div>
+				<div
+					class="grid w-full grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-1 rounded-md hover:bg-zinc-50"
 					style={`padding-left: ${level * 12}px`}
-					aria-label={`Toggle ${node.value}`}
 				>
-					<span class="mt-0.5 flex size-5 items-center justify-center rounded-sm text-zinc-500">
-						<ChevronRight size={13} class="group-open:hidden" />
-						<ChevronDown size={13} class="hidden group-open:block" />
-					</span>
-					<span title={node.value} class={`block min-w-0 rounded-md px-1.5 py-1 text-left text-xs leading-4 [overflow-wrap:anywhere] ${active === node.value ? 'bg-zinc-950 text-white' : 'text-zinc-700'}`}>{node.label}</span>
-					<span class={`pt-1 text-[11px] ${active === node.value ? 'text-zinc-200' : 'text-zinc-400'}`}>{node.count.toLocaleString()}</span>
-				</summary>
+					<button
+						type="button"
+						class="mt-0.5 flex size-5 items-center justify-center rounded-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
+						aria-expanded={isNodeExpanded(node)}
+						aria-label={`${isNodeExpanded(node) ? 'Collapse' : 'Expand'} ${node.value}`}
+						on:click={() => toggleNode(node)}
+					>
+						{#if isNodeExpanded(node)}
+							<ChevronDown size={13} />
+						{:else}
+							<ChevronRight size={13} />
+						{/if}
+					</button>
+					<button
+						type="button"
+						title={node.value}
+						disabled={!node.selectable}
+						class={`min-w-0 rounded-md px-1.5 py-1 text-left text-xs leading-4 transition [overflow-wrap:anywhere] disabled:cursor-default disabled:text-zinc-500 ${active === node.value ? 'bg-zinc-950 text-white' : node.selectable ? 'text-zinc-700 hover:bg-zinc-100' : 'text-zinc-500'}`}
+						on:click={() => pickNode(node)}
+					>
+						<span class="block">{node.label}</span>
+					</button>
+					<span class={`pt-1 text-[11px] ${active === node.value ? 'text-zinc-200' : 'text-zinc-400'}`}>{(node.count || node.totalCount).toLocaleString()}</span>
+				</div>
+				{#if isNodeExpanded(node)}
 				<div class="mt-1 flex flex-col gap-1">
-					{#if node.count > 0}
-						<div class="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-1" style={`padding-left: ${(level + 1) * 12}px`}>
-							<span class="mx-auto mt-3 h-px w-3 bg-zinc-200"></span>
-							<button
-								type="button"
-								title={node.value}
-								class={`min-w-0 rounded-md px-1.5 py-1 text-left text-xs leading-4 transition [overflow-wrap:anywhere] ${active === node.value ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
-								on:click={() => onPick(kind, node.value)}
-							>
-								<span class="block">All {node.label}</span>
-							</button>
-							<span class={`pt-1 text-[11px] ${active === node.value ? 'text-zinc-200' : 'text-zinc-400'}`}>{node.count.toLocaleString()}</span>
-						</div>
-					{/if}
 					{#each node.children as child}
 						{@render facetNode(child, level + 1)}
 					{/each}
 				</div>
-			</details>
+				{/if}
+			</div>
 		{:else}
 			<div class="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-1" style={`padding-left: ${level * 12}px`}>
 				<span class="mx-auto mt-3 h-px w-3 bg-zinc-200"></span>
@@ -133,7 +213,7 @@
 					type="button"
 					title={node.value}
 					class={`min-w-0 rounded-md px-1.5 py-1 text-left text-xs leading-4 transition [overflow-wrap:anywhere] ${active === node.value ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
-					on:click={() => onPick(kind, node.value)}
+					on:click={() => pickNode(node)}
 				>
 					<span class="block">{node.label}</span>
 				</button>
@@ -174,19 +254,17 @@
 				/>
 			</label>
 
-			{#key `${active}:${normalizedQuery}:${page}`}
-				<div class="mt-2 flex flex-col gap-1">
-					{#if visibleTree.length === 0}
-						<div class="rounded-md border border-dashed border-zinc-200 px-2 py-3 text-center text-[11px] text-zinc-500">
-							No matching facets
-						</div>
-					{:else}
-						{#each visibleTree as node}
-							{@render facetNode(node)}
-						{/each}
-					{/if}
-				</div>
-			{/key}
+			<div class="mt-2 flex flex-col gap-1">
+				{#if visibleTree.length === 0}
+					<div class="rounded-md border border-dashed border-zinc-200 px-2 py-3 text-center text-[11px] text-zinc-500">
+						No matching facets
+					</div>
+				{:else}
+					{#each visibleTree as node (node.key)}
+						{@render facetNode(node)}
+					{/each}
+				{/if}
+			</div>
 
 			<div class="mt-2 flex items-center justify-between gap-2 border-t border-zinc-100 pt-2">
 				<span class="text-[11px] text-zinc-500">{entries.length.toLocaleString()} values</span>

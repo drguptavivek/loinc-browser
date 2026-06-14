@@ -7,6 +7,7 @@
 	export let label: string;
 	export let options: [string, number][] = [];
 	export let selected: string[] = [];
+	export let emptyLabel = 'Any';
 	export let onToggle: (value: string) => void;
 	export let onClear: () => void;
 
@@ -14,7 +15,7 @@
 	let root: HTMLDivElement;
 
 	$: visibleOptions = options.slice(0, 60);
-	$: summary = selected.length === 0 ? 'Any' : selected.length === 1 ? selected[0] : `${selected.length} selected`;
+	$: summary = selected.length === 0 ? emptyLabel : selected.length === 1 ? selected[0] : `${selected.length} selected`;
 
 	onMount(() => {
 		const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -34,13 +35,13 @@
 <div class="relative" bind:this={root}>
 	<button
 		type="button"
-		class="flex h-9 min-w-36 items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-3 text-left text-xs text-zinc-700 hover:bg-zinc-50"
+		class="flex h-8 min-w-44 items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-2.5 text-left text-[11px] leading-4 text-zinc-700 hover:bg-zinc-50"
 		aria-expanded={open}
 		on:click={() => (open = !open)}
 	>
-		<span class="min-w-0">
-			<span class="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{label}</span>
-			<span class="block truncate">{summary}</span>
+		<span class="flex min-w-0 items-center gap-1.5">
+			<span class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{label}</span>
+			<span class="min-w-0 truncate text-zinc-800">{summary}</span>
 		</span>
 		<ChevronDown size={14} class="shrink-0 text-zinc-400" />
 	</button>

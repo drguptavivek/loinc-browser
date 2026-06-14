@@ -45,7 +45,7 @@ func run(args []string) error {
 func runIngest(args []string) error {
 	flags := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	releaseDir := flags.String("release", "", "path to local LOINC release directory")
-	dbPath := flags.String("db", "./data/loinc.sqlite", "path to generated SQLite database")
+	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func runServe(args []string) error {
 		return err
 	}
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	dbPath := flags.String("db", "./data/loinc.sqlite", "path to generated SQLite database")
+	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
 	addr := flags.String("addr", defaultServeAddr(), "HTTP listen address")
 	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
 	if err := flags.Parse(args); err != nil {
@@ -251,8 +251,8 @@ func usage() error {
 
 func usageText() string {
 	return `Usage:
-  loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc.sqlite
-  loinc-browser serve --db ./data/loinc.sqlite --addr :8080
+  loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc-normalized.sqlite
+  loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080
 
 Environment:
   LOINC_BROWSER_ADDR=:8080

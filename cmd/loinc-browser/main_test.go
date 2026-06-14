@@ -112,6 +112,7 @@ func testCLIReleaseZip(t *testing.T, loincNum string, longName string) []byte {
 		t.Fatalf("create zip csv: %v", err)
 	}
 	writeCLICSV(t, file, loincNum, longName)
+	writeCLIRequiredZipFiles(t, zipWriter)
 	if err := zipWriter.Close(); err != nil {
 		t.Fatalf("close zip: %v", err)
 	}
@@ -130,6 +131,7 @@ func writeCLIReleaseDir(t *testing.T, releaseDir string, loincNum string, longNa
 	}
 	defer file.Close()
 	writeCLICSV(t, file, loincNum, longName)
+	writeCLIRequiredReleaseFiles(t, releaseDir)
 }
 
 func writeCLICSV(t *testing.T, file io.Writer, loincNum string, longName string) {
@@ -160,6 +162,77 @@ func writeCLICSV(t *testing.T, file io.Writer, loincNum string, longName string)
 	}
 	if err := writer.Write(row); err != nil {
 		t.Fatalf("write csv row: %v", err)
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		t.Fatalf("flush csv: %v", err)
+	}
+}
+
+func writeCLIRequiredReleaseFiles(t *testing.T, releaseDir string) {
+	t.Helper()
+	writeFileCSV := func(rel string, header []string, rows [][]string) {
+		t.Helper()
+		path := filepath.Join(releaseDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create %s: %v", rel, err)
+		}
+		defer file.Close()
+		writeRowsCSV(t, file, header, rows)
+	}
+	for _, spec := range cliRequiredCSVSpecs() {
+		writeFileCSV(spec.path, spec.header, spec.rows)
+	}
+}
+
+func writeCLIRequiredZipFiles(t *testing.T, zipWriter *zip.Writer) {
+	t.Helper()
+	for _, spec := range cliRequiredCSVSpecs() {
+		file, err := zipWriter.Create(filepath.ToSlash(filepath.Join("Loinc_Test", spec.path)))
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", spec.path, err)
+		}
+		writeRowsCSV(t, file, spec.header, spec.rows)
+	}
+}
+
+type cliCSVSpec struct {
+	path   string
+	header []string
+	rows   [][]string
+}
+
+func cliRequiredCSVSpecs() []cliCSVSpec {
+	return []cliCSVSpec{
+		{path: "LoincTable/MapTo.csv", header: []string{"LOINC", "MAP_TO", "COMMENT"}},
+		{path: "LoincTable/SourceOrganization.csv", header: []string{"ID", "COPYRIGHT_ID", "NAME", "COPYRIGHT", "TERMS_OF_USE", "URL"}},
+		{path: "AccessoryFiles/PartFile/Part.csv", header: []string{"PartNumber", "PartTypeName", "PartName", "PartDisplayName", "Status"}},
+		{path: "AccessoryFiles/PartFile/LoincPartLink_Primary.csv", header: []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}},
+		{path: "AccessoryFiles/PartFile/LoincPartLink_Supplementary.csv", header: []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}},
+		{path: "AccessoryFiles/AnswerFile/AnswerList.csv", header: []string{"AnswerListId", "AnswerListName", "AnswerListOID", "ExtDefinedYN", "ExtDefinedAnswerListCodeSystem", "ExtDefinedAnswerListLink", "AnswerStringId", "LocalAnswerCode", "LocalAnswerCodeSystem", "SequenceNumber", "DisplayText", "ExtCodeId", "ExtCodeDisplayName", "ExtCodeSystem", "ExtCodeSystemVersion", "ExtCodeSystemCopyrightNotice", "SubsequentTextPrompt", "Description", "Score"}},
+		{path: "AccessoryFiles/AnswerFile/LoincAnswerListLink.csv", header: []string{"LoincNumber", "LongCommonName", "AnswerListId", "AnswerListName", "AnswerListLinkType", "ApplicableContext"}},
+		{path: "AccessoryFiles/PanelsAndForms/PanelsAndForms.csv", header: []string{"ParentId", "ParentLoinc", "ParentName", "ID", "SEQUENCE", "Loinc", "LoincName", "DisplayNameForForm", "ObservationRequiredInPanel", "ObservationIdInForm", "SkipLogicHelpText", "DefaultValue", "EntryType", "DataTypeInForm", "DataTypeSource", "AnswerSequenceOverride", "ConditionForInclusion", "AllowableAlternative", "ObservationCategory", "Context", "ConsistencyChecks", "RelevanceEquation", "CodingInstructions", "QuestionCardinality", "AnswerCardinality", "AnswerListIdOverride", "AnswerListTypeOverride", "EXTERNAL_COPYRIGHT_NOTICE", "AdditionalCopyright"}},
+		{path: "AccessoryFiles/GroupFile/ParentGroup.csv", header: []string{"ParentGroupId", "ParentGroup", "Status"}},
+		{path: "AccessoryFiles/GroupFile/Group.csv", header: []string{"ParentGroupId", "GroupId", "Group", "Archetype", "Status", "VersionFirstReleased"}},
+		{path: "AccessoryFiles/GroupFile/GroupLoincTerms.csv", header: []string{"Category", "GroupId", "Archetype", "LoincNumber", "LongCommonName"}},
+		{path: "AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv", header: []string{"PATH_TO_ROOT", "SEQUENCE", "IMMEDIATE_PARENT", "CODE", "CODE_TEXT"}},
+	}
+}
+
+func writeRowsCSV(t *testing.T, file io.Writer, header []string, rows [][]string) {
+	t.Helper()
+	writer := csv.NewWriter(file)
+	if err := writer.Write(header); err != nil {
+		t.Fatalf("write csv header: %v", err)
+	}
+	for _, row := range rows {
+		if err := writer.Write(row); err != nil {
+			t.Fatalf("write csv row: %v", err)
+		}
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {

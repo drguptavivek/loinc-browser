@@ -1,6 +1,6 @@
 # LOINC Browser ERD
 
-This document summarizes the relationship model in the LOINC release artifacts and how the browser currently stores those relationships.
+This document summarizes the relationship model in the LOINC release artifacts and how the browser stores and queries those relationships. The `/api/v1` routes read the normalized tables directly; relationship data is not copied into compatibility tables or raw JSON columns.
 
 ## LOINC Release Relationship Model
 
@@ -130,7 +130,7 @@ flowchart LR
 
 ## Current Browser Storage Model
 
-The browser currently keeps the main term table normalized enough for search and facets, and stores accessory relationships in a generic table keyed by `kind`.
+The browser now imports relationship data into normalized tables with foreign keys. `loinc_terms` remains the canonical term table and `loinc_terms_fts` remains the search index. Relationship data is no longer written into generic compatibility tables.
 
 ```mermaid
 erDiagram
@@ -144,7 +144,6 @@ erDiagram
         string method
         string class
         string status
-        string raw_json
     }
 
     loinc_terms_fts {
@@ -163,9 +162,46 @@ erDiagram
         string class
     }
 
-    map_to {
+    parts {
+        string part_number PK
+        string part_type_name
+        string part_name
+        string part_display_name
+        string status
+    }
+
+    loinc_part_links {
+        string loinc_num FK
+        string part_number FK
+        string link_set
+        string link_type_name
+        string property
+    }
+
+    answer_lists {
+        string answer_list_id PK
+        string answer_list_name
+        string answer_list_oid
+    }
+
+    answer_list_answers {
+        string answer_list_id FK
+        string answer_string_id
+        int sequence_number
+        string display_text
+        string score
+    }
+
+    loinc_answer_list_links {
+        string loinc_num FK
+        string answer_list_id FK
+        string answer_list_link_type
+        string applicable_context
+    }
+
+    loinc_map_to {
         string loinc_num
-        string map_to
+        string target_loinc_num
         string comment
     }
 
@@ -176,17 +212,65 @@ erDiagram
         string copyright
         string terms_of_use
         string url
-        string raw_json
     }
 
-    term_accessories {
-        int id PK
-        string kind
-        string loinc_num
+    panel_items {
+        string parent_loinc_num FK
+        string child_loinc_num FK
+        int sequence
+        string entry_type
+        string answer_list_id_override FK
+    }
+
+    parent_groups {
+        string parent_group_id PK
+        string parent_group
+        string status
+    }
+
+    loinc_groups {
+        string group_id PK
+        string parent_group_id FK
+        string group_name
+        string archetype
+        string status
+    }
+
+    group_loinc_terms {
+        string group_id FK
+        string loinc_num FK
+        string category
+        string archetype
+    }
+
+    hierarchy_concepts {
+        string code PK
+        string label
+        string node_kind
+        string loinc_num FK
+        string part_number FK
+    }
+
+    hierarchy_occurrences {
+        int node_id PK
         string code
-        string title
-        string subtitle
-        string raw_json
+        int parent_node_id FK
+        string path_key
+        int occurrence_ordinal
+        int subtree_term_count
+    }
+
+    hierarchy_closure {
+        int ancestor_node_id FK
+        int descendant_node_id FK
+        int depth
+    }
+
+    hierarchy_subtree_terms {
+        int node_id FK
+        string loinc_num FK
+        int descendant_node_id FK
+        int distance
     }
 
     import_meta {
@@ -195,27 +279,23 @@ erDiagram
     }
 
     loinc_terms ||--o{ loinc_terms_fts : "indexed by"
-    loinc_terms ||--o{ map_to : "replacement mappings"
-    loinc_terms ||--o{ term_accessories : "parts answers panels groups hierarchy"
+    loinc_terms ||--o{ loinc_map_to : "deprecated term"
+    loinc_terms ||--o{ loinc_map_to : "replacement target"
+    loinc_terms ||--o{ loinc_part_links : "has parts"
+    parts ||--o{ loinc_part_links : "used by terms"
+    loinc_terms ||--o{ loinc_answer_list_links : "uses answer list"
+    answer_lists ||--o{ loinc_answer_list_links : "linked from terms"
+    answer_lists ||--o{ answer_list_answers : "contains answers"
+    loinc_terms ||--o{ panel_items : "parent panel"
+    loinc_terms ||--o{ panel_items : "child observation"
+    parent_groups ||--o{ loinc_groups : "contains groups"
+    loinc_groups ||--o{ group_loinc_terms : "has members"
+    loinc_terms ||--o{ group_loinc_terms : "member term"
+    hierarchy_concepts ||--o{ hierarchy_occurrences : "appears at paths"
+    hierarchy_occurrences ||--o{ hierarchy_occurrences : "parent occurrence"
+    hierarchy_occurrences ||--o{ hierarchy_closure : "ancestor"
+    hierarchy_occurrences ||--o{ hierarchy_subtree_terms : "subtree terms"
+    loinc_terms ||--o{ hierarchy_subtree_terms : "descendant term"
 ```
 
-## `term_accessories.kind`
-
-Current values:
-
-- `part-primary`
-- `part-supplementary`
-- `answer-list`
-- `panel-membership`
-- `panel-child`
-- `group`
-- `hierarchy`
-
-This generic table lets the app ingest and browse relationship artifacts immediately. If a workflow becomes central, it can later be promoted into a dedicated normalized table, such as:
-
-- `loinc_part_links`
-- `loinc_answer_list_links`
-- `loinc_panel_links`
-- `loinc_group_members`
-- `loinc_hierarchy_nodes`
-
+Hierarchy codes are concept identifiers, not unique tree positions. The same code can appear in more than one branch, so `hierarchy_occurrences` stores path occurrences using `node_id`, `path_key`, and `occurrence_ordinal`; `hierarchy_concepts` stores the unique code identity. API hierarchy browsing and branch-scoped term queries use `node_id`.

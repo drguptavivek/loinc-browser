@@ -67,6 +67,24 @@ Windows PowerShell:
 \`\`\`
 
 Open http://localhost:8080 and upload your licensed LOINC release zip from the loader page.
+
+## License and attribution
+
+LOINC release files and generated databases are not included in this package. LOINC content remains governed by the LOINC Copyright Notice and License:
+
+https://loinc.org/kb/license/
+
+Required LOINC notice:
+
+This material contains content from LOINC (http://loinc.org). LOINC is Copyright © Regenstrief Institute, Inc. and the Logical Observation Identifiers Names and Codes (LOINC) Committee and is available at no cost under the license at http://loinc.org/license. LOINC® is a registered United States trademark of Regenstrief Institute, Inc.
+
+Project documentation and non-LOINC explanatory text may be reused with attribution under CC BY 4.0:
+
+https://creativecommons.org/licenses/by/4.0/
+
+Project source:
+
+https://github.com/drguptavivek/LOINC
 EOF
 
   archive_base="${DIST_DIR}/${APP_NAME}_${VERSION}_${goos}_${arch_label}"
