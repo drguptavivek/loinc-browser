@@ -6,6 +6,8 @@ Date: 2026-06-14
 
 Make the LOINC relationship graph and term drawer more useful to clinicians by organizing relationships around clinical tasks rather than exposing a generic network first.
 
+Clinical Relationship Lanes are the dominant default view. The existing broader relationship graph should be retained as an alternate exploration view for users who want the older network-oriented behavior.
+
 The priority order is:
 
 1. Order set and panel building.
@@ -125,6 +127,12 @@ Shared concepts remain collapsed by default under a broader related-terms area.
 
 The graph starts as a clinical map, not a dense free graph.
 
+Default mode:
+
+- Clinical Lanes is the default graph mode.
+- The older network-style graph remains available as an alternate view, labeled for exploration rather than clinical workflow.
+- Switching views should not discard the selected term or loaded relationship data.
+
 Default layout:
 
 - Parent containers above the selected term.
@@ -145,9 +153,18 @@ Interactions:
 - Clicking a hierarchy parent switches to hierarchy browsing while keeping the selected term visible in the drawer.
 - The drawer remains the readable source of truth; the graph is the visual summary.
 
+Alternate exploration view:
+
+- Preserve the current relationship graph behavior for broader concept discovery.
+- Keep shared concepts and non-lane relationships visible there.
+- Use this view for terminology exploration, debugging relationships, and cases where the clinical lane model is too narrow.
+- Do not make this the default view for clinicians.
+
 ## Drawer Behavior
 
 The drawer should be optimized for reading and clinical decision support.
+
+The drawer follows the Clinical Lanes model by default. If the alternate graph view is selected, the drawer may still show the same lane sections, with broader shared-concept sections available below them.
 
 Default order:
 
