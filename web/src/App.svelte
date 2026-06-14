@@ -26,6 +26,7 @@
 	import FilterChip from '$lib/components/FilterChip.svelte';
 	import HierarchyTree from '$lib/components/HierarchyTree.svelte';
 	import MultiSelectDropdown from '$lib/components/MultiSelectDropdown.svelte';
+	import ClinicalRelationshipLanes from '$lib/components/ClinicalRelationshipLanes.svelte';
 	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import type { PaneAPI } from 'paneforge';
@@ -103,6 +104,7 @@
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
 	let graphViewerOpen = false;
+	let relationshipViewMode: 'clinical' | 'explore' = 'clinical';
 	let graphVisibleConceptLimit = 8;
 	let facetsCollapsed = false;
 	let browsePane: PaneAPI | null = null;
@@ -322,12 +324,12 @@
 		}
 	}
 
-	async function runSearch(nextOffset = 0, replaceURL = false, switchToBrowse = true) {
+	async function runSearch(nextOffset = 0, replaceURL = false, switchToBrowse = true, preserveSelectedTerm = false) {
 		loading = true;
 		error = '';
 		if (switchToBrowse) activeView = 'browse';
 		offset = nextOffset;
-		if (nextOffset === 0 && selectedTerm) {
+		if (nextOffset === 0 && selectedTerm && !preserveSelectedTerm) {
 			selectedTerm = null;
 			relationshipGraph = null;
 			relationshipsLoaded = false;
@@ -364,6 +366,7 @@
 		termLoading = true;
 		detailOpen = true;
 		graphViewerOpen = false;
+		relationshipViewMode = 'clinical';
 		sharedConceptsOpen = false;
 		graphVisibleConceptLimit = 8;
 		relationshipGraph = null;
@@ -733,17 +736,24 @@
 	}
 
 	function hasRelationshipGraph(graph: TermRelationshipGraph | null) {
-		return Boolean(graph?.outgoingMapTo?.length || graph?.incomingMapTo?.length || graph?.sharedConcepts?.length);
+		return Boolean(
+			graph?.outgoingMapTo?.length ||
+				graph?.incomingMapTo?.length ||
+				graph?.sharedConcepts?.length ||
+				graph?.panelMemberships?.length ||
+				graph?.panelItems?.length ||
+				graph?.hierarchy?.length,
+		);
 	}
 
 	function accessorySections(term: Term): { title: string; kind: string; items: TermAccessory[] }[] {
 		const panelMemberships = (term.panels ?? []).filter((item) => item.kind === 'panel-membership');
 		const panelItems = dedupePanelItems((term.panels ?? []).filter((item) => item.kind === 'panel-child'));
 		return [
-			{ title: 'Parts', kind: 'part-primary', items: term.parts ?? [] },
-			{ title: 'Answer lists', kind: 'answer-list', items: term.answerLists ?? [] },
 			{ title: 'Parent panels / scales / orders', kind: 'panel-membership', items: panelMemberships },
 			{ title: panelItemsTitle(term), kind: 'panel-child', items: panelItems },
+			{ title: 'Parts', kind: 'part-primary', items: term.parts ?? [] },
+			{ title: 'Answer lists', kind: 'answer-list', items: term.answerLists ?? [] },
 			{ title: 'Groups', kind: 'group', items: term.groups ?? [] },
 			{ title: 'Hierarchy', kind: 'hierarchy', items: term.hierarchy ?? [] },
 		].filter((section) => section.items.length > 0);
@@ -754,6 +764,17 @@
 		if (text.includes('survey') || text.includes('questionnaire') || text.includes('phq')) return 'Scale / survey items';
 		if (term.orderObs?.toLowerCase() === 'order' || term.class?.toLowerCase().includes('panel')) return 'Panel observations';
 		return 'Panel children';
+	}
+
+	function clinicalRoleBadges(term: Term) {
+		const panels = term.panels ?? [];
+		const badges: string[] = [];
+		if (term.orderObs) badges.push(term.orderObs);
+		if (panels.some((item) => item.kind === 'panel-membership')) badges.push('Contained item');
+		if (panels.some((item) => item.kind === 'panel-child')) badges.push(panelItemsTitle(term).replace(/s$/, ''));
+		if (term.answerLists?.length) badges.push('Answer list');
+		if (`${term.class} ${term.method} ${term.longCommonName}`.toLowerCase().match(/survey|questionnaire|phq/)) badges.push('Survey');
+		return [...new Set(badges.filter(Boolean))];
 	}
 
 	function dedupePanelItems(items: TermAccessory[]) {
@@ -810,6 +831,16 @@
 		rankedOnly = false;
 		activeView = 'browse';
 		void runSearch(0, false, false);
+	}
+
+	function browseHierarchyFromRelationship(nodeId: string, label: string) {
+		query = '';
+		hierarchyNodeId = nodeId;
+		hierarchyLabel = label;
+		rankedOnly = false;
+		activeView = 'browse';
+		graphViewerOpen = false;
+		void runSearch(0, false, false, true);
 	}
 
 	async function loadHierarchyPath(nodeId: string) {
@@ -1641,7 +1672,21 @@
 
 							{#if relationshipsLoaded && hasAccessories(selectedTerm)}
 								<div class="flex flex-col gap-3">
-									<h4 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Relationships and accessories</h4>
+									<h4 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Clinical relationship lanes</h4>
+									<section class="rounded-md border border-zinc-200 p-3">
+										<div class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Clinical role</div>
+										<div class="mt-2 flex flex-wrap gap-1.5">
+											{#each clinicalRoleBadges(selectedTerm) as badge}
+												<span class="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">{badge}</span>
+											{/each}
+										</div>
+										<div class="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-600">
+											<div><span class="font-medium text-zinc-500">Class</span><br />{selectedTerm.class || '-'}</div>
+											<div><span class="font-medium text-zinc-500">System</span><br />{selectedTerm.system || '-'}</div>
+											<div><span class="font-medium text-zinc-500">Scale</span><br />{selectedTerm.scale || '-'}</div>
+											<div><span class="font-medium text-zinc-500">Method</span><br />{selectedTerm.method || '-'}</div>
+										</div>
+									</section>
 									{#if selectedTerm.mapTo?.length}
 										<section class="rounded-md border border-zinc-200">
 											<div class="border-b border-zinc-100 bg-zinc-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Maps to</div>
@@ -1769,25 +1814,54 @@
 			<section class="flex h-[94vh] w-full max-w-7xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-2xl" data-testid="relationship-graph-viewer">
 				<div class="flex items-center justify-between gap-4 border-b border-zinc-200 px-4 py-3">
 					<div class="min-w-0">
-						<h2 class="text-sm font-semibold">Connection graph</h2>
+						<h2 class="text-sm font-semibold">Clinical relationship view</h2>
 						<p class="mt-1 truncate text-xs text-zinc-500">{selectedTerm.loincNum} · {selectedTerm.longCommonName}</p>
 					</div>
-					<div class="flex items-center gap-2">
-						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
-						<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= graphVisibleLimitMax()} on:click={() => (graphVisibleConceptLimit = Math.min(graphVisibleLimitMax(), graphVisibleConceptLimit + 4))}>More</Button>
+					<div class="flex flex-wrap items-center justify-end gap-2">
+						<div class="inline-flex rounded-md border border-zinc-200 bg-white p-0.5">
+							<button
+								type="button"
+								class={`rounded px-2.5 py-1.5 text-xs font-medium ${relationshipViewMode === 'clinical' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+								aria-pressed={relationshipViewMode === 'clinical'}
+								on:click={() => (relationshipViewMode = 'clinical')}
+							>
+								Clinical lanes
+							</button>
+							<button
+								type="button"
+								class={`rounded px-2.5 py-1.5 text-xs font-medium ${relationshipViewMode === 'explore' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+								aria-pressed={relationshipViewMode === 'explore'}
+								on:click={() => (relationshipViewMode = 'explore')}
+							>
+								Exploration graph
+							</button>
+						</div>
+						{#if relationshipViewMode === 'explore'}
+							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
+							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= graphVisibleLimitMax()} on:click={() => (graphVisibleConceptLimit = Math.min(graphVisibleLimitMax(), graphVisibleConceptLimit + 4))}>More</Button>
+						{/if}
 						<Button variant="ghost" size="icon" ariaLabel="Close relationship graph" on:click={() => (graphViewerOpen = false)}><X size={16} /></Button>
 					</div>
 				</div>
-				<RelationshipGraph
-					term={selectedTerm}
-					graph={relationshipGraph}
-					concepts={sharedConcepts()}
-					maxConcepts={graphVisibleConceptLimit}
-					maxDirectRelationships={graphVisibleConceptLimit * 2}
-					maxTermsPerConcept={3}
-					onOpenTerm={(loincNum) => openTerm(loincNum)}
-					onBrowseConcept={browseConcept}
-				/>
+				{#if relationshipViewMode === 'clinical'}
+					<ClinicalRelationshipLanes
+						term={selectedTerm}
+						graph={relationshipGraph}
+						onOpenTerm={(loincNum) => openTerm(loincNum)}
+						onBrowseHierarchy={browseHierarchyFromRelationship}
+					/>
+				{:else}
+					<RelationshipGraph
+						term={selectedTerm}
+						graph={relationshipGraph}
+						concepts={sharedConcepts()}
+						maxConcepts={graphVisibleConceptLimit}
+						maxDirectRelationships={graphVisibleConceptLimit * 2}
+						maxTermsPerConcept={3}
+						onOpenTerm={(loincNum) => openTerm(loincNum)}
+						onBrowseConcept={browseConcept}
+					/>
+				{/if}
 			</section>
 		</div>
 	{/if}
