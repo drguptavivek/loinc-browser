@@ -83,7 +83,7 @@ https://creativecommons.org/licenses/by/4.0/
 
 Project source:
 
-https://github.com/drguptavivek/LOINC
+https://github.com/drguptavivek/loinc-browser
 EOF
 
   archive_base="${DIST_DIR}/${APP_NAME}_${VERSION}_${goos}_${arch_label}"

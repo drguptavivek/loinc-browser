@@ -1912,7 +1912,7 @@
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">
 					CC BY attribution
 				</a>
-				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="https://github.com/drguptavivek/LOINC" target="_blank" rel="noreferrer">
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="https://github.com/drguptavivek/loinc-browser" target="_blank" rel="noreferrer">
 					GitHub
 				</a>
 			</nav>
