@@ -4,16 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_NAME="loinc-browser"
-VERSION="${VERSION:-$(date -u +%Y%m%d%H%M%S)}"
+VERSION="${VERSION:-$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")}"
+COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
+BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 targets=(
-  "darwin/amd64"
   "darwin/arm64"
   "linux/amd64"
-  "linux/arm64"
-  "linux/arm/7"
   "windows/amd64"
-  "windows/arm64"
 )
 
 cd "${ROOT_DIR}"
@@ -41,11 +39,11 @@ for target in "${targets[@]}"; do
   echo "Building ${goos}/${arch_label}..."
   CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" GOARM="${goarm:-}" go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X loinc-browser/internal/version.Version=${VERSION} -X loinc-browser/internal/version.Commit=${COMMIT} -X loinc-browser/internal/version.Date=${BUILD_DATE}" \
     -o "${binary}" \
     ./cmd/loinc-browser
 
-  cp README.md AGENTS.md ERD.md .env.example "${package_dir}/"
+  cp README.md AGENTS.md ERD.md VERSION CHANGELOG.md .env.example "${package_dir}/"
   cp -R docs skills "${package_dir}/"
   cat > "${package_dir}/INSTALL.md" <<EOF
 # ${APP_NAME} ${VERSION}

@@ -19,6 +19,7 @@ import (
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/server"
+	"loinc-browser/internal/version"
 	"loinc-browser/web"
 )
 
@@ -40,6 +41,8 @@ func run(args []string) error {
 		return runServe(modeArgs)
 	case "mcp":
 		return runMCP(modeArgs)
+	case "-v", "--version", "version":
+		return runVersion()
 	case "-h", "--help", "help":
 		return usage()
 	default:
@@ -51,7 +54,7 @@ func commandMode(args []string) (string, []string) {
 	if len(args) < 2 {
 		return "serve", nil
 	}
-	if strings.HasPrefix(args[1], "-") && args[1] != "-h" && args[1] != "--help" {
+	if strings.HasPrefix(args[1], "-") && args[1] != "-h" && args[1] != "--help" && args[1] != "-v" && args[1] != "--version" {
 		return "serve", args[1:]
 	}
 	return args[1], args[2:]
@@ -85,6 +88,16 @@ func runIngest(args []string) error {
 		return err
 	}
 	fmt.Printf("Imported %d LOINC terms into %s\n", summary.TermCount, summary.DBPath)
+	return nil
+}
+
+func runVersion() error {
+	info := version.Get()
+	if info.Date != "" {
+		fmt.Printf("loinc-browser %s (%s, %s, %s/%s)\n", info.Version, info.Commit, info.Date, info.GoOS, info.GoArch)
+		return nil
+	}
+	fmt.Printf("loinc-browser %s (%s, %s/%s)\n", info.Version, info.Commit, info.GoOS, info.GoArch)
 	return nil
 }
 
@@ -356,6 +369,7 @@ func usage() error {
 func usageText() string {
 	return `Usage:
   loinc-browser
+  loinc-browser -v
   loinc-browser --addr :8080
   loinc-browser ingest --release ./Loinc_2.82
   loinc-browser serve --addr :8080

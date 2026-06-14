@@ -99,6 +99,16 @@ func TestV1API(t *testing.T) {
 		t.Fatalf("expected v1 healthy response, got %#v", health)
 	}
 
+	var versionInfo map[string]any
+	getJSON(t, server.URL+"/api/version", &versionInfo)
+	if versionInfo["version"] == "" || versionInfo["commit"] == "" || versionInfo["goos"] == "" || versionInfo["goarch"] == "" {
+		t.Fatalf("expected version metadata, got %#v", versionInfo)
+	}
+	getJSON(t, server.URL+"/api/v1/version", &versionInfo)
+	if versionInfo["version"] == "" {
+		t.Fatalf("expected v1 version metadata, got %#v", versionInfo)
+	}
+
 	var search loinc.SearchResponse
 	getJSON(t, server.URL+"/api/v1/terms/search?q=cholesterol&usageType=observation&rankMode=observation&sort=relevance", &search)
 	if len(search.Results) != 1 || search.Results[0].LOINCNum != "2000-1" {
@@ -239,6 +249,7 @@ func TestOpenAPISpec(t *testing.T) {
 	requireOpenAPISchemaProperties(t, schemas, "HierarchyChildrenResponse", "parentNodeId", "parentCode", "query", "results", "_links")
 	requireOpenAPISchemaProperties(t, schemas, "PanelItem", "parentLoincNum", "childLoincNum", "sequence", "itemId", "displayNameForForm", "observationRequired", "entryType", "dataTypeInForm", "answerListIdOverride", "childTerm", "_links")
 	requireOpenAPISchemaProperties(t, schemas, "TermAccessoryPage", "results", "total", "limit", "offset", "hasMore", "_links")
+	requireOpenAPISchemaProperties(t, schemas, "VersionResponse", "version", "commit", "goos", "goarch")
 }
 
 func TestSwaggerUIDocs(t *testing.T) {
@@ -264,6 +275,40 @@ func TestSwaggerUIDocs(t *testing.T) {
 	for _, phrase := range []string{"SwaggerUIBundle", "/openapi.json", "LOINC Browser API"} {
 		if !strings.Contains(page, phrase) {
 			t.Fatalf("expected swagger docs page to contain %q", phrase)
+		}
+	}
+}
+
+func TestMarkdownDocsRoutes(t *testing.T) {
+	docsRoot := t.TempDir()
+	docsDir := filepath.Join(docsRoot, "agent")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsRoot, "MCP.md"), []byte("# MCP Guide\n"), 0o644); err != nil {
+		t.Fatalf("write MCP docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_CONCEPTS.md"), []byte("# Concepts\n"), 0o644); err != nil {
+		t.Fatalf("write concepts docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_AGENT_GUIDE.md"), []byte("# Agent Guide\n"), 0o644); err != nil {
+		t.Fatalf("write agent guide docs: %v", err)
+	}
+
+	server := httptest.NewServer(New(Options{DocsDir: docsDir}))
+	defer server.Close()
+
+	for _, path := range []string{"/docs/mcp", "/docs/concepts", "/docs/agent-guide"} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected %s to return 200, got %d", path, resp.StatusCode)
+		}
+		if contentType := resp.Header.Get("content-type"); contentType != "text/markdown; charset=utf-8" {
+			t.Fatalf("unexpected content type for %s: %q", path, contentType)
 		}
 	}
 }
@@ -356,6 +401,7 @@ func TestFrontendTabletBrowseDrawer(t *testing.T) {
 func v1OpenAPIPaths() []string {
 	return []string{
 		"/api/v1/health",
+		"/api/v1/version",
 		"/api/v1/terms/search",
 		"/api/v1/terms/top",
 		"/api/v1/terms/{loincNum}",

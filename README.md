@@ -16,21 +16,30 @@ Third-party content surfaced from LOINC release fields, including `EXTERNAL_COPY
 
 ## Quick Start
 
-```bash
-make install
-make ingest RELEASE=./Loinc_2.82
-make serve
-```
+Download the `v0.90` binary for your platform from GitHub Releases, place your licensed `Loinc*.zip` beside it, then run one command:
 
-Open `http://localhost:8080`. This one command serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
-
-First-time setup is also one command if a licensed `Loinc*.zip` is beside the app or in the project folder:
+macOS arm64 or Linux amd64:
 
 ```bash
 ./loinc-browser
 ```
 
+Windows amd64 PowerShell:
+
+```powershell
+.\loinc-browser.exe
+```
+
+Open `http://localhost:8080`. The executable serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
+
 The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. Use `ADDR=:9090 make serve` or `./loinc-browser --addr :9090` only when you need a different port.
+
+From source, use:
+
+```bash
+make install
+make serve
+```
 
 The serve address can also come from `.env`:
 
@@ -123,6 +132,7 @@ The same server exposes JSON endpoints for scripts and other apps. The `/api/v1`
 See `docs/API.md` for the structured v1 API guide, including route groups, shared filters, pagination, HATEOAS links, hierarchy browsing, panels, answer lists, parts, groups, and copyright/source workflows.
 
 ```bash
+curl 'http://localhost:8080/api/version'
 curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
 curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&limit=10'
 curl 'http://localhost:8080/api/v1/terms/14749-6'
@@ -165,20 +175,23 @@ npm --prefix web run build
 
 ## Build Installable Binaries
 
-Build code-only release packages for macOS, Linux, and Windows:
+Build code-only release packages for macOS arm64, Linux amd64, and Windows amd64:
 
 ```bash
-make release VERSION=2.82.0
+make release VERSION=0.90
 ```
 
-Packages are written under `dist/`:
+Tagged GitHub releases are built by pushing a tag such as:
 
-- `loinc-browser_<version>_darwin_amd64.tar.gz`
+```bash
+git tag v0.90
+git push origin v0.90
+```
+
+Packages are written under `dist/` and uploaded to the GitHub release:
+
 - `loinc-browser_<version>_darwin_arm64.tar.gz`
 - `loinc-browser_<version>_linux_amd64.tar.gz`
-- `loinc-browser_<version>_linux_arm64.tar.gz`
-- `loinc-browser_<version>_linux_armv7.tar.gz`
 - `loinc-browser_<version>_windows_amd64.zip`
-- `loinc-browser_<version>_windows_arm64.zip`
 
 These packages include only the app binary and docs. They do not include licensed LOINC release files or generated SQLite databases.

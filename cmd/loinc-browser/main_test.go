@@ -98,6 +98,18 @@ func TestDefaultRunArgsUseServeMode(t *testing.T) {
 	}
 }
 
+func TestVersionFlagUsesVersionMode(t *testing.T) {
+	mode, args := commandMode([]string{"loinc-browser", "-v"})
+	if mode != "-v" || len(args) != 0 {
+		t.Fatalf("expected -v mode, got %q %#v", mode, args)
+	}
+
+	mode, args = commandMode([]string{"loinc-browser", "--version"})
+	if mode != "--version" || len(args) != 0 {
+		t.Fatalf("expected --version mode, got %q %#v", mode, args)
+	}
+}
+
 func TestServeAndMCPRejectDBOverride(t *testing.T) {
 	if _, err := parseServeConfig([]string{"--db", "test.sqlite"}); err == nil {
 		t.Fatal("expected serve --db to be rejected")

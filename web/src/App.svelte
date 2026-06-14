@@ -36,6 +36,7 @@
 		getHierarchyParents,
 		getTerm,
 		getTermRelationships,
+		getVersion,
 		searchTerms,
 		uploadReleaseZip,
 		type AccessoryBrowseResponse,
@@ -49,6 +50,7 @@
 		type TermRelationshipGraph,
 		type HierarchyNode,
 		type TermSummary,
+		type VersionInfo,
 	} from '$lib/api';
 
 	type BrowseMode = 'hierarchy' | 'facets' | 'rank' | 'relationships';
@@ -80,6 +82,7 @@
 	let total = 0;
 	let facets: Facets = emptyFacets;
 	let cacheStats: CacheStats | null = null;
+	let versionInfo: VersionInfo | null = null;
 	let selectedTerm: Term | null = null;
 	let relationshipGraph: TermRelationshipGraph | null = null;
 	let loading = false;
@@ -152,6 +155,7 @@
 	onMount(() => {
 		void (async () => {
 			applyURLState();
+			void loadVersion();
 			await loadFacets();
 			if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
@@ -316,6 +320,14 @@
 			error = errorMessage(err);
 		} finally {
 			facetsLoading = false;
+		}
+	}
+
+	async function loadVersion() {
+		try {
+			versionInfo = await getVersion();
+		} catch {
+			versionInfo = null;
 		}
 	}
 
@@ -1883,9 +1895,17 @@
 	{/if}
 	<footer class="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white shadow-[0_-1px_3px_rgba(24,24,27,0.04)]">
 		<div class="mx-auto flex max-w-[1500px] flex-col gap-2 px-5 py-3 text-[11px] leading-4 text-zinc-500 md:flex-row md:items-center md:justify-between">
-			<p>LOINC is Copyright © Regenstrief Institute, Inc. and the LOINC Committee.</p>
+			<p>
+				{#if versionInfo}<span class="font-mono text-zinc-700">v{versionInfo.version}</span><span class="mx-2 text-zinc-300">|</span>{/if}
+				LOINC is Copyright © Regenstrief Institute, Inc. and the LOINC Committee.
+			</p>
 			<nav class="flex flex-wrap gap-x-3 gap-y-1" aria-label="Footer links">
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/api/docs">Swagger API</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/openapi.json">OpenAPI</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/mcp">MCP endpoint</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/mcp">MCP guide</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/concepts">LOINC concepts</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/agent-guide">Agent guide</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="https://loinc.org/kb/license/" target="_blank" rel="noreferrer">
 					LOINC license
 				</a>

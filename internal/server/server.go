@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
+	"loinc-browser/internal/version"
 )
 
 type Options struct {
@@ -31,9 +34,11 @@ func New(options Options) http.Handler {
 		dbPath:       options.DBPath,
 		uploadDir:    options.UploadDir,
 		cacheEntries: options.CacheEntries,
+		docsDir:      options.DocsDir,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
+	mux.HandleFunc("GET /api/version", app.version)
 	mux.HandleFunc("GET /api/search", app.search)
 	mux.HandleFunc("GET /api/terms/{loincNum}", app.term)
 	mux.HandleFunc("GET /api/terms/{loincNum}/relationships", app.termRelationships)
@@ -44,6 +49,7 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/cache", app.cacheStats)
 	mux.HandleFunc("POST /api/import/upload", app.uploadImport)
 	mux.HandleFunc("GET /api/v1/health", app.health)
+	mux.HandleFunc("GET /api/v1/version", app.version)
 	mux.HandleFunc("GET /api/v1/terms/search", app.v1TermsSearch)
 	mux.HandleFunc("GET /api/v1/terms/top", app.v1TermsTop)
 	mux.HandleFunc("GET /api/v1/terms/{loincNum}", app.v1Term)
@@ -75,6 +81,9 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
+	mux.HandleFunc("GET /docs/mcp", app.markdownDoc("MCP.md", "docs"))
+	mux.HandleFunc("GET /docs/concepts", app.markdownDoc("LOINC_CONCEPTS.md", "agent"))
+	mux.HandleFunc("GET /docs/agent-guide", app.markdownDoc("LOINC_AGENT_GUIDE.md", "agent"))
 	if options.EnableMCP {
 		mcpServer := loincmcp.New(loincmcp.Options{
 			Store:       options.Store,
@@ -105,10 +114,15 @@ type app struct {
 	dbPath       string
 	uploadDir    string
 	cacheEntries int
+	docsDir      string
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *app) version(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, version.Get())
 }
 
 func (a *app) search(w http.ResponseWriter, r *http.Request) {
@@ -682,6 +696,32 @@ func (a *app) swaggerDocs(w http.ResponseWriter, r *http.Request) {
   </script>
 </body>
 </html>`)
+}
+
+func (a *app) markdownDoc(name string, scope string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := ""
+		if scope == "agent" {
+			path = filepath.Join(a.agentDocsDir(), name)
+		} else {
+			path = filepath.Join(filepath.Dir(a.agentDocsDir()), name)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			writeError(w, http.StatusNotFound, fmt.Errorf("documentation file not found: %s", path))
+			return
+		}
+		w.Header().Set("content-type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	}
+}
+
+func (a *app) agentDocsDir() string {
+	if strings.TrimSpace(a.docsDir) != "" {
+		return a.docsDir
+	}
+	return filepath.Join(".", "docs", "agent")
 }
 
 func (a *app) currentStore() (*loinc.Store, error) {

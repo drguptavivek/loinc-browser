@@ -200,6 +200,14 @@ export type UploadImportResponse = {
 	importedAt: string;
 };
 
+export type VersionInfo = {
+	version: string;
+	commit: string;
+	date?: string;
+	goos: string;
+	goarch: string;
+};
+
 export type SearchParams = {
 	q?: string;
 	class?: string;
@@ -256,6 +264,10 @@ export function getFacets(): Promise<Facets> {
 
 export function getCacheStats(): Promise<CacheStats> {
 	return requestJSON<CacheStats>('/api/cache');
+}
+
+export function getVersion(): Promise<VersionInfo> {
+	return requestJSON<VersionInfo>('/api/version');
 }
 
 export function browseAccessories(params: { kind?: string; q?: string; limit?: number; offset?: number }): Promise<AccessoryBrowseResponse> {

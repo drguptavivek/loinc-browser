@@ -25,6 +25,11 @@ Primary documentation endpoints:
 | `/api/docs` | Swagger UI for interactive API browsing. |
 | `/openapi.json` | OpenAPI 3.1 machine-readable contract. |
 | `/api/v1/health` | v1 health check. |
+| `/api/version` | Application version metadata for the UI, scripts, and release checks. |
+| `/api/v1/version` | v1 version metadata endpoint. |
+| `/docs/mcp` | Live Markdown MCP guide served from `docs/MCP.md`. |
+| `/docs/concepts` | Live Markdown concept guide served from `docs/agent/LOINC_CONCEPTS.md`. |
+| `/docs/agent-guide` | Live Markdown agent guide served from `docs/agent/LOINC_AGENT_GUIDE.md`. |
 
 Operational endpoints outside `/api/v1`, such as `/api/import/upload`, may remain for local release loading and development. New API clients should use `/api/v1` for LOINC search, relationships, hierarchy browsing, and form-builder workflows.
 
@@ -179,6 +184,24 @@ Term-list routes return `TermSummary`-like results. These are intentionally comp
 | Method | Route | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/health` | Check that the API server is responding. |
+
+### Version
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/version` | Get app version, build commit, build date when present, and Go target platform. |
+| GET | `/api/v1/version` | Same version metadata under the v1 API namespace. |
+
+Example response:
+
+```json
+{
+  "version": "0.90",
+  "commit": "dev",
+  "goos": "darwin",
+  "goarch": "arm64"
+}
+```
 
 ### Terms
 

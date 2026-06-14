@@ -2,7 +2,7 @@ APP_NAME := loinc-browser
 DEFAULT_DB := ./data/loinc-normalized.sqlite
 ADDR ?= :8080
 DEV_WEB_PORT ?= 5173
-VERSION ?= dev
+VERSION ?= $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo dev)
 RELEASE ?= ./Loinc_2.82
 
 .PHONY: help install web check test build serve mcp dev dev-api dev-web ingest reingest release clean
@@ -20,7 +20,7 @@ help:
 	@echo "  make dev-web          Run Vite HMR on DEV_WEB_PORT=$(DEV_WEB_PORT)"
 	@echo "  make ingest RELEASE=./Loinc_2.82"
 	@echo "  make reingest         Remove DB=$(DB), then ingest RELEASE=$(RELEASE)"
-	@echo "  make release          Build macOS/Linux/Windows amd64 and arm packages"
+	@echo "  make release          Build macOS arm64, Linux amd64, and Windows amd64 packages"
 	@echo "  make clean            Remove generated local build artifacts"
 
 install:

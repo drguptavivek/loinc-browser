@@ -4,7 +4,7 @@ var openAPISpec = map[string]any{
 	"openapi": "3.1.0",
 	"info": map[string]any{
 		"title":       "LOINC Browser API",
-		"version":     "0.1.0",
+		"version":     "0.90",
 		"description": "Local API for searching and browsing an imported licensed LOINC release.",
 	},
 	"servers": []map[string]any{
@@ -22,11 +22,27 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/version": map[string]any{
+			"get": map[string]any{
+				"summary": "Get application version information",
+				"responses": map[string]any{
+					"200": response("Version response", ref("VersionResponse")),
+				},
+			},
+		},
 		"/api/v1/health": map[string]any{
 			"get": map[string]any{
 				"summary": "Check v1 API health",
 				"responses": map[string]any{
 					"200": response("Health response", ref("HealthResponse")),
+				},
+			},
+		},
+		"/api/v1/version": map[string]any{
+			"get": map[string]any{
+				"summary": "Get application version information",
+				"responses": map[string]any{
+					"200": response("Version response", ref("VersionResponse")),
 				},
 			},
 		},
@@ -361,6 +377,13 @@ var openAPISpec = map[string]any{
 		"schemas": map[string]any{
 			"HealthResponse": object(map[string]any{
 				"ok": map[string]any{"type": "boolean"},
+			}),
+			"VersionResponse": object(map[string]any{
+				"version": map[string]any{"type": "string"},
+				"commit":  map[string]any{"type": "string"},
+				"date":    map[string]any{"type": "string"},
+				"goos":    map[string]any{"type": "string"},
+				"goarch":  map[string]any{"type": "string"},
 			}),
 			"SearchResponse": object(map[string]any{
 				"results": map[string]any{"type": "array", "items": ref("SearchResult")},
