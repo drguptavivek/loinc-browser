@@ -77,6 +77,7 @@
 	let methods: string[] = [];
 	let orderObsValues: string[] = [];
 	let rankedOnly = false;
+	let searchSort: 'relevance' | 'usage' = 'relevance';
 	let hierarchyNodeId = '';
 	let hierarchyLabel = '';
 	let results: SearchResult[] = [];
@@ -231,6 +232,7 @@
 		methods = params.getAll('method');
 		orderObsValues = params.getAll('orderObs');
 		rankedOnly = params.get('rankedOnly') === 'true' || params.get('rankedOnly') === '1';
+		searchSort = params.get('sort') === 'usage' ? 'usage' : 'relevance';
 		hierarchyNodeId = params.get('hierarchyNodeId') ?? params.get('hierarchy') ?? '';
 		hierarchyLabel = params.get('hierarchyLabel') ?? '';
 		offset = Number(params.get('offset') ?? '0') || 0;
@@ -278,6 +280,7 @@
 		for (const value of methods) params.append('method', value);
 		for (const value of orderObsValues) params.append('orderObs', value);
 		if (rankedOnly) params.set('rankedOnly', 'true');
+		if (searchSort === 'usage') params.set('sort', 'usage');
 		if (hierarchyNodeId) params.set('hierarchyNodeId', hierarchyNodeId);
 		if (hierarchyLabel) params.set('hierarchyLabel', hierarchyLabel);
 		if (activeView === 'accessories') {
@@ -342,6 +345,7 @@
 				method: methods,
 				orderObs: orderObsValues,
 				rankedOnly,
+				sort: searchSort,
 				hierarchyNodeId,
 				limit,
 				offset,
@@ -468,6 +472,7 @@
 		methods = [];
 		orderObsValues = [];
 		rankedOnly = false;
+		searchSort = 'relevance';
 		hierarchyNodeId = '';
 		hierarchyLabel = '';
 		runSearch(0);
@@ -486,6 +491,7 @@
 		hierarchyNodeId = '';
 		hierarchyLabel = '';
 		rankedOnly = true;
+		searchSort = 'usage';
 		activeView = 'browse';
 		runSearch(0);
 	}
@@ -575,6 +581,11 @@
 
 	function toggleValue(values: string[], value: string) {
 		return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+	}
+
+	function setSearchSort(sort: 'relevance' | 'usage') {
+		searchSort = sort;
+		runSearch(0);
 	}
 
 	function activeFilterCount() {
@@ -704,6 +715,12 @@
 		return item.title || item.code || item.kind;
 	}
 
+	function accessoryMeta(item: TermAccessory) {
+		const sequence = item.fields?.sequence ? `Seq ${item.fields.sequence}` : '';
+		const entryType = item.fields?.entryType || item.subtitle || '';
+		return [sequence, entryType].filter(Boolean).join(' · ');
+	}
+
 	function hasAccessories(term: Term) {
 		return Boolean(
 			term.mapTo?.length ||
@@ -720,13 +737,44 @@
 	}
 
 	function accessorySections(term: Term): { title: string; kind: string; items: TermAccessory[] }[] {
+		const panelMemberships = (term.panels ?? []).filter((item) => item.kind === 'panel-membership');
+		const panelItems = dedupePanelItems((term.panels ?? []).filter((item) => item.kind === 'panel-child'));
 		return [
 			{ title: 'Parts', kind: 'part-primary', items: term.parts ?? [] },
 			{ title: 'Answer lists', kind: 'answer-list', items: term.answerLists ?? [] },
-			{ title: 'Panels and forms', kind: 'panel-membership', items: term.panels ?? [] },
+			{ title: 'Parent panels / scales / orders', kind: 'panel-membership', items: panelMemberships },
+			{ title: panelItemsTitle(term), kind: 'panel-child', items: panelItems },
 			{ title: 'Groups', kind: 'group', items: term.groups ?? [] },
 			{ title: 'Hierarchy', kind: 'hierarchy', items: term.hierarchy ?? [] },
 		].filter((section) => section.items.length > 0);
+	}
+
+	function panelItemsTitle(term: Term) {
+		const text = `${term.class} ${term.method} ${term.longCommonName}`.toLowerCase();
+		if (text.includes('survey') || text.includes('questionnaire') || text.includes('phq')) return 'Scale / survey items';
+		if (term.orderObs?.toLowerCase() === 'order' || term.class?.toLowerCase().includes('panel')) return 'Panel observations';
+		return 'Panel children';
+	}
+
+	function dedupePanelItems(items: TermAccessory[]) {
+		const seen = new Map<string, TermAccessory>();
+		for (const item of items) {
+			const key = item.code || accessoryTitle(item);
+			const existing = seen.get(key);
+			if (!existing) {
+				seen.set(key, item);
+				continue;
+			}
+			const count = Number(existing.fields?.duplicateCount ?? 1);
+			seen.set(key, {
+				...existing,
+				fields: {
+					...existing.fields,
+					duplicateCount: String(count + 1),
+				},
+			});
+		}
+		return [...seen.values()];
 	}
 
 	function browseAccessoryForSelected(kind: string) {
@@ -1262,6 +1310,27 @@
 							</Button>
 						</div>
 					</div>
+					<div class="mt-2 flex flex-wrap items-center gap-2">
+						<span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Sort</span>
+						<div class="inline-flex rounded-md border border-zinc-200 bg-white p-0.5">
+							<button
+								type="button"
+								class={`rounded px-2.5 py-1.5 text-xs font-medium ${searchSort === 'relevance' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+								aria-pressed={searchSort === 'relevance'}
+								on:click={() => setSearchSort('relevance')}
+							>
+								Relevance
+							</button>
+							<button
+								type="button"
+								class={`rounded px-2.5 py-1.5 text-xs font-medium ${searchSort === 'usage' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+								aria-pressed={searchSort === 'usage'}
+								on:click={() => setSearchSort('usage')}
+							>
+								Rank
+							</button>
+						</div>
+					</div>
 					<button
 						type="button"
 						class="mt-2 flex w-full items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-xs text-zinc-700 md:hidden"
@@ -1598,7 +1667,10 @@
 														<div class="flex items-start justify-between gap-2">
 															<div class="min-w-0">
 																<div class="break-words font-medium text-zinc-950">{accessoryTitle(item)}</div>
-																{#if item.subtitle}<div class="mt-0.5 break-words text-xs text-zinc-500">{item.subtitle}</div>{/if}
+																{#if accessoryMeta(item)}<div class="mt-0.5 break-words text-xs text-zinc-500">{accessoryMeta(item)}</div>{/if}
+																{#if Number(item.fields?.duplicateCount ?? 0) > 1}
+																	<div class="mt-0.5 text-xs text-zinc-500">{item.fields.duplicateCount} source rows</div>
+																{/if}
 															</div>
 															{#if item.code}<span class="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600">{item.code}</span>{/if}
 														</div>

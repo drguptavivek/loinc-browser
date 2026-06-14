@@ -85,9 +85,45 @@
 		return `${primary}\n${cleanSecondary}`;
 	}
 
+	function sequenceLabel(item: DirectRelationship) {
+		const sequence = item.accessory?.fields?.sequence;
+		return sequence ? `Seq ${sequence}` : '';
+	}
+
+	function repeatLabel(item: DirectRelationship) {
+		const duplicateCount = item.accessory?.fields?.duplicateCount;
+		const count = Number(duplicateCount ?? 0);
+		return Number.isFinite(count) && count > 1 ? `${count} rows` : '';
+	}
+
+	function directSubtitle(item: DirectRelationship) {
+		return [sequenceLabel(item), item.subtitle, repeatLabel(item)].filter(Boolean).join(' · ');
+	}
+
+	function directNodeLabel(item: DirectRelationship) {
+		if (item.loincNum) return compactNodeLabel(item.code, item.title);
+		return compactNodeLabel(item.title, item.code || item.kind);
+	}
+
 	function explicitRelationships(term: Term, graph: TermRelationshipGraph | null) {
 		const items: DirectRelationship[] = [];
 		const pushAccessory = (item: TermAccessory, index: number) => {
+			if (item.kind === 'panel-child') {
+				const existing = items.find((candidate) => candidate.kind === item.kind && candidate.code === item.code);
+				if (existing) {
+					const current = Number(existing.accessory?.fields?.duplicateCount ?? 1);
+					if (existing.accessory) {
+						existing.accessory = {
+							...existing.accessory,
+							fields: {
+								...existing.accessory.fields,
+								duplicateCount: String(current + 1),
+							},
+						};
+					}
+					return;
+				}
+			}
 			items.push({
 				id: `${item.kind}:${item.code}:${index}`,
 				kind: item.kind,
@@ -123,11 +159,11 @@
 				loincNum: item.loinc,
 			});
 		});
-		return items.sort(compareDirectRelationships);
+		return items.sort((a, b) => compareDirectRelationships(a, b, term));
 	}
 
-	function compareDirectRelationships(a: DirectRelationship, b: DirectRelationship) {
-		const priority = explicitPriority(a.kind) - explicitPriority(b.kind);
+	function compareDirectRelationships(a: DirectRelationship, b: DirectRelationship, term: Term) {
+		const priority = explicitPriority(a.kind, term) - explicitPriority(b.kind, term);
 		if (priority !== 0) return priority;
 		if (a.kind === 'panel-membership' && b.kind === 'panel-membership') {
 			const rank = relationshipRank(a) - relationshipRank(b);
@@ -141,7 +177,10 @@
 		return Number.isFinite(rank) && rank > 0 ? rank : Number.POSITIVE_INFINITY;
 	}
 
-	function explicitPriority(kind: string) {
+	function explicitPriority(kind: string, term: Term) {
+		if (isOrderTerm(term) && kind === 'panel-child') return 1;
+		if (isOrderTerm(term) && kind === 'panel-membership') return 2;
+		if (isSurveyTerm(term) && kind.includes('panel')) return 1;
 		if (kind === 'part-primary') return 1;
 		if (kind === 'answer-list') return 2;
 		if (kind.includes('panel')) return 3;
@@ -155,14 +194,27 @@
 	function directSectionTitle(kind: string) {
 		if (kind === 'part-primary') return 'Primary parts';
 		if (kind === 'part-supplementary') return 'Supplementary parts';
-		if (kind === 'panel-membership') return 'Parent panels / orders';
-		if (kind === 'panel-child') return 'Panel children';
+		if (kind === 'panel-membership') return 'Parent panels / scales / orders';
+		if (kind === 'panel-child') {
+			if (isSurveyTerm(term)) return 'Scale / survey items';
+			if (isOrderTerm(term)) return 'Panel observations';
+			return 'Panel children';
+		}
 		if (kind === 'answer-list') return 'Answer lists';
 		if (kind === 'map-to') return 'MapTo replacements';
 		if (kind === 'mapped-from') return 'Mapped from';
 		if (kind === 'group') return 'Groups';
 		if (kind === 'hierarchy') return 'Hierarchy placements';
 		return 'Other listed relationships';
+	}
+
+	function isSurveyTerm(term: Term) {
+		const text = `${term.class} ${term.method} ${term.longCommonName}`.toLowerCase();
+		return text.includes('survey') || text.includes('questionnaire') || text.includes('phq');
+	}
+
+	function isOrderTerm(term: Term) {
+		return term.orderObs?.toLowerCase() === 'order' || term.class?.toLowerCase().includes('panel');
 	}
 
 	function groupDirectRelationships(items: DirectRelationship[]) {
@@ -244,7 +296,7 @@
 				elements.push({
 					data: {
 						id: dID,
-						label: compactNodeLabel(item.title, item.subtitle || item.kind),
+						label: directNodeLabel(item),
 						subtitle: item.code,
 						fullLabel: item.title,
 						type: 'direct',
@@ -537,7 +589,7 @@
 									<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
 										<span class="rounded px-1.5 py-0.5 font-medium" style={conceptToneStyle(item.kind)}>{item.kind}</span>
 										{#if item.code}<span class="font-mono">{item.code}</span>{/if}
-										{#if item.subtitle}<span>{item.subtitle}</span>{/if}
+										{#if directSubtitle(item)}<span>{directSubtitle(item)}</span>{/if}
 									</div>
 									{#if item.loincNum}
 										<button type="button" class="mt-1 text-xs font-medium text-zinc-700 hover:underline" onclick={() => onOpenTerm(item.loincNum || '')}>Open term</button>
