@@ -32,7 +32,15 @@ Windows amd64 PowerShell:
 
 Open `http://localhost:8080`. The executable serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
 
-The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. Use `ADDR=:9090 make serve` or `./loinc-browser --addr :9090` only when you need a different port.
+The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. To use a different port:
+
+```bash
+./loinc-browser 9090
+# or
+./loinc-browser --port 9090
+```
+
+Use `./loinc-browser --addr 127.0.0.1:9090` only when you need a full listen address.
 
 From source, use:
 

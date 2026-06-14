@@ -54,6 +54,9 @@ func commandMode(args []string) (string, []string) {
 	if len(args) < 2 {
 		return "serve", nil
 	}
+	if isPortArg(args[1]) {
+		return "serve", args[1:]
+	}
 	if strings.HasPrefix(args[1], "-") && args[1] != "-h" && args[1] != "--help" && args[1] != "-v" && args[1] != "--version" {
 		return "serve", args[1:]
 	}
@@ -140,8 +143,13 @@ func runServe(args []string) error {
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
+	args = normalizeServeArgs(args)
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := flags.String("addr", defaultServeAddr(), "HTTP listen address")
+	addr := trackingStringFlag{value: defaultServeAddr()}
+	port := trackingStringFlag{}
+	flags.Var(&addr, "addr", "HTTP listen address")
+	flags.Var(&port, "port", "HTTP listen port")
+	flags.Var(&port, "p", "HTTP listen port")
 	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
 	enableMCP := flags.Bool("mcp", true, "enable local MCP over HTTP")
 	disableMCP := flags.Bool("no-mcp", false, "disable local MCP over HTTP")
@@ -150,14 +158,46 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if err := flags.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
+	positionals := flags.Args()
+	if len(positionals) > 1 {
+		return serveConfig{}, fmt.Errorf("expected at most one port argument, got %q", strings.Join(positionals, " "))
+	}
+	if len(positionals) == 1 {
+		if port.set || addr.set {
+			return serveConfig{}, fmt.Errorf("positional port cannot be combined with --port or --addr")
+		}
+		port.value = positionals[0]
+		port.set = true
+	}
+	listenAddr := addr.value
+	if port.set {
+		if addr.set {
+			return serveConfig{}, fmt.Errorf("--port cannot be combined with --addr")
+		}
+		normalizedPort, err := normalizePortFlag(port.value)
+		if err != nil {
+			return serveConfig{}, err
+		}
+		listenAddr = normalizedPort
+	}
 	return serveConfig{
 		DBPath:       defaultDBPath,
-		Addr:         *addr,
+		Addr:         listenAddr,
 		CacheEntries: *cacheEntries,
 		EnableMCP:    *enableMCP && !*disableMCP,
 		MCPPath:      normalizePathFlag(*mcpPath),
 		DocsDir:      *docsDir,
 	}, nil
+}
+
+func normalizeServeArgs(args []string) []string {
+	if len(args) == 0 || !isPortArg(args[0]) {
+		return args
+	}
+	normalized := make([]string, 0, len(args)+1)
+	normalized = append(normalized, "--port", args[0])
+	normalized = append(normalized, args[1:]...)
+	return normalized
 }
 
 func runMCP(args []string) error {
@@ -361,6 +401,48 @@ func normalizePathFlag(path string) string {
 	return path
 }
 
+type trackingStringFlag struct {
+	value string
+	set   bool
+}
+
+func (f *trackingStringFlag) String() string {
+	return f.value
+}
+
+func (f *trackingStringFlag) Set(value string) error {
+	f.value = strings.TrimSpace(value)
+	f.set = true
+	return nil
+}
+
+func normalizePortFlag(port string) (string, error) {
+	port = strings.TrimSpace(port)
+	if !isPortArg(port) {
+		return "", fmt.Errorf("port must be a number from 1 to 65535")
+	}
+	if strings.HasPrefix(port, ":") {
+		return port, nil
+	}
+	return ":" + port, nil
+}
+
+func isPortArg(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, ":")
+	if value == "" || len(value) > 5 {
+		return false
+	}
+	port := 0
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+		port = port*10 + int(r-'0')
+	}
+	return port >= 1 && port <= 65535
+}
+
 func usage() error {
 	fmt.Print(usageText())
 	return nil
@@ -369,7 +451,9 @@ func usage() error {
 func usageText() string {
 	return `Usage:
   loinc-browser
+  loinc-browser 8080
   loinc-browser -v
+  loinc-browser --port 8080
   loinc-browser --addr :8080
   loinc-browser ingest --release ./Loinc_2.82
   loinc-browser serve --addr :8080

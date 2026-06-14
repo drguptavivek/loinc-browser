@@ -64,6 +64,60 @@ func TestParseServeConfigAcceptsMCPFlags(t *testing.T) {
 	}
 }
 
+func TestParseServeConfigAcceptsPortFlag(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	cfg, err := parseServeConfig([]string{"--port", "18080"})
+	if err != nil {
+		t.Fatalf("parse --port serve config: %v", err)
+	}
+	if cfg.Addr != ":18080" {
+		t.Fatalf("expected --port to normalize to :18080, got %q", cfg.Addr)
+	}
+
+	cfg, err = parseServeConfig([]string{"-p", ":18081"})
+	if err != nil {
+		t.Fatalf("parse -p serve config: %v", err)
+	}
+	if cfg.Addr != ":18081" {
+		t.Fatalf("expected -p to accept :18081, got %q", cfg.Addr)
+	}
+}
+
+func TestParseServeConfigAcceptsBarePort(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	cfg, err := parseServeConfig([]string{"18082", "--no-mcp"})
+	if err != nil {
+		t.Fatalf("parse bare port serve config: %v", err)
+	}
+	if cfg.Addr != ":18082" || cfg.EnableMCP {
+		t.Fatalf("expected bare port and --no-mcp to apply, got %#v", cfg)
+	}
+}
+
+func TestParseServeConfigRejectsInvalidPort(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	for _, args := range [][]string{
+		{"--port", "0"},
+		{"--port", "70000"},
+		{"--port", "abc"},
+		{"--addr", ":18080", "--port", "18081"},
+		{"18080", "--addr", ":18081"},
+	} {
+		if _, err := parseServeConfig(args); err == nil {
+			t.Fatalf("expected args %v to be rejected", args)
+		}
+	}
+}
+
 func TestParseServeConfigEnablesMCPByDefaultAndCanDisable(t *testing.T) {
 	t.Setenv("LOINC_BROWSER_ADDR", "")
 	t.Setenv("PORT", "")
@@ -95,6 +149,11 @@ func TestDefaultRunArgsUseServeMode(t *testing.T) {
 	mode, args = commandMode([]string{"loinc-browser", "--addr", ":18080"})
 	if mode != "serve" || len(args) != 2 || args[0] != "--addr" {
 		t.Fatalf("expected leading flags to use serve mode, got %q %#v", mode, args)
+	}
+
+	mode, args = commandMode([]string{"loinc-browser", "18080"})
+	if mode != "serve" || len(args) != 1 || args[0] != "18080" {
+		t.Fatalf("expected bare port to use serve mode, got %q %#v", mode, args)
 	}
 }
 
