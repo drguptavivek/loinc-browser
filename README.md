@@ -4,19 +4,23 @@ Local browser for a licensed LOINC release. The code imports every term row from
 
 Licensed LOINC release files and generated SQLite databases must stay out of git.
 
-## License and Attribution
+## Features
 
-This repository contains application code and documentation only. It does not include the LOINC release, generated SQLite databases, or redistributed LOINC Licensed Materials.
+- One executable starts the Svelte UI, normalized JSON API, Swagger/OpenAPI docs, and HTTP MCP server.
+- First run can auto-import a local licensed LOINC 2.82 release ZIP into `./data/loinc-normalized.sqlite`.
+- UI supports ranked search, facets, hierarchy browsing, panels/forms, answer lists, parts, groups, source metadata, and term relationships.
+- API exposes normalized `/api/v1` endpoints for EMR form-builder and scripting workflows.
+- MCP exposes context-optimized LOINC tools/resources over HTTP at `/mcp` and over stdio for agent configs.
+- Agent guidance is backed by editable Markdown docs under `docs/agent/`, served live by the Go app.
+- Repository skill file at `skills/loinc-mcp/SKILL.md` helps agents connect to the local MCP server.
+- Release packages contain code and docs only. Licensed LOINC data and generated databases are not bundled.
 
-LOINC content is owned by its respective rights holders and remains governed by the [LOINC Copyright Notice and License](https://loinc.org/kb/license/). When you use this browser with a local LOINC release, the following LOINC notice applies:
+## Getting Started Quickly
 
-> This material contains content from LOINC (http://loinc.org). LOINC is Copyright © Regenstrief Institute, Inc. and the Logical Observation Identifiers Names and Codes (LOINC) Committee and is available at no cost under the license at http://loinc.org/license. LOINC® is a registered United States trademark of Regenstrief Institute, Inc.
-
-Third-party content surfaced from LOINC release fields, including `EXTERNAL_COPYRIGHT_NOTICE`, remains subject to the relevant third-party copyright and terms. Project documentation and non-LOINC explanatory text may be reused with attribution under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Project source: [GitHub](https://github.com/drguptavivek/LOINC).
-
-## Quick Start
-
-Download the `v0.90` binary for your platform from GitHub Releases, place your licensed `Loinc*.zip` beside it, then run one command:
+1. Download the `v0.90` binary for your platform from GitHub Releases.
+2. Download the licensed LOINC 2.82 release ZIP from LOINC after accepting the LOINC license.
+3. Place the release ZIP beside the executable, for example `Loinc_2.82.zip`.
+4. Run one command.
 
 macOS arm64 or Linux amd64:
 
@@ -42,6 +46,82 @@ The app uses `./data/loinc-normalized.sqlite`. If that database is missing or em
 
 Use `./loinc-browser --addr 127.0.0.1:9090` only when you need a full listen address.
 
+## MCP Server
+
+The default run mode exposes the local LOINC database to agents through MCP over HTTP while also serving the UI, API, and Swagger docs.
+
+All-in-one local server:
+
+```bash
+./loinc-browser
+```
+
+The default HTTP MCP route is `http://localhost:8080/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time.
+
+Stdio MCP remains available for agent configs that launch a dedicated MCP process:
+
+```bash
+./loinc-browser mcp --docs-dir ./docs/agent
+```
+
+See `docs/MCP.md` for tool/resource names, connection examples, and context-optimization guidance.
+
+## Agent Skill
+
+The repository skill file is:
+
+```text
+skills/loinc-mcp/SKILL.md
+```
+
+Use it when an agent needs to connect to the local LOINC MCP server, choose HTTP versus stdio transport, or understand the context-optimized tools and resources. The live Markdown concept guides are served at:
+
+- `http://localhost:8080/docs/mcp`
+- `http://localhost:8080/docs/concepts`
+- `http://localhost:8080/docs/agent-guide`
+
+## UI Browsing
+
+The browser UI is served at:
+
+```text
+http://localhost:8080
+```
+
+It supports ranked search, browse-by-hierarchy, facets, relationship exploration, panels/forms, answer lists, parts, groups, and source/copyright metadata. v1 term lists exclude `STATUS=INACTIVE` by default; pass `status=INACTIVE` to search inactive terms, or `status=*` to include every status.
+
+The browser also includes a local loader for uploading a licensed LOINC release ZIP. Uploaded releases are extracted under `data/uploads/`, ingested into the configured SQLite database, and remain outside git.
+
+## API Endpoint
+
+The same executable exposes JSON endpoints for scripts and other apps. The `/api/v1` routes are the normalized API surface for EMR form-builder workflows.
+
+```bash
+curl 'http://localhost:8080/api/version'
+curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
+curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&limit=10'
+curl 'http://localhost:8080/api/v1/terms/14749-6'
+curl 'http://localhost:8080/api/v1/terms/14749-6/relationships'
+curl 'http://localhost:8080/api/v1/hierarchy/roots'
+curl 'http://localhost:8080/api/v1/answer-lists/search?q=positive'
+curl 'http://localhost:8080/api/v1/source-organizations'
+curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:8080/api/import/upload'
+```
+
+Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`. See `docs/API.md` for the structured v1 API guide.
+
+## License and Attribution
+
+This repository contains application code and documentation only. It does not include the LOINC release, generated SQLite databases, or redistributed LOINC Licensed Materials.
+
+LOINC content is owned by its respective rights holders and remains governed by the [LOINC Copyright Notice and License](https://loinc.org/kb/license/). When you use this browser with a local LOINC release, the following LOINC notice applies:
+
+> This material contains content from LOINC (http://loinc.org). LOINC is Copyright © Regenstrief Institute, Inc. and the Logical Observation Identifiers Names and Codes (LOINC) Committee and is available at no cost under the license at http://loinc.org/license. LOINC® is a registered United States trademark of Regenstrief Institute, Inc.
+
+Third-party content surfaced from LOINC release fields, including `EXTERNAL_COPYRIGHT_NOTICE`, remains subject to the relevant third-party copyright and terms. Project documentation and non-LOINC explanatory text may be reused with attribution under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Project source: [GitHub](https://github.com/drguptavivek/LOINC).
+
+## Development Mode
+
 From source, use:
 
 ```bash
@@ -59,21 +139,7 @@ PORT=8080
 
 See `.env.example` for the supported keys.
 
-The browser includes a local loader for uploading a licensed LOINC release zip. Uploaded releases are extracted under `data/uploads/`, ingested into the configured SQLite database, and remain outside git. v1 term lists exclude `STATUS=INACTIVE` by default; pass `status=INACTIVE` to search inactive terms, or `status=*` to include every status.
-
 On `serve`, if the configured database is missing or has no `loinc_terms` data, the app looks for a local `Loinc*.zip` within the project directory or one nested release directory and imports it automatically. Existing populated databases are not overwritten.
-
-## Installed Binary
-
-Release packages contain only the application binary and documentation. They do not contain LOINC release data or a generated database.
-
-```bash
-./loinc-browser
-```
-
-If a local `Loinc*.zip` is present and the database is empty, the default run mode can auto-ingest it on first run. `./loinc-browser serve ...` remains supported. Use `--no-mcp` only if you need to disable HTTP MCP.
-
-## Development Mode
 
 Use Vite during UI work so Svelte changes hot-reload without rebuilding embedded assets:
 
@@ -133,45 +199,6 @@ The v1 API exposes focused resources for term search, term detail, grouped relat
 The app also supports **Browse by rank**, based on LOINC's `COMMON_TEST_RANK` and `COMMON_ORDER_RANK` fields. Ranked browsing can use observation or order rank mode, limits results to positive ranks when requested, and orders the most frequently used LOINC codes first. Unranked terms remain searchable through normal search and facet browsing.
 
 See `ERD.md` for the fuller relationship diagram and storage model.
-
-## API
-
-The same server exposes JSON endpoints for scripts and other apps. The `/api/v1` routes are the normalized API surface for EMR form-builder workflows.
-See `docs/API.md` for the structured v1 API guide, including route groups, shared filters, pagination, HATEOAS links, hierarchy browsing, panels, answer lists, parts, groups, and copyright/source workflows.
-
-```bash
-curl 'http://localhost:8080/api/version'
-curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
-curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&limit=10'
-curl 'http://localhost:8080/api/v1/terms/14749-6'
-curl 'http://localhost:8080/api/v1/terms/14749-6/relationships'
-curl 'http://localhost:8080/api/v1/hierarchy/roots'
-curl 'http://localhost:8080/api/v1/answer-lists/search?q=positive'
-curl 'http://localhost:8080/api/v1/source-organizations'
-curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:8080/api/import/upload'
-```
-
-Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`.
-
-## MCP
-
-The default run mode exposes the local LOINC database to agents through MCP over HTTP while also serving the UI, API, and Swagger docs.
-
-All-in-one local server:
-
-```bash
-./loinc-browser
-```
-
-The default HTTP MCP route is `http://localhost:8080/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time. The repository skill for agents is `skills/loinc-mcp/SKILL.md`.
-
-Stdio MCP remains available for agent configs that launch a dedicated MCP process:
-
-```bash
-./loinc-browser mcp --docs-dir ./docs/agent
-```
-
-See `docs/MCP.md` for tool/resource names, connection examples, and context-optimization guidance.
 
 ## Check
 
