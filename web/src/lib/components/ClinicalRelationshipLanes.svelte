@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import { Copy, Download, ExternalLink } from '@lucide/svelte';
 	import type cytoscape from 'cytoscape';
 	import type { Core, ElementDefinition } from 'cytoscape';
 	import type { Term, TermAccessory, TermRelationshipGraph } from '$lib/api';
@@ -162,10 +163,6 @@
 	function openTermInNewTab(loincNum: string) {
 		if (!isLoincNumber(loincNum)) return;
 		window.open(termURL(loincNum), '_blank', 'noopener,noreferrer');
-	}
-
-	function openAccessory(item: TermAccessory) {
-		openTermInNewTab(item.code);
 	}
 
 	function browseHierarchy(item: TermAccessory) {
@@ -500,11 +497,23 @@
 						<p class="mt-1 text-xs text-zinc-500">{parentContainers.length + childItems.length + answerLists.length + hierarchyRows.length + 1} concepts · export max {exportConceptLimit}</p>
 					</div>
 					<div class="flex flex-wrap justify-end gap-2">
-						<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={copyConcepts}>
-							{copiedConcepts ? 'Copied' : 'Copy'}
+						<button
+							type="button"
+							class={`rounded-md border border-zinc-200 p-2 ${copiedConcepts ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-50'}`}
+							aria-label={copiedConcepts ? 'Copied concepts' : 'Copy concepts'}
+							title={copiedConcepts ? 'Copied' : 'Copy concepts'}
+							onclick={copyConcepts}
+						>
+							<Copy size={14} />
 						</button>
-						<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={exportConceptsTXT}>
-							Export TXT
+						<button
+							type="button"
+							class="rounded-md border border-zinc-200 p-2 text-zinc-700 hover:bg-zinc-50"
+							aria-label="Export concepts as TXT"
+							title="Export TXT"
+							onclick={exportConceptsTXT}
+						>
+							<Download size={14} />
 						</button>
 					</div>
 				</div>
@@ -532,15 +541,28 @@
 				{#if parentContainers.length}
 					<div class="flex flex-col gap-2">
 						{#each parentContainers.slice(0, 12) as item}
-							<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left hover:bg-zinc-100" onclick={() => openAccessory(item)}>
-								<div class="break-words text-sm font-medium text-zinc-950">{title(item)}</div>
+							<div class="rounded-md bg-zinc-50 px-2 py-1.5">
+								<div class="flex items-start justify-between gap-2">
+									<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{title(item)}</div>
+									{#if isLoincNumber(item.code)}
+										<button
+											type="button"
+											class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+											aria-label={`Open ${item.code} in hierarchy`}
+											title="Open in hierarchy"
+											onclick={() => openTermInNewTab(item.code)}
+										>
+											<ExternalLink size={14} />
+										</button>
+									{/if}
+								</div>
 								<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
 									<span class="font-mono">{item.code}</span>
 									{#if sequenceLabel(item)}<span>{sequenceLabel(item)}</span>{/if}
 									{#if rankLabel(item)}<span>{rankLabel(item)}</span>{/if}
 									{#if duplicateLabel(item)}<span>{duplicateLabel(item)}</span>{/if}
 								</div>
-							</button>
+							</div>
 						{/each}
 					</div>
 				{:else}
@@ -555,14 +577,27 @@
 				{#if childItems.length}
 					<div class="flex flex-col gap-2">
 						{#each childItems.slice(0, 20) as item}
-							<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left hover:bg-zinc-100" onclick={() => openAccessory(item)}>
-								<div class="break-words text-sm font-medium text-zinc-950">{title(item)}</div>
+							<div class="rounded-md bg-zinc-50 px-2 py-1.5">
+								<div class="flex items-start justify-between gap-2">
+									<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{title(item)}</div>
+									{#if isLoincNumber(item.code)}
+										<button
+											type="button"
+											class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+											aria-label={`Open ${item.code} in hierarchy`}
+											title="Open in hierarchy"
+											onclick={() => openTermInNewTab(item.code)}
+										>
+											<ExternalLink size={14} />
+										</button>
+									{/if}
+								</div>
 								<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
 									{#if sequenceLabel(item)}<span>{sequenceLabel(item)}</span>{/if}
 									<span class="font-mono">{item.code}</span>
 									{#if duplicateLabel(item)}<span>{duplicateLabel(item)}</span>{/if}
 								</div>
-							</button>
+							</div>
 						{/each}
 					</div>
 				{:else}
@@ -599,10 +634,21 @@
 				{#if hierarchyRows.length}
 					<div class="flex flex-col gap-2">
 						{#each hierarchyRows as item}
-							<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-sm hover:bg-zinc-100" onclick={() => browseHierarchy(item)}>
-								<div class="break-words font-medium text-zinc-950">{title(item)}</div>
+							<div class="rounded-md bg-zinc-50 px-2 py-1.5 text-sm">
+								<div class="flex items-start justify-between gap-2">
+									<div class="min-w-0 break-words font-medium text-zinc-950">{title(item)}</div>
+									<button
+										type="button"
+										class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+										aria-label={isLoincNumber(item.code) ? `Open ${item.code} in hierarchy` : `Browse ${title(item)}`}
+										title={isLoincNumber(item.code) ? 'Open in hierarchy' : 'Browse hierarchy'}
+										onclick={() => browseHierarchy(item)}
+									>
+										<ExternalLink size={14} />
+									</button>
+								</div>
 								<div class="mt-1 text-xs text-zinc-500">{item.subtitle || item.code}</div>
-							</button>
+							</div>
 						{/each}
 					</div>
 				{:else}
@@ -618,10 +664,23 @@
 					<p class="text-sm leading-5 text-zinc-600">Use the top parent container to review adjacent panel or questionnaire items in sequence.</p>
 					<div class="mt-2 flex flex-col gap-2">
 						{#each siblingContext as item}
-							<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-sm hover:bg-zinc-100" onclick={() => openAccessory(item)}>
-								<span class="font-mono font-semibold">{item.code}</span>
-								<span class="ml-2">{title(item)}</span>
-							</button>
+							<div class="flex items-start justify-between gap-2 rounded-md bg-zinc-50 px-2 py-1.5 text-sm">
+								<div class="min-w-0">
+									<span class="font-mono font-semibold">{item.code}</span>
+									<span class="ml-2 break-words">{title(item)}</span>
+								</div>
+								{#if isLoincNumber(item.code)}
+									<button
+										type="button"
+										class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+										aria-label={`Open ${item.code} in hierarchy`}
+										title="Open in hierarchy"
+										onclick={() => openTermInNewTab(item.code)}
+									>
+										<ExternalLink size={14} />
+									</button>
+								{/if}
+							</div>
 						{/each}
 					</div>
 				{:else}

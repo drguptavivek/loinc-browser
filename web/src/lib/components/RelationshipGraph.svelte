@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { ExternalLink } from '@lucide/svelte';
+	import { Copy, Download, ExternalLink, LocateFixed, Search } from '@lucide/svelte';
 	import type cytoscape from 'cytoscape';
 	import type { Core, ElementDefinition } from 'cytoscape';
 	import type { MapTo, RelationshipConcept, Term, TermAccessory, TermRelationshipGraph, TermSummary } from '$lib/api';
@@ -75,7 +75,8 @@
 	}
 
 	function conceptLabel(concept: RelationshipConcept) {
-		return concept.title || concept.code || concept.kind;
+		if (concept.title && concept.title !== '-') return concept.title;
+		return [concept.code, concept.subtitle || concept.kind].filter(Boolean).join(' · ') || concept.kind;
 	}
 
 	function termLabel(item: TermSummary) {
@@ -121,8 +122,13 @@
 		return [sequenceLabel(item), item.subtitle, repeatLabel(item)].filter(Boolean).join(' · ');
 	}
 
+	function directTitle(item: DirectRelationship) {
+		if (item.title && item.title !== '-') return item.title;
+		return [item.code, item.subtitle || item.kind].filter(Boolean).join(' · ') || item.kind;
+	}
+
 	function relationshipLine(item: DirectRelationship) {
-		return `${item.loincNum || item.code || '-'}\t${item.title}`;
+		return `${item.loincNum || item.code || '-'}\t${directTitle(item)}`;
 	}
 
 	function conceptLine(concept: RelationshipConcept) {
@@ -200,8 +206,8 @@
 	}
 
 	function directNodeLabel(item: DirectRelationship) {
-		if (item.loincNum) return compactNodeLabel(item.code, item.title);
-		return compactNodeLabel(item.title, item.code || item.kind);
+		if (item.loincNum) return compactNodeLabel(item.code, directTitle(item));
+		return compactNodeLabel(directTitle(item), item.code || item.kind);
 	}
 
 	function explicitRelationships(term: Term, graph: TermRelationshipGraph | null) {
@@ -673,11 +679,23 @@
 				<p class="mt-1 text-xs text-zinc-500">{directRelationships.length + concepts.length + 1} concepts · export max {exportConceptLimit}</p>
 			</div>
 			<div class="flex flex-wrap justify-end gap-2">
-				<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={copyRelationships}>
-					{copiedRelationships ? 'Copied' : 'Copy'}
+				<button
+					type="button"
+					class={`rounded-md border border-zinc-200 p-2 ${copiedRelationships ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-50'}`}
+					aria-label={copiedRelationships ? 'Copied relationships' : 'Copy relationships'}
+					title={copiedRelationships ? 'Copied' : 'Copy relationships'}
+					onclick={copyRelationships}
+				>
+					<Copy size={14} />
 				</button>
-				<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={exportRelationshipsTXT}>
-					Export TXT
+				<button
+					type="button"
+					class="rounded-md border border-zinc-200 p-2 text-zinc-700 hover:bg-zinc-50"
+					aria-label="Export relationships as TXT"
+					title="Export TXT"
+					onclick={exportRelationshipsTXT}
+				>
+					<Download size={14} />
 				</button>
 			</div>
 		</div>
@@ -698,7 +716,7 @@
 							{#each section.items as item}
 								<div class="rounded-md bg-zinc-50 px-2 py-1.5">
 									<div class="flex items-start justify-between gap-2">
-										<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{item.title}</div>
+										<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{directTitle(item)}</div>
 										{#if item.loincNum}
 											<button
 												type="button"
@@ -727,23 +745,52 @@
 				</div>
 				{#each displayedConcepts as concept}
 					<section class={`rounded-md border p-3 ${selectedConcept && conceptID(selectedConcept) === conceptID(concept) ? 'border-zinc-900 bg-zinc-50' : 'border-zinc-200'}`}>
-						<div class="break-words text-sm font-medium text-zinc-950">{conceptLabel(concept)}</div>
+						<div class="flex items-start justify-between gap-2">
+							<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{conceptLabel(concept)}</div>
+							<div class="flex shrink-0 gap-1">
+								<button
+									type="button"
+									class="rounded p-1 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-950"
+									aria-label={`Focus ${conceptLabel(concept)} node`}
+									title="Focus node"
+									onclick={() => (selectedConcept = concept)}
+								>
+									<LocateFixed size={14} />
+								</button>
+								<button
+									type="button"
+									class="rounded p-1 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-950"
+									aria-label={`Browse ${conceptLabel(concept)}`}
+									title="Browse concept"
+									onclick={() => onBrowseConcept(concept)}
+								>
+									<Search size={14} />
+								</button>
+							</div>
+						</div>
 						<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
 							<span class="rounded px-1.5 py-0.5 font-medium" style={conceptToneStyle(concept.kind)}>{concept.kind}</span>
 							{#if concept.code}<span class="font-mono">{concept.code}</span>{/if}
 							<span>{concept.relatedTotal.toLocaleString()} other terms</span>
 						</div>
-						<div class="mt-2 flex flex-wrap gap-3">
-							<button type="button" class="text-xs font-medium text-zinc-700 hover:underline" onclick={() => (selectedConcept = concept)}>Focus node</button>
-							<button type="button" class="text-xs font-medium text-zinc-700 hover:underline" onclick={() => onBrowseConcept(concept)}>Browse concept</button>
-						</div>
 						{#if concept.relatedTerms?.length}
 							<div class="mt-2 flex flex-col gap-1.5">
 								{#each concept.relatedTerms.slice(0, maxTermsPerConcept) as related}
-									<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-xs hover:bg-zinc-100" onclick={() => openTermInNewTab(related.loincNum)}>
-										<span class="font-mono font-semibold text-zinc-900">{related.loincNum}</span>
-										<span class="mt-0.5 block break-words text-zinc-600">{termLabel(related)}</span>
-									</button>
+									<div class="flex items-start justify-between gap-2 rounded-md bg-zinc-50 px-2 py-1.5 text-xs">
+										<div class="min-w-0">
+											<span class="font-mono font-semibold text-zinc-900">{related.loincNum}</span>
+											<span class="mt-0.5 block break-words text-zinc-600">{termLabel(related)}</span>
+										</div>
+										<button
+											type="button"
+											class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+											aria-label={`Open ${related.loincNum} in hierarchy`}
+											title="Open in hierarchy"
+											onclick={() => openTermInNewTab(related.loincNum)}
+										>
+											<ExternalLink size={14} />
+										</button>
+									</div>
 								{/each}
 							</div>
 						{/if}
