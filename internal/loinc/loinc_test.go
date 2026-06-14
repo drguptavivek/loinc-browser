@@ -166,6 +166,12 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 	if !hasAccessory(term.Panels, "panel-membership", "1001-9") {
 		t.Fatalf("expected normalized panel membership, got %#v", term.Panels)
 	}
+	if !hasAccessoryTitle(term.Panels, "panel-membership", "1001-9", "Hemoglobin [Mass/volume] in Blood") {
+		t.Fatalf("expected normalized panel membership to use the parent long common name, got %#v", term.Panels)
+	}
+	if !hasAccessoryField(term.Panels, "panel-membership", "1001-9", "panelDisplayName", "Example panel") {
+		t.Fatalf("expected panel membership to preserve panel display name, got %#v", term.Panels)
+	}
 	if !hasAccessoryField(term.Panels, "panel-membership", "1001-9", "parentCommonTestRank", "50") {
 		t.Fatalf("expected parent panel rank on normalized panel membership, got %#v", term.Panels)
 	}
@@ -182,6 +188,16 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 	}
 	if !hasAccessoryField(termWithNullPanelOverride.Panels, "panel-membership", "1001-9", "answerListIdOverride", "") {
 		t.Fatalf("expected blank answer-list override on nullable panel membership, got %#v", termWithNullPanelOverride.Panels)
+	}
+	panelTerm, err := store.TermWithAccessories(ctx, "1001-9")
+	if err != nil {
+		t.Fatalf("panel term lookup failed: %v", err)
+	}
+	if !hasAccessoryTitle(panelTerm.Panels, "panel-child", "1000-1", "Glucose [Mass/volume] in Plasma") {
+		t.Fatalf("expected normalized panel child to use the child long common name, got %#v", panelTerm.Panels)
+	}
+	if !hasAccessoryField(panelTerm.Panels, "panel-child", "1000-1", "panelDisplayName", "Glucose") {
+		t.Fatalf("expected panel child to preserve panel display name, got %#v", panelTerm.Panels)
 	}
 
 	deprecatedTerm, err := store.TermWithAccessories(ctx, "1999-9")
@@ -376,6 +392,15 @@ func TestIngestCreatesNormalizedRelationshipModel(t *testing.T) {
 func hasAccessory(items []TermAccessory, kind string, code string) bool {
 	for _, item := range items {
 		if item.Kind == kind && item.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAccessoryTitle(items []TermAccessory, kind string, code string, title string) bool {
+	for _, item := range items {
+		if item.Kind == kind && item.Code == code && item.Title == title {
 			return true
 		}
 	}

@@ -367,7 +367,7 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 	}
 
 	panelMembershipRows, err := s.db.QueryContext(ctx, `
-		select p.parent_loinc_num, p.parent_name, p.sequence, p.item_id, p.entry_type, p.data_type_in_form, coalesce(p.answer_list_id_override, ''),
+		select p.parent_loinc_num, coalesce(nullif(parent.long_common_name, ''), p.parent_name), p.parent_name, p.sequence, p.item_id, p.entry_type, p.data_type_in_form, coalesce(p.answer_list_id_override, ''),
 			coalesce(parent.common_test_rank, 0), coalesce(parent.common_order_rank, 0),
 			case
 				when coalesce(parent.common_test_rank, 0) > 0 and coalesce(parent.common_order_rank, 0) > 0
@@ -387,8 +387,8 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 	for panelMembershipRows.Next() {
 		var item TermAccessory
 		var sequence, parentCommonTestRank, parentCommonOrderRank, parentRank int
-		var itemID, entryType, dataTypeInForm, answerListIDOverride string
-		if err := panelMembershipRows.Scan(&item.Code, &item.Title, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride, &parentCommonTestRank, &parentCommonOrderRank, &parentRank); err != nil {
+		var itemID, entryType, dataTypeInForm, answerListIDOverride, panelDisplayName string
+		if err := panelMembershipRows.Scan(&item.Code, &item.Title, &panelDisplayName, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride, &parentCommonTestRank, &parentCommonOrderRank, &parentRank); err != nil {
 			return fmt.Errorf("scan normalized panel membership for %s: %w", term.LOINCNum, err)
 		}
 		item.Kind = "panel-membership"
@@ -402,6 +402,7 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 			"parentCommonTestRank":  strconv.Itoa(parentCommonTestRank),
 			"parentCommonOrderRank": strconv.Itoa(parentCommonOrderRank),
 			"parentRank":            strconv.Itoa(parentRank),
+			"panelDisplayName":      panelDisplayName,
 		}
 		term.Panels = append(term.Panels, item)
 	}
@@ -410,10 +411,11 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 	}
 
 	panelItemRows, err := s.db.QueryContext(ctx, `
-		select child_loinc_num, child_name, sequence, item_id, entry_type, data_type_in_form, coalesce(answer_list_id_override, '')
-		from panel_items
-		where parent_loinc_num = ? collate nocase
-		order by sequence, child_name, child_loinc_num`, term.LOINCNum)
+		select p.child_loinc_num, coalesce(nullif(child.long_common_name, ''), p.child_name), p.child_name, p.sequence, p.item_id, p.entry_type, p.data_type_in_form, coalesce(p.answer_list_id_override, '')
+		from panel_items p
+		left join loinc_terms child on child.loinc_num = p.child_loinc_num
+		where p.parent_loinc_num = ? collate nocase
+		order by p.sequence, p.child_name, p.child_loinc_num`, term.LOINCNum)
 	if err != nil {
 		return fmt.Errorf("load normalized panel items for %s: %w", term.LOINCNum, err)
 	}
@@ -421,8 +423,8 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 	for panelItemRows.Next() {
 		var item TermAccessory
 		var sequence int
-		var itemID, entryType, dataTypeInForm, answerListIDOverride string
-		if err := panelItemRows.Scan(&item.Code, &item.Title, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride); err != nil {
+		var itemID, entryType, dataTypeInForm, answerListIDOverride, panelDisplayName string
+		if err := panelItemRows.Scan(&item.Code, &item.Title, &panelDisplayName, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride); err != nil {
 			return fmt.Errorf("scan normalized panel item for %s: %w", term.LOINCNum, err)
 		}
 		item.Kind = "panel-child"
@@ -433,6 +435,7 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 			"entryType":            entryType,
 			"dataTypeInForm":       dataTypeInForm,
 			"answerListIdOverride": answerListIDOverride,
+			"panelDisplayName":     panelDisplayName,
 		}
 		term.Panels = append(term.Panels, item)
 	}
@@ -862,7 +865,7 @@ func normalizedPanelMembershipBrowseSQL(query string) (string, string, string, [
 		base += " where " + strings.Join(where, " and ")
 	}
 	selectSQL := `select 'panel-membership', child.loinc_num, child.long_common_name, child.short_name, child.status,
-		parent.loinc_num, coalesce(nullif(p.parent_name, ''), parent.long_common_name), p.entry_type`
+		parent.loinc_num, coalesce(nullif(parent.long_common_name, ''), p.parent_name), p.entry_type`
 	return base, selectSQL, `order by p.parent_name, p.sequence, child.long_common_name`, args
 }
 
@@ -875,7 +878,7 @@ func normalizedPanelChildBrowseSQL(query string) (string, string, string, []any)
 		base += " where " + strings.Join(where, " and ")
 	}
 	selectSQL := `select 'panel-child', parent.loinc_num, parent.long_common_name, parent.short_name, parent.status,
-		child.loinc_num, coalesce(nullif(p.child_name, ''), child.long_common_name), p.entry_type`
+		child.loinc_num, coalesce(nullif(child.long_common_name, ''), p.child_name), p.entry_type`
 	return base, selectSQL, `order by parent.long_common_name, p.sequence, child.long_common_name`, args
 }
 
