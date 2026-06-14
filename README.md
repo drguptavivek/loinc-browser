@@ -34,7 +34,7 @@ Windows amd64 PowerShell:
 .\loinc-browser.exe
 ```
 
-Open `http://localhost:8080`. The executable serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
+Open `http://localhost:9005`. The executable serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
 
 The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. To use a different port:
 
@@ -56,7 +56,7 @@ All-in-one local server:
 ./loinc-browser
 ```
 
-The default HTTP MCP route is `http://localhost:8080/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time.
+The default HTTP MCP route is `http://localhost:9005/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time.
 
 Stdio MCP remains available for agent configs that launch a dedicated MCP process:
 
@@ -76,16 +76,16 @@ skills/loinc-mcp/SKILL.md
 
 Use it when an agent needs to connect to the local LOINC MCP server, choose HTTP versus stdio transport, or understand the context-optimized tools and resources. The live Markdown concept guides are served at:
 
-- `http://localhost:8080/docs/mcp`
-- `http://localhost:8080/docs/concepts`
-- `http://localhost:8080/docs/agent-guide`
+- `http://localhost:9005/docs/mcp`
+- `http://localhost:9005/docs/concepts`
+- `http://localhost:9005/docs/agent-guide`
 
 ## UI Browsing
 
 The browser UI is served at:
 
 ```text
-http://localhost:8080
+http://localhost:9005
 ```
 
 It supports ranked search, browse-by-hierarchy, facets, relationship exploration, panels/forms, answer lists, parts, groups, and source/copyright metadata. v1 term lists exclude `STATUS=INACTIVE` by default; pass `status=INACTIVE` to search inactive terms, or `status=*` to include every status.
@@ -97,18 +97,18 @@ The browser also includes a local loader for uploading a licensed LOINC release 
 The same executable exposes JSON endpoints for scripts and other apps. The `/api/v1` routes are the normalized API surface for EMR form-builder workflows.
 
 ```bash
-curl 'http://localhost:8080/api/version'
-curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
-curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&limit=10'
-curl 'http://localhost:8080/api/v1/terms/14749-6'
-curl 'http://localhost:8080/api/v1/terms/14749-6/relationships'
-curl 'http://localhost:8080/api/v1/hierarchy/roots'
-curl 'http://localhost:8080/api/v1/answer-lists/search?q=positive'
-curl 'http://localhost:8080/api/v1/source-organizations'
-curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:8080/api/import/upload'
+curl 'http://localhost:9005/api/version'
+curl 'http://localhost:9005/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance'
+curl 'http://localhost:9005/api/v1/terms/top?rankMode=observation&limit=10'
+curl 'http://localhost:9005/api/v1/terms/14749-6'
+curl 'http://localhost:9005/api/v1/terms/14749-6/relationships'
+curl 'http://localhost:9005/api/v1/hierarchy/roots'
+curl 'http://localhost:9005/api/v1/answer-lists/search?q=positive'
+curl 'http://localhost:9005/api/v1/source-organizations'
+curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:9005/api/import/upload'
 ```
 
-Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:8080/openapi.json`. See `docs/API.md` for the structured v1 API guide.
+Swagger UI is served at `http://localhost:9005/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:9005/openapi.json`. See `docs/API.md` for the structured v1 API guide.
 
 ## License and Attribution
 
@@ -132,9 +132,9 @@ make serve
 The serve address can also come from `.env`:
 
 ```bash
-LOINC_BROWSER_ADDR=:8080
+LOINC_BROWSER_ADDR=:9005
 # or
-PORT=8080
+PORT=9005
 ```
 
 See `.env.example` for the supported keys.
@@ -149,7 +149,7 @@ make dev
 
 This starts two processes:
 
-- Go API on `http://localhost:8080`, restarted when Go source files change
+- Go API on `http://localhost:9005`, restarted when Go source files change
 - Vite HMR UI on `http://localhost:5173`, proxying `/api` and `/openapi.json` to the Go API
 
 You can also run them separately:

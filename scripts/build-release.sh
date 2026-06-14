@@ -65,7 +65,7 @@ Windows PowerShell:
 .\\${APP_NAME}.exe
 \`\`\`
 
-Open http://localhost:8080 and upload your licensed LOINC release zip from the loader page. The same command also exposes /api/v1, Swagger/OpenAPI, and HTTP MCP at /mcp.
+Open http://localhost:9005 and upload your licensed LOINC release zip from the loader page. The same command also exposes /api/v1, Swagger/OpenAPI, and HTTP MCP at /mcp.
 
 ## License and attribution
 

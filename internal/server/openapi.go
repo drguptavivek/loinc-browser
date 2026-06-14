@@ -9,7 +9,7 @@ var openAPISpec = map[string]any{
 	},
 	"servers": []map[string]any{
 		{
-			"url":         "http://localhost:8080",
+			"url":         "http://localhost:9005",
 			"description": "Default local development server",
 		},
 	},

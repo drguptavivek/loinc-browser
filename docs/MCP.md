@@ -15,7 +15,7 @@ loinc-browser
 The default MCP HTTP endpoint is:
 
 ```text
-http://localhost:8080/mcp
+http://localhost:9005/mcp
 ```
 
 `loinc-browser serve --addr ...` is equivalent. Use `--mcp-path` to change the HTTP MCP route, or `--no-mcp` to disable HTTP MCP.

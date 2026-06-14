@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/csv"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"loinc-browser/internal/loinc"
@@ -40,6 +42,14 @@ func TestDefaultAddrUsesPortWhenAddrMissing(t *testing.T) {
 	t.Setenv("PORT", "7070")
 	if got := defaultServeAddr(); got != ":7070" {
 		t.Fatalf("expected :7070, got %q", got)
+	}
+}
+
+func TestDefaultAddrUses9005(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	if got := defaultServeAddr(); got != ":9005" {
+		t.Fatalf("expected :9005, got %q", got)
 	}
 }
 
@@ -115,6 +125,53 @@ func TestParseServeConfigRejectsInvalidPort(t *testing.T) {
 		if _, err := parseServeConfig(args); err == nil {
 			t.Fatalf("expected args %v to be rejected", args)
 		}
+	}
+}
+
+func TestServeURLUsesBoundPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	got := serveURL(listener.Addr())
+	if !strings.HasPrefix(got, "http://localhost:") {
+		t.Fatalf("expected localhost URL, got %q", got)
+	}
+}
+
+func TestAddrWithPortPreservesHost(t *testing.T) {
+	got, err := addrWithPort("127.0.0.1:9005", "9090")
+	if err != nil {
+		t.Fatalf("addr with port: %v", err)
+	}
+	if got != "127.0.0.1:9090" {
+		t.Fatalf("expected host-preserving addr, got %q", got)
+	}
+
+	got, err = addrWithPort(":9005", "9091")
+	if err != nil {
+		t.Fatalf("addr with wildcard port: %v", err)
+	}
+	if got != ":9091" {
+		t.Fatalf("expected wildcard addr, got %q", got)
+	}
+}
+
+func TestListenWithPortPromptReturnsBindErrorWhenNonInteractive(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	_, err = listenWithPortPrompt(listener.Addr().String(), nil, io.Discard)
+	if err == nil {
+		t.Fatal("expected occupied non-interactive address to fail")
+	}
+	if !isAddrInUse(err) {
+		t.Fatalf("expected address-in-use error, got %v", err)
 	}
 }
 

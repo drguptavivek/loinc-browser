@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -135,11 +140,17 @@ func runServe(args []string) error {
 		MCPPath:      cfg.MCPPath,
 		DocsDir:      cfg.DocsDir,
 	})
-	fmt.Printf("Serving LOINC browser on http://localhost%s\n", cfg.Addr)
-	if cfg.EnableMCP {
-		fmt.Printf("Serving LOINC MCP over HTTP at http://localhost%s%s\n", cfg.Addr, cfg.MCPPath)
+	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
+	if err != nil {
+		return err
 	}
-	return http.ListenAndServe(cfg.Addr, handler)
+	url := serveURL(listener.Addr())
+	fmt.Printf("Serving LOINC browser on %s\n", url)
+	if cfg.EnableMCP {
+		fmt.Printf("Serving LOINC MCP over HTTP at %s%s\n", url, cfg.MCPPath)
+	}
+	go promptLaunchURL(url, os.Stdin, os.Stdout)
+	return http.Serve(listener, handler)
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -198,6 +209,133 @@ func normalizeServeArgs(args []string) []string {
 	normalized = append(normalized, "--port", args[0])
 	normalized = append(normalized, args[1:]...)
 	return normalized
+}
+
+func listenWithPortPrompt(addr string, in *os.File, out io.Writer) (net.Listener, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err == nil {
+		return listener, nil
+	}
+	if !isAddrInUse(err) || !isTerminal(in) {
+		return nil, err
+	}
+	reader := bufio.NewReader(in)
+	currentAddr := addr
+	for {
+		fmt.Fprintf(out, "Port %s is already in use. Enter a different port, or press Enter to cancel: ", displayPort(currentAddr))
+		answer, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, readErr
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return nil, err
+		}
+		nextAddr, normalizeErr := addrWithPort(currentAddr, answer)
+		if normalizeErr != nil {
+			fmt.Fprintf(out, "%v\n", normalizeErr)
+			continue
+		}
+		listener, listenErr := net.Listen("tcp", nextAddr)
+		if listenErr == nil {
+			return listener, nil
+		}
+		if !isAddrInUse(listenErr) {
+			return nil, listenErr
+		}
+		currentAddr = nextAddr
+		err = listenErr
+	}
+}
+
+func promptLaunchURL(url string, in *os.File, out io.Writer) {
+	if !isTerminal(in) {
+		fmt.Fprintf(out, "Open %s in your browser.\n", url)
+		return
+	}
+	fmt.Fprintf(out, "Open %s in your browser now? [Y/n]: ", url)
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	if errors.Is(err, io.EOF) && strings.TrimSpace(answer) == "" {
+		fmt.Fprintf(out, "Open %s when ready.\n", url)
+		return
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(out, "Could not read browser launch response: %v\n", err)
+		return
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "" || answer == "y" || answer == "yes" {
+		if err := openBrowser(url); err != nil {
+			fmt.Fprintf(out, "Could not launch browser automatically. Open %s manually. Error: %v\n", url, err)
+		}
+		return
+	}
+	fmt.Fprintf(out, "Open %s when ready.\n", url)
+}
+
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
+}
+
+func serveURL(addr net.Addr) string {
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		return fmt.Sprintf("http://localhost:%d", tcpAddr.Port)
+	}
+	_, port, err := net.SplitHostPort(addr.String())
+	if err == nil && port != "" {
+		return "http://localhost:" + port
+	}
+	return "http://localhost:9005"
+}
+
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage of each socket address")
+}
+
+func displayPort(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil && port != "" {
+		return port
+	}
+	return strings.TrimPrefix(addr, ":")
+}
+
+func addrWithPort(addr string, port string) (string, error) {
+	normalized, err := normalizePortFlag(port)
+	if err != nil {
+		return "", err
+	}
+	port = strings.TrimPrefix(normalized, ":")
+	host, _, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil || host == "" {
+		return ":" + port, nil
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func isTerminal(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func runMCP(args []string) error {
@@ -380,7 +518,7 @@ func defaultServeAddr() string {
 		}
 		return ":" + port
 	}
-	return ":8080"
+	return ":9005"
 }
 
 func defaultAgentDocsDir() string {
@@ -451,18 +589,18 @@ func usage() error {
 func usageText() string {
 	return `Usage:
   loinc-browser
-  loinc-browser 8080
+  loinc-browser 9005
   loinc-browser -v
-  loinc-browser --port 8080
-  loinc-browser --addr :8080
+  loinc-browser --port 9005
+  loinc-browser --addr :9005
   loinc-browser ingest --release ./Loinc_2.82
-  loinc-browser serve --addr :8080
-  loinc-browser serve --addr :8080 --no-mcp
+  loinc-browser serve --addr :9005
+  loinc-browser serve --addr :9005 --no-mcp
   loinc-browser mcp --docs-dir ./docs/agent
 
 Environment:
-  LOINC_BROWSER_ADDR=:8080
-  PORT=8080
+  LOINC_BROWSER_ADDR=:9005
+  PORT=9005
   LOINC_AGENT_DOCS_DIR=./docs/agent
 `
 }

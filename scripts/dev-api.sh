@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DB="${DB:-./data/loinc.sqlite}"
-ADDR="${ADDR:-:8080}"
+ADDR="${ADDR:-:9005}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
 
 pid=""

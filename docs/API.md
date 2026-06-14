@@ -9,7 +9,7 @@ The `/api/v1` routes are the primary API contract. They read normalized SQLite t
 Base URL in development:
 
 ```text
-http://localhost:8080
+http://localhost:9005
 ```
 
 Common alternate local URL:
@@ -328,7 +328,7 @@ This route is useful for generic browse screens. For structured workflows, prefe
 ### 1. Find a term for a field
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance&limit=25'
+curl 'http://localhost:9005/api/v1/terms/search?q=glucose&usageType=observation&rankMode=observation&sort=relevance&limit=25'
 ```
 
 Recommended UI behavior:
@@ -341,8 +341,8 @@ Recommended UI behavior:
 ### 2. Browse commonly used terms
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/top?rankMode=observation&usageType=observation&rankedOnly=true&limit=25'
-curl 'http://localhost:8080/api/v1/terms/top?rankMode=order&usageType=order&rankedOnly=true&limit=25'
+curl 'http://localhost:9005/api/v1/terms/top?rankMode=observation&usageType=observation&rankedOnly=true&limit=25'
+curl 'http://localhost:9005/api/v1/terms/top?rankMode=order&usageType=order&rankedOnly=true&limit=25'
 ```
 
 Use observation rank for result-entry fields and order rank for order-entry fields.
@@ -350,7 +350,7 @@ Use observation rank for result-entry fields and order rank for order-entry fiel
 ### 3. Check whether a term is suitable
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/1234-5/fit'
+curl 'http://localhost:9005/api/v1/terms/1234-5/fit'
 ```
 
 Use this before adding a term to a form field. It gives a compact status and relationship summary without loading all relationships.
@@ -358,9 +358,9 @@ Use this before adding a term to a form field. It gives a compact status and rel
 ### 4. Traverse the hierarchy
 
 ```bash
-curl 'http://localhost:8080/api/v1/hierarchy/roots'
-curl 'http://localhost:8080/api/v1/hierarchy/nodes/6729/children'
-curl 'http://localhost:8080/api/v1/hierarchy/nodes/6729/terms?sort=usage&limit=25'
+curl 'http://localhost:9005/api/v1/hierarchy/roots'
+curl 'http://localhost:9005/api/v1/hierarchy/nodes/6729/children'
+curl 'http://localhost:9005/api/v1/hierarchy/nodes/6729/terms?sort=usage&limit=25'
 ```
 
 Use `nodeId` for UI state. Do not use hierarchy `code` as a tree key because the same code can occur under multiple paths.
@@ -368,7 +368,7 @@ Use `nodeId` for UI state. Do not use hierarchy `code` as a tree key because the
 ### 5. Inspect relationships for a candidate term
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/1234-5/relationships'
+curl 'http://localhost:9005/api/v1/terms/1234-5/relationships'
 ```
 
 Relationship groups:
@@ -387,8 +387,8 @@ Relationship groups:
 ### 6. Build a questionnaire or panel
 
 ```bash
-curl 'http://localhost:8080/api/v1/panels/search?q=screening&limit=25'
-curl 'http://localhost:8080/api/v1/panels/1234-5/items?limit=100'
+curl 'http://localhost:9005/api/v1/panels/search?q=screening&limit=25'
+curl 'http://localhost:9005/api/v1/panels/1234-5/items?limit=100'
 ```
 
 Use `sequence` as the default sort for panel items. If an item has `answerListIdOverride`, follow its link or call the answer-list endpoint to load answer choices.
@@ -396,9 +396,9 @@ Use `sequence` as the default sort for panel items. If an item has `answerListId
 ### 7. Load coded answer choices
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/1234-5/answer-lists'
-curl 'http://localhost:8080/api/v1/answer-lists/LL1234-5/answers?limit=100'
-curl 'http://localhost:8080/api/v1/answer-lists/LL1234-5/terms?status=*&limit=25'
+curl 'http://localhost:9005/api/v1/terms/1234-5/answer-lists'
+curl 'http://localhost:9005/api/v1/answer-lists/LL1234-5/answers?limit=100'
+curl 'http://localhost:9005/api/v1/answer-lists/LL1234-5/terms?status=*&limit=25'
 ```
 
 Use answer-list answer rows for coded choice controls. Use linked terms to find which LOINC terms use an answer list.
@@ -406,10 +406,10 @@ Use answer-list answer rows for coded choice controls. Use linked terms to find 
 ### 8. Explore parts and groups for alternatives
 
 ```bash
-curl 'http://localhost:8080/api/v1/parts/search?q=glucose'
-curl 'http://localhost:8080/api/v1/parts/LP12345-6/terms?linkSet=primary&sort=usage'
-curl 'http://localhost:8080/api/v1/groups/search?q=chemistry'
-curl 'http://localhost:8080/api/v1/groups/LG1234-5/terms?sort=usage'
+curl 'http://localhost:9005/api/v1/parts/search?q=glucose'
+curl 'http://localhost:9005/api/v1/parts/LP12345-6/terms?linkSet=primary&sort=usage'
+curl 'http://localhost:9005/api/v1/groups/search?q=chemistry'
+curl 'http://localhost:9005/api/v1/groups/LG1234-5/terms?sort=usage'
 ```
 
 Use parts to find terms sharing semantic axes. Use groups to find curated related term sets.
@@ -417,9 +417,9 @@ Use parts to find terms sharing semantic axes. Use groups to find curated relate
 ### 9. Check copyright and source metadata
 
 ```bash
-curl 'http://localhost:8080/api/v1/terms/1234-5/copyright'
-curl 'http://localhost:8080/api/v1/source-organizations'
-curl 'http://localhost:8080/api/v1/source-organizations/1'
+curl 'http://localhost:9005/api/v1/terms/1234-5/copyright'
+curl 'http://localhost:9005/api/v1/source-organizations'
+curl 'http://localhost:9005/api/v1/source-organizations/1'
 ```
 
 Use this before surfacing terms from externally copyrighted scales or source-controlled content.

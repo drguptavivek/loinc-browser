@@ -1,6 +1,6 @@
 APP_NAME := loinc-browser
 DEFAULT_DB := ./data/loinc-normalized.sqlite
-ADDR ?= :8080
+ADDR ?= :9005
 DEV_WEB_PORT ?= 5173
 VERSION ?= $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo dev)
 RELEASE ?= ./Loinc_2.82
