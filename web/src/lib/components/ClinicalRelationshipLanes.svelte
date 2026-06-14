@@ -14,7 +14,7 @@
 
 	let { term, graph = null, onOpenTerm = () => {}, onBrowseHierarchy = () => {} }: Props = $props();
 
-	const parentContainers = $derived(sortParents(graph?.panelMemberships ?? []));
+	const parentContainers = $derived(dedupeParents(graph?.panelMemberships ?? []));
 	const childItems = $derived(dedupePanelItems(graph?.panelItems ?? []));
 	const answerLists = $derived(graph?.answerLists ?? term.answerLists ?? []);
 	const hierarchyRows = $derived((graph?.hierarchy ?? term.hierarchy ?? []).slice(0, 6));
@@ -40,6 +40,27 @@
 			if (sequence !== 0) return sequence;
 			return title(left).localeCompare(title(right)) || left.code.localeCompare(right.code);
 		});
+	}
+
+	function dedupeParents(items: TermAccessory[]) {
+		const seen = new Map<string, TermAccessory>();
+		for (const item of sortParents(items)) {
+			const key = item.code || title(item);
+			const existing = seen.get(key);
+			if (!existing) {
+				seen.set(key, item);
+				continue;
+			}
+			const count = Number(existing.fields?.duplicateCount ?? 1);
+			seen.set(key, {
+				...existing,
+				fields: {
+					...existing.fields,
+					duplicateCount: String(count + 1),
+				},
+			});
+		}
+		return [...seen.values()];
 	}
 
 	function dedupePanelItems(items: TermAccessory[]) {
@@ -413,6 +434,7 @@
 									<span class="font-mono">{item.code}</span>
 									{#if sequenceLabel(item)}<span>{sequenceLabel(item)}</span>{/if}
 									{#if rankLabel(item)}<span>{rankLabel(item)}</span>{/if}
+									{#if duplicateLabel(item)}<span>{duplicateLabel(item)}</span>{/if}
 								</div>
 							</button>
 						{/each}
