@@ -322,6 +322,37 @@ func TestEnsureDatabaseFromLocalZipDoesNotOverwriteExistingData(t *testing.T) {
 	}
 }
 
+func TestFindLocalReleaseZipOnlyChecksRunDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	nested := filepath.Join(cwd, "Downloads")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "Loinc_Nested.zip"), []byte("not used"), 0o600); err != nil {
+		t.Fatalf("write nested zip: %v", err)
+	}
+
+	_, ok, err := findLocalReleaseZip(cwd)
+	if err != nil {
+		t.Fatalf("find local release zip: %v", err)
+	}
+	if ok {
+		t.Fatal("expected nested Loinc zip to be ignored")
+	}
+
+	rootZip := filepath.Join(cwd, "Loinc_Root.zip")
+	if err := os.WriteFile(rootZip, []byte("used"), 0o600); err != nil {
+		t.Fatalf("write root zip: %v", err)
+	}
+	got, ok, err := findLocalReleaseZip(cwd)
+	if err != nil {
+		t.Fatalf("find local release zip with root zip: %v", err)
+	}
+	if !ok || got != rootZip {
+		t.Fatalf("expected root zip %q, got %q ok=%v", rootZip, got, ok)
+	}
+}
+
 func testCLIReleaseZip(t *testing.T, loincNum string, longName string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

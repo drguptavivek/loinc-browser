@@ -454,31 +454,18 @@ func findLocalReleaseZip(cwd string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", false, err
+	}
+	for _, entry := range entries {
 		if entry.IsDir() {
-			if rel == "data" || strings.HasPrefix(rel, "data"+string(filepath.Separator)) {
-				return filepath.SkipDir
-			}
-			if rel != "." && strings.Count(rel, string(filepath.Separator)) >= 2 {
-				return filepath.SkipDir
-			}
-			return nil
+			continue
 		}
 		name := strings.ToLower(entry.Name())
 		if strings.HasSuffix(name, ".zip") && strings.Contains(name, "loinc") {
-			candidates = append(candidates, path)
+			candidates = append(candidates, filepath.Join(root, entry.Name()))
 		}
-		return nil
-	})
-	if err != nil {
-		return "", false, err
 	}
 	if len(candidates) == 0 {
 		return "", false, nil

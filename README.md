@@ -157,7 +157,7 @@ PORT=9005
 
 See `.env.example` for the supported keys.
 
-On `serve`, if the configured database is missing or has no `loinc_terms` data, the app looks for a local `Loinc*.zip` within the project directory or one nested release directory and imports it automatically. Existing populated databases are not overwritten.
+On `serve`, if the configured database is missing or has no `loinc_terms` data, the app looks for `Loinc*.zip` beside the executable/current run directory and imports it automatically. Existing populated databases are not overwritten.
 
 Use Vite during UI work so Svelte changes hot-reload without rebuilding embedded assets:
 
