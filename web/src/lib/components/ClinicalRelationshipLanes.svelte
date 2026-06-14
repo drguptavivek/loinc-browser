@@ -16,11 +16,13 @@
 
 	const parentContainers = $derived(sortParents(graph?.panelMemberships ?? []));
 	const childItems = $derived(dedupePanelItems(graph?.panelItems ?? []));
+	const answerLists = $derived(graph?.answerLists ?? term.answerLists ?? []);
 	const hierarchyRows = $derived((graph?.hierarchy ?? term.hierarchy ?? []).slice(0, 6));
 	const siblingContext = $derived(parentContainers.slice(0, 3));
-	const hasAnyLane = $derived(parentContainers.length > 0 || childItems.length > 0 || hierarchyRows.length > 0 || (graph?.sharedConcepts?.length ?? 0) > 0);
+	const hasAnyLane = $derived(parentContainers.length > 0 || childItems.length > 0 || answerLists.length > 0 || hierarchyRows.length > 0 || (graph?.sharedConcepts?.length ?? 0) > 0);
 	const mapParents = $derived(parentContainers.slice(0, 8));
 	const mapChildren = $derived(childItems.slice(0, 18));
+	const mapAnswerLists = $derived(answerLists.slice(0, 4));
 	const mapHierarchy = $derived(hierarchyRows.slice(0, 4));
 
 	let container = $state<HTMLDivElement>();
@@ -111,7 +113,7 @@
 		if (term.orderObs) badges.push(term.orderObs);
 		if (parentContainers.length) badges.push('Contained item');
 		if (childItems.length) badges.push(isSurveyTerm() ? 'Questionnaire / scale' : 'Panel / order');
-		if ((graph?.answerLists?.length ?? term.answerLists?.length ?? 0) > 0) badges.push('Answer list');
+		if (answerLists.length > 0) badges.push('Answer list');
 		if (isSurveyTerm()) badges.push('Survey');
 		return [...new Set(badges.filter(Boolean))];
 	}
@@ -225,6 +227,25 @@
 				},
 			});
 		}
+		for (const [index, item] of mapAnswerLists.entries()) {
+			const id = accessoryNodeID('answer', item, index);
+			elements.push({
+				data: {
+					id,
+					label: nodeLabel(item.code, title(item)),
+					type: 'answer-list',
+				},
+				position: { x: -600, y: 150 + index * 95 },
+			});
+			elements.push({
+				data: {
+					id: `edge:${selectedID}:${id}`,
+					source: selectedID,
+					target: id,
+					type: 'answer-edge',
+				},
+			});
+		}
 		return elements;
 	}
 
@@ -270,6 +291,7 @@
 				},
 				{ selector: 'node[type = "parent"]', style: { 'background-color': '#ede9fe', 'border-color': '#7c3aed', color: '#4c1d95' } },
 				{ selector: 'node[type = "child"]', style: { 'background-color': '#dcfce7', 'border-color': '#16a34a', color: '#14532d', width: '108px', height: '64px', 'font-size': 9 } },
+				{ selector: 'node[type = "answer-list"]', style: { 'background-color': '#fef3c7', 'border-color': '#d97706', color: '#78350f', width: '128px', height: '64px', 'font-size': 9 } },
 				{ selector: 'node[type = "hierarchy"]', style: { 'background-color': '#cffafe', 'border-color': '#0891b2', color: '#164e63', width: '128px', height: '60px', 'font-size': 9 } },
 				{
 					selector: 'edge',
@@ -283,6 +305,7 @@
 				},
 				{ selector: 'edge[type = "parent-edge"]', style: { 'line-color': '#c4b5fd', 'target-arrow-color': '#7c3aed' } },
 				{ selector: 'edge[type = "child-edge"]', style: { 'line-color': '#86efac', 'target-arrow-color': '#16a34a' } },
+				{ selector: 'edge[type = "answer-edge"]', style: { 'line-color': '#fcd34d', 'target-arrow-color': '#d97706' } },
 				{ selector: 'edge[type = "hierarchy-edge"]', style: { 'line-color': '#67e8f9', 'target-arrow-color': '#0891b2', 'line-style': 'dashed' } },
 			],
 			wheelSensitivity: 0.25,
@@ -320,6 +343,7 @@
 		term.loincNum;
 		mapParents;
 		mapChildren;
+		mapAnswerLists;
 		mapHierarchy;
 		void tick().then(() => renderMap());
 	});
@@ -341,6 +365,7 @@
 					<span class="font-semibold uppercase tracking-wide text-zinc-500">Clinical lanes</span>
 					<span class="rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">Contained in {parentContainers.length}</span>
 					<span class="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800">{childLaneTitle()} {childItems.length}</span>
+					<span class="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">Answer lists {answerLists.length}</span>
 					<span class="rounded bg-cyan-50 px-1.5 py-0.5 text-cyan-800">Hierarchy {hierarchyRows.length}</span>
 				</div>
 				<div class="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded-md border border-zinc-200 bg-white/95 p-1 shadow-sm">
@@ -417,6 +442,29 @@
 					</div>
 				{:else}
 					<EmptyState title="No child items" body="This term is not a panel, order, questionnaire, scale, or form with listed child items." />
+				{/if}
+			</section>
+
+			<section class="rounded-md border border-zinc-200 bg-white p-3">
+				<div class="mb-2 flex items-center justify-between gap-2">
+					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Answer lists</h3>
+					<span class="text-xs text-zinc-500">{answerLists.length}</span>
+				</div>
+				{#if answerLists.length}
+					<div class="flex flex-col gap-2">
+						{#each answerLists as item}
+							<div class="rounded-md bg-amber-50 px-2 py-1.5">
+								<div class="break-words text-sm font-medium text-zinc-950">{title(item)}</div>
+								<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
+									<span class="font-mono">{item.code}</span>
+									{#if item.fields?.answerListLinkType}<span>{item.fields.answerListLinkType}</span>{/if}
+									{#if item.subtitle}<span>{item.subtitle}</span>{/if}
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<EmptyState title="No answer lists" body="This term has no linked answer list." />
 				{/if}
 			</section>
 

@@ -203,12 +203,24 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 		t.Fatalf("expected shared LP1 primary part concept with related 1002-7, got %#v", graph.SharedConcepts)
 	}
 
+	statsBeforeGroups := store.CacheStats()
 	groups, err := store.TermRelationshipGroups(ctx, "1000-1")
 	if err != nil {
 		t.Fatalf("term relationship groups failed: %v", err)
 	}
 	if !hasRelatedConcept(groups.SharedConcepts, "part-primary", "LP1", "1002-7") {
 		t.Fatalf("expected v1 relationship groups to include shared LP1 graph concept with related 1002-7, got %#v", groups.SharedConcepts)
+	}
+	statsAfterGroupMiss := store.CacheStats()
+	if statsAfterGroupMiss.RelationshipMisses != statsBeforeGroups.RelationshipMisses+1 {
+		t.Fatalf("expected relationship group cache miss, got before=%#v after=%#v", statsBeforeGroups, statsAfterGroupMiss)
+	}
+	if _, err := store.TermRelationshipGroups(ctx, "1000-1"); err != nil {
+		t.Fatalf("cached term relationship groups failed: %v", err)
+	}
+	statsAfterGroupHit := store.CacheStats()
+	if statsAfterGroupHit.RelationshipHits != statsAfterGroupMiss.RelationshipHits+1 {
+		t.Fatalf("expected relationship group cache hit, got before=%#v after=%#v", statsAfterGroupMiss, statsAfterGroupHit)
 	}
 
 	accessories, err := store.BrowseAccessories(ctx, AccessoryBrowseParams{Kind: "part-primary", Query: "glucose", Limit: 10})

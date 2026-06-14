@@ -48,7 +48,14 @@ func (s *Store) TermFit(ctx context.Context, loincNum string) (TermFit, error) {
 }
 
 func (s *Store) TermRelationshipGroups(ctx context.Context, loincNum string) (TermRelationshipGroups, error) {
-	term, err := s.TermWithAccessories(ctx, loincNum)
+	key := strings.ToUpper(strings.TrimSpace(loincNum))
+	if key == "" {
+		return TermRelationshipGroups{}, errors.New("LOINC number is required")
+	}
+	if groups, ok := s.cache.getRelationshipGroups(key); ok {
+		return groups, nil
+	}
+	term, err := s.TermWithAccessories(ctx, key)
 	if err != nil {
 		return TermRelationshipGroups{}, err
 	}
@@ -92,6 +99,7 @@ func (s *Store) TermRelationshipGroups(ctx context.Context, loincNum string) (Te
 		return TermRelationshipGroups{}, err
 	}
 	groups.SharedConcepts = graph.SharedConcepts
+	s.cache.setRelationshipGroups(key, groups)
 	return groups, nil
 }
 

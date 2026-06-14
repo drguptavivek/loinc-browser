@@ -13,6 +13,8 @@ type objectCache struct {
 	termOrder   *list.List
 	graphs      map[string]*list.Element
 	graphOrder  *list.List
+	groups      map[string]*list.Element
+	groupOrder  *list.List
 	accessories map[string]*list.Element
 	accessoryOrder *list.List
 	facets      *Facets
@@ -36,6 +38,11 @@ type graphEntry struct {
 	graph TermRelationshipGraph
 }
 
+type relationshipGroupEntry struct {
+	key    string
+	groups TermRelationshipGroups
+}
+
 type accessoryEntry struct {
 	key      string
 	response AccessoryBrowseResponse
@@ -51,6 +58,8 @@ func newObjectCache(maxEntries int) *objectCache {
 		termOrder:  list.New(),
 		graphs:     make(map[string]*list.Element),
 		graphOrder: list.New(),
+		groups:     make(map[string]*list.Element),
+		groupOrder: list.New(),
 		accessories: make(map[string]*list.Element),
 		accessoryOrder: list.New(),
 	}
@@ -124,6 +133,40 @@ func (c *objectCache) setGraph(key string, graph TermRelationshipGraph) {
 	delete(c.graphs, last.Value.(graphEntry).key)
 }
 
+func (c *objectCache) getRelationshipGroups(key string) (TermRelationshipGroups, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	elem, ok := c.groups[key]
+	if !ok {
+		c.graphMisses.Add(1)
+		return TermRelationshipGroups{}, false
+	}
+	c.groupOrder.MoveToFront(elem)
+	c.graphHits.Add(1)
+	return elem.Value.(relationshipGroupEntry).groups, true
+}
+
+func (c *objectCache) setRelationshipGroups(key string, groups TermRelationshipGroups) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.groups[key]; ok {
+		elem.Value = relationshipGroupEntry{key: key, groups: groups}
+		c.groupOrder.MoveToFront(elem)
+		return
+	}
+	elem := c.groupOrder.PushFront(relationshipGroupEntry{key: key, groups: groups})
+	c.groups[key] = elem
+	if len(c.groups) <= c.maxEntries {
+		return
+	}
+	last := c.groupOrder.Back()
+	if last == nil {
+		return
+	}
+	c.groupOrder.Remove(last)
+	delete(c.groups, last.Value.(relationshipGroupEntry).key)
+}
+
 func (c *objectCache) getAccessory(key string) (AccessoryBrowseResponse, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -193,7 +236,7 @@ func (c *objectCache) stats() CacheStats {
 		FacetHits:           c.facetHits.Load(),
 		FacetMisses:         c.facetMisses.Load(),
 		TermEntries:         len(c.terms),
-		RelationshipEntries: len(c.graphs),
+		RelationshipEntries: len(c.graphs) + len(c.groups),
 		AccessoryEntries:    len(c.accessories),
 		FacetEntries:        facetEntries,
 	}
