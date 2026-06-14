@@ -37,7 +37,7 @@ Licensed LOINC release files and generated SQLite databases must stay out of git
 
 ## Getting Started Quickly
 
-1. Download the `v0.90` binary for your platform from GitHub Releases.
+1. Download the `v0.91` binary for your platform from GitHub Releases.
 2. Download the licensed LOINC 2.82 release ZIP from LOINC after accepting the LOINC license.
 3. Place the release ZIP beside the executable, for example `Loinc_2.82.zip`.
 4. Run one command.
@@ -235,8 +235,8 @@ GitHub releases are created automatically by GitHub Actions. The release workflo
 To create a release, push a version tag:
 
 ```bash
-git tag v0.90
-git push origin v0.90
+git tag v0.91
+git push origin v0.91
 ```
 
 The workflow builds and uploads these release assets:
@@ -253,7 +253,7 @@ The workflow also smoke-tests the Linux amd64 and Windows amd64 binaries before 
 For optional local packaging checks only:
 
 ```bash
-make release VERSION=0.90
+make release VERSION=0.91
 ```
 
 Local packages are written under `dist/`; GitHub release assets should normally come from the workflow.
