@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { onDestroy, onMount, tick } from 'svelte';
+	import type cytoscape from 'cytoscape';
+	import type { Core, ElementDefinition } from 'cytoscape';
 	import type { Term, TermAccessory, TermRelationshipGraph } from '$lib/api';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 
@@ -16,6 +19,14 @@
 	const hierarchyRows = $derived((graph?.hierarchy ?? term.hierarchy ?? []).slice(0, 6));
 	const siblingContext = $derived(parentContainers.slice(0, 3));
 	const hasAnyLane = $derived(parentContainers.length > 0 || childItems.length > 0 || hierarchyRows.length > 0 || (graph?.sharedConcepts?.length ?? 0) > 0);
+	const mapParents = $derived(parentContainers.slice(0, 8));
+	const mapChildren = $derived(childItems.slice(0, 18));
+	const mapHierarchy = $derived(hierarchyRows.slice(0, 4));
+
+	let container = $state<HTMLDivElement>();
+	let cy: Core | null = null;
+	let cytoscapeFactory: typeof cytoscape | null = null;
+	let zoomPercent = $state(100);
 
 	function sortParents(items: TermAccessory[]) {
 		return [...items].sort((left, right) => {
@@ -122,6 +133,200 @@
 		const nodeId = item.fields?.nodeId;
 		if (nodeId) onBrowseHierarchy(nodeId, item.title || item.code);
 	}
+
+	function nodeLabel(primary: string, secondary: string) {
+		if (!secondary || secondary === primary) return primary;
+		return `${primary}\n${secondary}`;
+	}
+
+	function accessoryNodeID(prefix: string, item: TermAccessory, index: number) {
+		return `${prefix}:${item.kind}:${item.code || title(item)}:${index}`;
+	}
+
+	function graphElements(): ElementDefinition[] {
+		const elements: ElementDefinition[] = [];
+		const selectedID = `term:${term.loincNum}`;
+		const parentWidth = Math.max(1, mapParents.length - 1);
+		const childWidth = Math.max(1, mapChildren.length - 1);
+		const parentStart = -Math.min(560, parentWidth * 74);
+		const childStart = -Math.min(760, childWidth * 48);
+
+		for (const [index, item] of mapParents.entries()) {
+			const id = accessoryNodeID('parent', item, index);
+			elements.push({
+				data: {
+					id,
+					label: nodeLabel(item.code, title(item)),
+					type: 'parent',
+					loincNum: isLoincNumber(item.code) ? item.code : '',
+				},
+				position: { x: parentStart + index * 148, y: 80 },
+			});
+			elements.push({
+				data: {
+					id: `edge:${id}:${selectedID}`,
+					source: id,
+					target: selectedID,
+					label: sequenceLabel(item),
+					type: 'parent-edge',
+				},
+			});
+		}
+
+		elements.push({
+			data: {
+				id: selectedID,
+				label: nodeLabel(term.loincNum, 'selected term'),
+				type: 'selected',
+				loincNum: term.loincNum,
+			},
+			position: { x: 0, y: 300 },
+		});
+
+		for (const [index, item] of mapChildren.entries()) {
+			const id = accessoryNodeID('child', item, index);
+			elements.push({
+				data: {
+					id,
+					label: nodeLabel(item.code, title(item)),
+					type: 'child',
+					loincNum: isLoincNumber(item.code) ? item.code : '',
+				},
+				position: { x: childStart + index * 96, y: 520 },
+			});
+			elements.push({
+				data: {
+					id: `edge:${selectedID}:${id}`,
+					source: selectedID,
+					target: id,
+					label: sequenceLabel(item),
+					type: 'child-edge',
+				},
+			});
+		}
+
+		for (const [index, item] of mapHierarchy.entries()) {
+			const id = accessoryNodeID('hierarchy', item, index);
+			elements.push({
+				data: {
+					id,
+					label: title(item),
+					type: 'hierarchy',
+					nodeId: item.fields?.nodeId ?? '',
+				},
+				position: { x: 600, y: 150 + index * 95 },
+			});
+			elements.push({
+				data: {
+					id: `edge:${id}:${selectedID}`,
+					source: id,
+					target: selectedID,
+					type: 'hierarchy-edge',
+				},
+			});
+		}
+		return elements;
+	}
+
+	async function renderMap() {
+		if (!container || !hasAnyLane) return;
+		cytoscapeFactory ??= (await import('cytoscape')).default;
+		cy?.destroy();
+		cy = cytoscapeFactory({
+			container,
+			elements: graphElements(),
+			layout: { name: 'preset', fit: true, padding: 52 },
+			style: [
+				{
+					selector: 'node',
+					style: {
+						'background-color': '#f4f4f5',
+						'border-color': '#a1a1aa',
+						'border-width': 1,
+						color: '#18181b',
+						'font-size': 10,
+						label: 'data(label)',
+						'text-halign': 'center',
+						'text-valign': 'center',
+						'text-wrap': 'wrap',
+						'text-max-width': '112px',
+						width: '118px',
+						height: '70px',
+						shape: 'round-rectangle',
+					},
+				},
+				{
+					selector: 'node[type = "selected"]',
+					style: {
+						'background-color': '#18181b',
+						'border-color': '#18181b',
+						color: '#ffffff',
+						'font-size': 14,
+						'font-weight': 700,
+						width: '118px',
+						height: '118px',
+						shape: 'ellipse',
+					},
+				},
+				{ selector: 'node[type = "parent"]', style: { 'background-color': '#ede9fe', 'border-color': '#7c3aed', color: '#4c1d95' } },
+				{ selector: 'node[type = "child"]', style: { 'background-color': '#dcfce7', 'border-color': '#16a34a', color: '#14532d', width: '108px', height: '64px', 'font-size': 9 } },
+				{ selector: 'node[type = "hierarchy"]', style: { 'background-color': '#cffafe', 'border-color': '#0891b2', color: '#164e63', width: '128px', height: '60px', 'font-size': 9 } },
+				{
+					selector: 'edge',
+					style: {
+						'curve-style': 'bezier',
+						'line-color': '#d4d4d8',
+						'target-arrow-color': '#a1a1aa',
+						'target-arrow-shape': 'triangle',
+						width: 1.5,
+					},
+				},
+				{ selector: 'edge[type = "parent-edge"]', style: { 'line-color': '#c4b5fd', 'target-arrow-color': '#7c3aed' } },
+				{ selector: 'edge[type = "child-edge"]', style: { 'line-color': '#86efac', 'target-arrow-color': '#16a34a' } },
+				{ selector: 'edge[type = "hierarchy-edge"]', style: { 'line-color': '#67e8f9', 'target-arrow-color': '#0891b2', 'line-style': 'dashed' } },
+			],
+			wheelSensitivity: 0.25,
+		});
+		cy.on('tap', 'node', (event) => {
+			const loincNum = event.target.data('loincNum');
+			if (loincNum) onOpenTerm(loincNum);
+			const nodeId = event.target.data('nodeId');
+			if (nodeId) onBrowseHierarchy(nodeId, event.target.data('label') || '');
+		});
+		cy.on('zoom', () => {
+			zoomPercent = Math.round((cy?.zoom() ?? 1) * 100);
+		});
+		zoomPercent = Math.round(cy.zoom() * 100);
+	}
+
+	function zoomMap(delta: number) {
+		if (!cy) return;
+		const next = Math.min(2.5, Math.max(0.35, cy.zoom() + delta));
+		cy.zoom({ level: next, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+		zoomPercent = Math.round(next * 100);
+	}
+
+	function resetMap() {
+		if (!cy) return;
+		cy.fit(undefined, 52);
+		zoomPercent = Math.round(cy.zoom() * 100);
+	}
+
+	onMount(() => {
+		void tick().then(() => renderMap());
+	});
+
+	$effect(() => {
+		term.loincNum;
+		mapParents;
+		mapChildren;
+		mapHierarchy;
+		void tick().then(() => renderMap());
+	});
+
+	onDestroy(() => {
+		cy?.destroy();
+	});
 </script>
 
 <div class="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,2fr)_390px]">
@@ -131,60 +336,23 @@
 				<EmptyState title="No clinical lanes" body="No parent containers, child items, hierarchy placements, or shared concepts are available for this term." />
 			</div>
 		{:else}
-			<div class="flex h-full min-h-[620px] flex-col justify-between gap-4 rounded-md border border-zinc-200 bg-white p-5">
-				<section>
-					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Contained in</h3>
-						<span class="text-xs text-zinc-500">{parentContainers.length}</span>
-					</div>
-					<div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-						{#each parentContainers.slice(0, 6) as item}
-							<button type="button" class="min-h-20 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-left hover:border-violet-400" onclick={() => openAccessory(item)}>
-								<div class="font-mono text-xs font-semibold text-violet-950">{item.code}</div>
-								<div class="mt-1 line-clamp-2 text-sm font-medium text-zinc-950">{title(item)}</div>
-								<div class="mt-1 text-xs text-violet-700">{[sequenceLabel(item), rankLabel(item)].filter(Boolean).join(' · ')}</div>
-							</button>
-						{/each}
-					</div>
-				</section>
-
-				<div class="flex items-center justify-center">
-					<div class="flex size-36 flex-col items-center justify-center rounded-full bg-zinc-950 p-4 text-center text-white shadow-sm">
-						<div class="font-mono text-xl font-bold">{term.loincNum}</div>
-						<div class="mt-1 text-xs text-zinc-300">selected term</div>
-					</div>
+			<div class="relative h-full min-h-[620px] overflow-hidden rounded-md border border-zinc-200 bg-white">
+				<div class="absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-white/95 px-2 py-1.5 text-xs text-zinc-600 shadow-sm">
+					<span class="font-semibold uppercase tracking-wide text-zinc-500">Clinical lanes</span>
+					<span class="rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">Contained in {parentContainers.length}</span>
+					<span class="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800">{childLaneTitle()} {childItems.length}</span>
+					<span class="rounded bg-cyan-50 px-1.5 py-0.5 text-cyan-800">Hierarchy {hierarchyRows.length}</span>
 				</div>
-
-				<section>
-					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{childLaneTitle()}</h3>
-						<span class="text-xs text-zinc-500">{childItems.length}</span>
-					</div>
-					<div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-						{#each childItems.slice(0, 9) as item}
-							<button type="button" class="min-h-20 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-left hover:border-emerald-400" onclick={() => openAccessory(item)}>
-								<div class="flex items-center justify-between gap-2">
-									<span class="text-xs font-medium text-emerald-700">{sequenceLabel(item) || 'Item'}</span>
-									<span class="font-mono text-xs font-semibold text-emerald-950">{item.code}</span>
-								</div>
-								<div class="mt-1 line-clamp-2 text-sm font-medium text-zinc-950">{title(item)}</div>
-								{#if duplicateLabel(item)}<div class="mt-1 text-xs text-emerald-700">{duplicateLabel(item)}</div>{/if}
-							</button>
-						{/each}
-					</div>
-				</section>
-
-				<section class="rounded-md border border-cyan-200 bg-cyan-50 p-3">
-					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="text-xs font-semibold uppercase tracking-wide text-cyan-800">Hierarchy path</h3>
-						<span class="text-xs text-cyan-700">{hierarchyRows.length}</span>
-					</div>
-					<div class="flex flex-wrap gap-2">
-						{#each hierarchyRows.slice(0, 4) as item}
-							<button type="button" class="rounded border border-cyan-200 bg-white px-2 py-1 text-xs text-cyan-950 hover:border-cyan-500" onclick={() => browseHierarchy(item)}>{title(item)}</button>
-						{/each}
-					</div>
-				</section>
+				<div class="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded-md border border-zinc-200 bg-white/95 p-1 shadow-sm">
+					<button type="button" class="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100" onclick={() => zoomMap(-0.15)}>Zoom out</button>
+					<span class="w-12 text-center text-xs tabular-nums text-zinc-500">{zoomPercent}%</span>
+					<button type="button" class="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100" onclick={() => zoomMap(0.15)}>Zoom in</button>
+					<button type="button" class="rounded px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100" onclick={resetMap}>Reset view</button>
+				</div>
+				<div bind:this={container} class="h-full min-h-[620px]"></div>
+				<div class="pointer-events-none absolute bottom-3 left-3 max-w-[260px] rounded-md border border-zinc-200 bg-white/95 px-2 py-1.5 text-xs text-zinc-500 shadow-sm">
+					Pan/zoom map. Click LOINC nodes to open.
+				</div>
 			</div>
 		{/if}
 	</div>
