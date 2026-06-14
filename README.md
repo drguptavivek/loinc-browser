@@ -208,22 +208,18 @@ npm --prefix web run check
 npm --prefix web run build
 ```
 
-## Build Installable Binaries
+## GitHub Releases
 
-Build code-only release packages for macOS arm64, macOS amd64, Linux amd64, and Windows amd64:
+GitHub releases are created automatically by GitHub Actions. The release workflow is configured in `.github/workflows/release.yml`.
 
-```bash
-make release VERSION=0.90
-```
-
-Tagged GitHub releases are built by pushing a tag such as:
+To create a release, push a version tag:
 
 ```bash
 git tag v0.90
 git push origin v0.90
 ```
 
-Packages are written under `dist/` and uploaded to the GitHub release:
+The workflow builds and uploads these release assets:
 
 - `loinc-browser_<version>_darwin_amd64.tar.gz`
 - `loinc-browser_<version>_darwin_arm64.tar.gz`
@@ -231,3 +227,13 @@ Packages are written under `dist/` and uploaded to the GitHub release:
 - `loinc-browser_<version>_windows_amd64.zip`
 
 These packages include the app binary, `README.md`, `INSTALL.md`, `VERSION.md`, and the `loinc-mcp` skill. They do not include licensed LOINC release files or generated SQLite databases.
+
+The workflow also smoke-tests the Linux amd64 and Windows amd64 binaries before publishing the release.
+
+For optional local packaging checks only:
+
+```bash
+make release VERSION=0.90
+```
+
+Local packages are written under `dist/`; GitHub release assets should normally come from the workflow.
