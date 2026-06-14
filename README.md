@@ -210,7 +210,7 @@ npm --prefix web run build
 
 ## Build Installable Binaries
 
-Build code-only release packages for macOS arm64, Linux amd64, and Windows amd64:
+Build code-only release packages for macOS arm64, macOS amd64, Linux amd64, and Windows amd64:
 
 ```bash
 make release VERSION=0.90
@@ -225,8 +225,9 @@ git push origin v0.90
 
 Packages are written under `dist/` and uploaded to the GitHub release:
 
+- `loinc-browser_<version>_darwin_amd64.tar.gz`
 - `loinc-browser_<version>_darwin_arm64.tar.gz`
 - `loinc-browser_<version>_linux_amd64.tar.gz`
 - `loinc-browser_<version>_windows_amd64.zip`
 
-These packages include only the app binary and docs. They do not include licensed LOINC release files or generated SQLite databases.
+These packages include the app binary, `README.md`, `INSTALL.md`, `VERSION.md`, and the `loinc-mcp` skill. They do not include licensed LOINC release files or generated SQLite databases.

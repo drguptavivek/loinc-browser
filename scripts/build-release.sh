@@ -9,6 +9,7 @@ COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
 BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 targets=(
+  "darwin/amd64"
   "darwin/arm64"
   "linux/amd64"
   "windows/amd64"
@@ -43,12 +44,13 @@ for target in "${targets[@]}"; do
     -o "${binary}" \
     ./cmd/loinc-browser
 
-  cp README.md AGENTS.md ERD.md VERSION CHANGELOG.md .env.example "${package_dir}/"
-  cp -R docs skills "${package_dir}/"
+  cp README.md "${package_dir}/"
+  mkdir -p "${package_dir}/skills"
+  cp -R skills/loinc-mcp "${package_dir}/skills/"
   cat > "${package_dir}/INSTALL.md" <<EOF
 # ${APP_NAME} ${VERSION}
 
-This package contains only the LOINC Browser application binary and project docs.
+This package contains the LOINC Browser application binary, README, install notes, version notes, and MCP skill file.
 Licensed LOINC release files and generated SQLite databases are not included.
 
 ## Run
@@ -84,6 +86,15 @@ https://creativecommons.org/licenses/by/4.0/
 Project source:
 
 https://github.com/drguptavivek/loinc-browser
+EOF
+
+  cat > "${package_dir}/VERSION.md" <<EOF
+# ${APP_NAME} ${VERSION}
+
+- Version: ${VERSION}
+- Commit: ${COMMIT}
+- Build date: ${BUILD_DATE}
+- Target: ${goos}/${arch_label}
 EOF
 
   archive_base="${DIST_DIR}/${APP_NAME}_${VERSION}_${goos}_${arch_label}"
