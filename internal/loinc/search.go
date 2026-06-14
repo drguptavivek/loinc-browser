@@ -367,29 +367,41 @@ func (s *Store) loadTermAccessories(ctx context.Context, term *Term) error {
 	}
 
 	panelMembershipRows, err := s.db.QueryContext(ctx, `
-		select parent_loinc_num, parent_name, sequence, item_id, entry_type, data_type_in_form, coalesce(answer_list_id_override, '')
-		from panel_items
-		where child_loinc_num = ? collate nocase
-		order by parent_name, parent_loinc_num, sequence`, term.LOINCNum)
+		select p.parent_loinc_num, p.parent_name, p.sequence, p.item_id, p.entry_type, p.data_type_in_form, coalesce(p.answer_list_id_override, ''),
+			coalesce(parent.common_test_rank, 0), coalesce(parent.common_order_rank, 0),
+			case
+				when coalesce(parent.common_test_rank, 0) > 0 and coalesce(parent.common_order_rank, 0) > 0
+					then min(parent.common_test_rank, parent.common_order_rank)
+				when coalesce(parent.common_test_rank, 0) > 0 then parent.common_test_rank
+				when coalesce(parent.common_order_rank, 0) > 0 then parent.common_order_rank
+				else 0
+			end as parent_rank
+		from panel_items p
+		left join loinc_terms parent on parent.loinc_num = p.parent_loinc_num
+		where p.child_loinc_num = ? collate nocase
+		order by case when parent_rank > 0 then 0 else 1 end, parent_rank, p.parent_name, p.parent_loinc_num, p.sequence`, term.LOINCNum)
 	if err != nil {
 		return fmt.Errorf("load normalized panel memberships for %s: %w", term.LOINCNum, err)
 	}
 	defer panelMembershipRows.Close()
 	for panelMembershipRows.Next() {
 		var item TermAccessory
-		var sequence int
+		var sequence, parentCommonTestRank, parentCommonOrderRank, parentRank int
 		var itemID, entryType, dataTypeInForm, answerListIDOverride string
-		if err := panelMembershipRows.Scan(&item.Code, &item.Title, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride); err != nil {
+		if err := panelMembershipRows.Scan(&item.Code, &item.Title, &sequence, &itemID, &entryType, &dataTypeInForm, &answerListIDOverride, &parentCommonTestRank, &parentCommonOrderRank, &parentRank); err != nil {
 			return fmt.Errorf("scan normalized panel membership for %s: %w", term.LOINCNum, err)
 		}
 		item.Kind = "panel-membership"
 		item.Subtitle = entryType
 		item.Fields = map[string]string{
-			"sequence":             strconv.Itoa(sequence),
-			"itemId":               itemID,
-			"entryType":            entryType,
-			"dataTypeInForm":       dataTypeInForm,
-			"answerListIdOverride": answerListIDOverride,
+			"sequence":              strconv.Itoa(sequence),
+			"itemId":                itemID,
+			"entryType":             entryType,
+			"dataTypeInForm":        dataTypeInForm,
+			"answerListIdOverride":  answerListIDOverride,
+			"parentCommonTestRank":  strconv.Itoa(parentCommonTestRank),
+			"parentCommonOrderRank": strconv.Itoa(parentCommonOrderRank),
+			"parentRank":            strconv.Itoa(parentRank),
 		}
 		term.Panels = append(term.Panels, item)
 	}

@@ -166,6 +166,9 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 	if !hasAccessory(term.Panels, "panel-membership", "1001-9") {
 		t.Fatalf("expected normalized panel membership, got %#v", term.Panels)
 	}
+	if !hasAccessoryField(term.Panels, "panel-membership", "1001-9", "parentCommonTestRank", "50") {
+		t.Fatalf("expected parent panel rank on normalized panel membership, got %#v", term.Panels)
+	}
 	if !hasAccessory(term.Groups, "group", "LG1") {
 		t.Fatalf("expected normalized group membership, got %#v", term.Groups)
 	}

@@ -123,7 +123,22 @@
 				loincNum: item.loinc,
 			});
 		});
-		return items.sort((a, b) => explicitPriority(a.kind) - explicitPriority(b.kind) || a.title.localeCompare(b.title) || a.code.localeCompare(b.code));
+		return items.sort(compareDirectRelationships);
+	}
+
+	function compareDirectRelationships(a: DirectRelationship, b: DirectRelationship) {
+		const priority = explicitPriority(a.kind) - explicitPriority(b.kind);
+		if (priority !== 0) return priority;
+		if (a.kind === 'panel-membership' && b.kind === 'panel-membership') {
+			const rank = relationshipRank(a) - relationshipRank(b);
+			if (rank !== 0) return rank;
+		}
+		return a.title.localeCompare(b.title) || a.code.localeCompare(b.code);
+	}
+
+	function relationshipRank(item: DirectRelationship) {
+		const rank = Number(item.accessory?.fields?.parentRank ?? 0);
+		return Number.isFinite(rank) && rank > 0 ? rank : Number.POSITIVE_INFINITY;
 	}
 
 	function explicitPriority(kind: string) {
@@ -140,7 +155,7 @@
 	function directSectionTitle(kind: string) {
 		if (kind === 'part-primary') return 'Primary parts';
 		if (kind === 'part-supplementary') return 'Supplementary parts';
-		if (kind === 'panel-membership') return 'Panel memberships';
+		if (kind === 'panel-membership') return 'Parent panels / orders';
 		if (kind === 'panel-child') return 'Panel children';
 		if (kind === 'answer-list') return 'Answer lists';
 		if (kind === 'map-to') return 'MapTo replacements';
@@ -173,6 +188,15 @@
 		if (kind.includes('hierarchy')) return 'hierarchy';
 		if (kind.includes('group')) return 'group';
 		return 'related';
+	}
+
+	function isParentRelationship(kind: string) {
+		return kind === 'panel-membership';
+	}
+
+	function graphRootIDs() {
+		const parentRoots = displayedDirectRelationships.filter((item) => isParentRelationship(item.kind)).map(directID);
+		return parentRoots.length ? parentRoots : [termID(term.loincNum)];
 	}
 
 	function conceptTone(kind: string) {
@@ -230,11 +254,12 @@
 				});
 			}
 			elements.push({
+				classes: isParentRelationship(item.kind) ? 'parent-edge' : '',
 				data: {
 					id: `edge:${termID(term.loincNum)}:${dID}`,
-					source: termID(term.loincNum),
-					target: dID,
-					label: 'listed',
+					source: isParentRelationship(item.kind) ? dID : termID(term.loincNum),
+					target: isParentRelationship(item.kind) ? termID(term.loincNum) : dID,
+					label: isParentRelationship(item.kind) ? 'contains' : 'listed',
 					type: 'direct-edge',
 					relationship: relationshipType(item.kind),
 				},
@@ -307,7 +332,7 @@
 				directed: true,
 				fit: true,
 				padding: 48,
-				roots: [termID(term.loincNum)],
+				roots: graphRootIDs(),
 				spacingFactor: 1.25,
 			},
 			style: [
@@ -396,6 +421,13 @@
 						width: 1,
 					},
 				},
+				{
+					selector: 'edge.parent-edge',
+					style: {
+						'line-style': 'solid',
+						width: 2,
+					},
+				},
 			],
 			wheelSensitivity: 0.25,
 		});
@@ -443,7 +475,7 @@
 			directed: true,
 			fit: true,
 			padding: 48,
-			roots: [termID(term.loincNum)],
+			roots: graphRootIDs(),
 			spacingFactor: 1.25,
 		}).run();
 		zoomPercent = Math.round(cy.zoom() * 100);
