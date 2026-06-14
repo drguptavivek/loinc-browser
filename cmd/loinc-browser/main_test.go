@@ -55,23 +55,69 @@ func TestParseServeConfigAcceptsMCPFlags(t *testing.T) {
 	t.Setenv("PORT", "")
 	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
 
-	cfg, err := parseServeConfig([]string{"--db", "test.sqlite", "--addr", ":18080", "--mcp", "--mcp-path", "/local-mcp", "--docs-dir", "docs/custom"})
+	cfg, err := parseServeConfig([]string{"--addr", ":18080", "--mcp-path", "/local-mcp", "--docs-dir", "docs/custom"})
 	if err != nil {
 		t.Fatalf("parse serve config: %v", err)
 	}
-	if cfg.DBPath != "test.sqlite" || cfg.Addr != ":18080" || !cfg.EnableMCP || cfg.MCPPath != "/local-mcp" || cfg.DocsDir != "docs/custom" {
+	if cfg.DBPath != defaultDBPath || cfg.Addr != ":18080" || !cfg.EnableMCP || cfg.MCPPath != "/local-mcp" || cfg.DocsDir != "docs/custom" {
 		t.Fatalf("unexpected serve config: %#v", cfg)
+	}
+}
+
+func TestParseServeConfigEnablesMCPByDefaultAndCanDisable(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse default serve config: %v", err)
+	}
+	if !cfg.EnableMCP {
+		t.Fatalf("expected MCP enabled by default, got %#v", cfg)
+	}
+
+	disabled, err := parseServeConfig([]string{"--no-mcp"})
+	if err != nil {
+		t.Fatalf("parse disabled serve config: %v", err)
+	}
+	if disabled.EnableMCP {
+		t.Fatalf("expected --no-mcp to disable MCP, got %#v", disabled)
+	}
+}
+
+func TestDefaultRunArgsUseServeMode(t *testing.T) {
+	mode, args := commandMode([]string{"loinc-browser"})
+	if mode != "serve" || len(args) != 0 {
+		t.Fatalf("expected no args to use serve mode, got %q %#v", mode, args)
+	}
+
+	mode, args = commandMode([]string{"loinc-browser", "--addr", ":18080"})
+	if mode != "serve" || len(args) != 2 || args[0] != "--addr" {
+		t.Fatalf("expected leading flags to use serve mode, got %q %#v", mode, args)
+	}
+}
+
+func TestServeAndMCPRejectDBOverride(t *testing.T) {
+	if _, err := parseServeConfig([]string{"--db", "test.sqlite"}); err == nil {
+		t.Fatal("expected serve --db to be rejected")
+	}
+	if _, err := parseMCPConfig([]string{"--db", "test.sqlite"}); err == nil {
+		t.Fatal("expected mcp --db to be rejected")
+	}
+	if err := runIngest([]string{"--db", "test.sqlite"}); err == nil {
+		t.Fatal("expected ingest --db to be rejected")
 	}
 }
 
 func TestParseMCPConfigAcceptsFlags(t *testing.T) {
 	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
 
-	cfg, err := parseMCPConfig([]string{"--db", "test.sqlite", "--cache-entries", "64", "--docs-dir", "docs/custom"})
+	cfg, err := parseMCPConfig([]string{"--cache-entries", "64", "--docs-dir", "docs/custom"})
 	if err != nil {
 		t.Fatalf("parse mcp config: %v", err)
 	}
-	if cfg.DBPath != "test.sqlite" || cfg.CacheEntries != 64 || cfg.DocsDir != "docs/custom" {
+	if cfg.CacheEntries != 64 || cfg.DocsDir != "docs/custom" {
 		t.Fatalf("unexpected mcp config: %#v", cfg)
 	}
 }

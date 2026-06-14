@@ -4,20 +4,12 @@ The LOINC Browser binary exposes a local Model Context Protocol (MCP) server for
 
 ## Transports
 
-### Stdio
+### All-in-one HTTP
 
-Use stdio when an agent can launch a local command:
-
-```bash
-loinc-browser mcp --db ./data/loinc-normalized.sqlite --docs-dir ./docs/agent
-```
-
-### HTTP
-
-Use HTTP when the browser/API server is already running:
+The default run mode starts the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP together:
 
 ```bash
-loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080 --mcp
+loinc-browser
 ```
 
 The default MCP HTTP endpoint is:
@@ -26,7 +18,15 @@ The default MCP HTTP endpoint is:
 http://localhost:8080/mcp
 ```
 
-Change it with `--mcp-path`.
+`loinc-browser serve --addr ...` is equivalent. Use `--mcp-path` to change the HTTP MCP route, or `--no-mcp` to disable HTTP MCP.
+
+### Stdio
+
+Use stdio when an agent should launch a dedicated MCP process instead of connecting to the all-in-one HTTP server:
+
+```bash
+loinc-browser mcp --docs-dir ./docs/agent
+```
 
 ## Editable Agent Docs
 

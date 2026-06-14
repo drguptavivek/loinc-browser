@@ -22,6 +22,8 @@ import (
 	"loinc-browser/web"
 )
 
+const defaultDBPath = "./data/loinc-normalized.sqlite"
+
 func main() {
 	log.SetFlags(0)
 	if err := run(os.Args); err != nil {
@@ -30,21 +32,29 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) < 2 {
-		return usage()
-	}
-	switch args[1] {
+	mode, modeArgs := commandMode(args)
+	switch mode {
 	case "ingest":
-		return runIngest(args[2:])
+		return runIngest(modeArgs)
 	case "serve":
-		return runServe(args[2:])
+		return runServe(modeArgs)
 	case "mcp":
-		return runMCP(args[2:])
+		return runMCP(modeArgs)
 	case "-h", "--help", "help":
 		return usage()
 	default:
-		return fmt.Errorf("unknown command %q\n\n%s", args[1], usageText())
+		return fmt.Errorf("unknown command %q\n\n%s", mode, usageText())
 	}
+}
+
+func commandMode(args []string) (string, []string) {
+	if len(args) < 2 {
+		return "serve", nil
+	}
+	if strings.HasPrefix(args[1], "-") && args[1] != "-h" && args[1] != "--help" {
+		return "serve", args[1:]
+	}
+	return args[1], args[2:]
 }
 
 type serveConfig struct {
@@ -57,7 +67,6 @@ type serveConfig struct {
 }
 
 type mcpConfig struct {
-	DBPath       string
 	CacheEntries int
 	DocsDir      string
 }
@@ -65,13 +74,12 @@ type mcpConfig struct {
 func runIngest(args []string) error {
 	flags := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	releaseDir := flags.String("release", "", "path to local LOINC release directory")
-	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	summary, err := loinc.Ingest(context.Background(), loinc.IngestOptions{
 		ReleaseDir: *releaseDir,
-		DBPath:     *dbPath,
+		DBPath:     defaultDBPath,
 	})
 	if err != nil {
 		return err
@@ -120,20 +128,20 @@ func runServe(args []string) error {
 
 func parseServeConfig(args []string) (serveConfig, error) {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
 	addr := flags.String("addr", defaultServeAddr(), "HTTP listen address")
 	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
-	enableMCP := flags.Bool("mcp", false, "enable local MCP over HTTP")
+	enableMCP := flags.Bool("mcp", true, "enable local MCP over HTTP")
+	disableMCP := flags.Bool("no-mcp", false, "disable local MCP over HTTP")
 	mcpPath := flags.String("mcp-path", "/mcp", "HTTP MCP route path")
 	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
 	if err := flags.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
 	return serveConfig{
-		DBPath:       *dbPath,
+		DBPath:       defaultDBPath,
 		Addr:         *addr,
 		CacheEntries: *cacheEntries,
-		EnableMCP:    *enableMCP,
+		EnableMCP:    *enableMCP && !*disableMCP,
 		MCPPath:      normalizePathFlag(*mcpPath),
 		DocsDir:      *docsDir,
 	}, nil
@@ -147,7 +155,10 @@ func runMCP(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := loinc.OpenStore(cfg.DBPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
+	if err := ensureDatabaseFromLocalZip(context.Background(), ".", defaultDBPath); err != nil {
+		return err
+	}
+	store, err := loinc.OpenStore(defaultDBPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
 	if err != nil {
 		return err
 	}
@@ -162,13 +173,12 @@ func runMCP(args []string) error {
 
 func parseMCPConfig(args []string) (mcpConfig, error) {
 	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	dbPath := flags.String("db", "./data/loinc-normalized.sqlite", "path to generated SQLite database")
 	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
 	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
 	if err := flags.Parse(args); err != nil {
 		return mcpConfig{}, err
 	}
-	return mcpConfig{DBPath: *dbPath, CacheEntries: *cacheEntries, DocsDir: *docsDir}, nil
+	return mcpConfig{CacheEntries: *cacheEntries, DocsDir: *docsDir}, nil
 }
 
 func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) error {
@@ -345,10 +355,12 @@ func usage() error {
 
 func usageText() string {
 	return `Usage:
-  loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc-normalized.sqlite
-  loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080
-  loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080 --mcp
-  loinc-browser mcp --db ./data/loinc-normalized.sqlite --docs-dir ./docs/agent
+  loinc-browser
+  loinc-browser --addr :8080
+  loinc-browser ingest --release ./Loinc_2.82
+  loinc-browser serve --addr :8080
+  loinc-browser serve --addr :8080 --no-mcp
+  loinc-browser mcp --docs-dir ./docs/agent
 
 Environment:
   LOINC_BROWSER_ADDR=:8080

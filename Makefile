@@ -1,5 +1,5 @@
 APP_NAME := loinc-browser
-DB ?= ./data/loinc-normalized.sqlite
+DEFAULT_DB := ./data/loinc-normalized.sqlite
 ADDR ?= :8080
 DEV_WEB_PORT ?= 5173
 VERSION ?= dev
@@ -13,8 +13,8 @@ help:
 	@echo "  make web              Build embedded Svelte assets"
 	@echo "  make check            Run Go tests, Svelte check, and frontend build"
 	@echo "  make build            Build local $(APP_NAME) binary"
-	@echo "  make serve            Serve browser on ADDR=$(ADDR) with DB=$(DB)"
-	@echo "  make mcp              Run stdio MCP server with DB=$(DB)"
+	@echo "  make serve            Serve UI, API, Swagger, and HTTP MCP on ADDR=$(ADDR)"
+	@echo "  make mcp              Run stdio MCP server using the default normalized SQLite DB"
 	@echo "  make dev              Run Go API reload watcher and Vite HMR server"
 	@echo "  make dev-api          Run Go API with local source-change restart"
 	@echo "  make dev-web          Run Vite HMR on DEV_WEB_PORT=$(DEV_WEB_PORT)"
@@ -41,26 +41,26 @@ build: web
 	go build -trimpath -o ./$(APP_NAME) ./cmd/loinc-browser
 
 serve: web
-	go run ./cmd/loinc-browser serve --db $(DB) --addr $(ADDR)
+	go run ./cmd/loinc-browser --addr $(ADDR)
 
 mcp:
-	go run ./cmd/loinc-browser mcp --db $(DB) --docs-dir ./docs/agent
+	go run ./cmd/loinc-browser mcp --docs-dir ./docs/agent
 
 dev:
 	$(MAKE) -j2 dev-api dev-web
 
 dev-api:
-	DB=$(DB) ADDR=$(ADDR) ./scripts/dev-api.sh
+	DB=$(DEFAULT_DB) ADDR=$(ADDR) ./scripts/dev-api.sh
 
 dev-web:
 	LOINC_API_TARGET=http://localhost$(ADDR) npm --prefix web run dev -- --host 0.0.0.0 --port $(DEV_WEB_PORT)
 
 ingest:
-	go run ./cmd/loinc-browser ingest --release $(RELEASE) --db $(DB)
+	go run ./cmd/loinc-browser ingest --release $(RELEASE)
 
 reingest:
-	rm -f $(DB) $(DB)-shm $(DB)-wal
-	$(MAKE) ingest RELEASE=$(RELEASE) DB=$(DB)
+	rm -f $(DEFAULT_DB) $(DEFAULT_DB)-shm $(DEFAULT_DB)-wal
+	$(MAKE) ingest RELEASE=$(RELEASE)
 
 release:
 	VERSION=$(VERSION) ./scripts/build-release.sh

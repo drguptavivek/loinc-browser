@@ -22,14 +22,15 @@ make ingest RELEASE=./Loinc_2.82
 make serve
 ```
 
-Open `http://localhost:8080`.
+Open `http://localhost:8080`. This one command serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
 
-The default database is `./data/loinc-normalized.sqlite` and the default address is `:8080`. Override either value when needed:
+First-time setup is also one command if a licensed `Loinc*.zip` is beside the app or in the project folder:
 
 ```bash
-make ingest RELEASE=./Loinc_2.82 DB=./data/loinc-normalized.sqlite
-make serve DB=./data/loinc-normalized.sqlite ADDR=:9090
+./loinc-browser
 ```
+
+The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. Use `ADDR=:9090 make serve` or `./loinc-browser --addr :9090` only when you need a different port.
 
 The serve address can also come from `.env`:
 
@@ -50,11 +51,10 @@ On `serve`, if the configured database is missing or has no `loinc_terms` data, 
 Release packages contain only the application binary and documentation. They do not contain LOINC release data or a generated database.
 
 ```bash
-./loinc-browser ingest --release ./Loinc_2.82 --db ./data/loinc-normalized.sqlite
-./loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080
+./loinc-browser
 ```
 
-If a local `Loinc*.zip` is present and the database is empty, `serve` can auto-ingest it on first run.
+If a local `Loinc*.zip` is present and the database is empty, the default run mode can auto-ingest it on first run. `./loinc-browser serve ...` remains supported. Use `--no-mcp` only if you need to disable HTTP MCP.
 
 ## Development Mode
 
@@ -137,21 +137,21 @@ Swagger UI is served at `http://localhost:8080/api/docs`. The underlying OpenAPI
 
 ## MCP
 
-The Go binary can expose the local LOINC database to agents through MCP over both stdio and HTTP.
+The default run mode exposes the local LOINC database to agents through MCP over HTTP while also serving the UI, API, and Swagger docs.
 
-Stdio:
-
-```bash
-./loinc-browser mcp --db ./data/loinc-normalized.sqlite --docs-dir ./docs/agent
-```
-
-HTTP, alongside the browser and `/api/v1`:
+All-in-one local server:
 
 ```bash
-./loinc-browser serve --db ./data/loinc-normalized.sqlite --addr :8080 --mcp
+./loinc-browser
 ```
 
 The default HTTP MCP route is `http://localhost:8080/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time. The repository skill for agents is `skills/loinc-mcp/SKILL.md`.
+
+Stdio MCP remains available for agent configs that launch a dedicated MCP process:
+
+```bash
+./loinc-browser mcp --docs-dir ./docs/agent
+```
 
 See `docs/MCP.md` for tool/resource names, connection examples, and context-optimization guidance.
 

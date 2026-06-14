@@ -58,16 +58,16 @@ Licensed LOINC release files and generated SQLite databases are not included.
 macOS/Linux:
 
 \`\`\`bash
-./${APP_NAME} serve --db ./data/loinc.sqlite --addr :8080
+./${APP_NAME}
 \`\`\`
 
 Windows PowerShell:
 
 \`\`\`powershell
-.\\${APP_NAME}.exe serve --db .\\data\\loinc.sqlite --addr :8080
+.\\${APP_NAME}.exe
 \`\`\`
 
-Open http://localhost:8080 and upload your licensed LOINC release zip from the loader page.
+Open http://localhost:8080 and upload your licensed LOINC release zip from the loader page. The same command also exposes /api/v1, Swagger/OpenAPI, and HTTP MCP at /mcp.
 
 ## License and attribution
 

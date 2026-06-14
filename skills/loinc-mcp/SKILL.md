@@ -14,16 +14,22 @@ Prefer stdio when the agent can launch local commands:
   "mcpServers": {
     "loinc": {
       "command": "/path/to/loinc-browser",
-      "args": ["mcp", "--db", "./data/loinc-normalized.sqlite", "--docs-dir", "./docs/agent"]
+      "args": ["mcp", "--docs-dir", "./docs/agent"]
     }
   }
 }
 ```
 
-Use HTTP when `loinc-browser serve --mcp` is already running locally:
+Use HTTP when the default all-in-one server is running locally:
 
 ```text
 http://localhost:8080/mcp
+```
+
+The usual command is:
+
+```bash
+loinc-browser
 ```
 
 ## First Calls
