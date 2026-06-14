@@ -29,6 +29,8 @@
 	let cy: Core | null = null;
 	let cytoscapeFactory: typeof cytoscape | null = null;
 	let zoomPercent = $state(100);
+	let copiedConcepts = $state(false);
+	const exportConceptLimit = 100;
 
 	function sortParents(items: TermAccessory[]) {
 		return [...items].sort((left, right) => {
@@ -148,13 +150,95 @@
 		return isSurveyTerm() ? 'Scale / survey items' : 'Panel observations';
 	}
 
+	function termURL(loincNum: string) {
+		const params = new URLSearchParams();
+		params.set('mode', 'hierarchy');
+		params.set('q', loincNum);
+		params.set('sort', 'usage');
+		params.set('term', loincNum);
+		return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+	}
+
+	function openTermInNewTab(loincNum: string) {
+		if (!isLoincNumber(loincNum)) return;
+		window.open(termURL(loincNum), '_blank', 'noopener,noreferrer');
+	}
+
 	function openAccessory(item: TermAccessory) {
-		if (isLoincNumber(item.code)) onOpenTerm(item.code);
+		openTermInNewTab(item.code);
 	}
 
 	function browseHierarchy(item: TermAccessory) {
+		if (isLoincNumber(item.code)) {
+			openTermInNewTab(item.code);
+			return;
+		}
 		const nodeId = item.fields?.nodeId;
 		if (nodeId) onBrowseHierarchy(nodeId, item.title || item.code);
+	}
+
+	function conceptLine(item: TermAccessory) {
+		return `${item.code || '-'}\t${title(item)}`;
+	}
+
+	function clinicalLaneText() {
+		let remaining = exportConceptLimit - 1;
+		const limited = (items: TermAccessory[]) => {
+			const lines = items.slice(0, Math.max(0, remaining)).map(conceptLine);
+			remaining -= lines.length;
+			return lines;
+		};
+		const sections = [
+			{
+				title: 'Selected term',
+				lines: [`${term.loincNum}\t${term.longCommonName || term.shortName || term.displayName || term.loincNum}`],
+			},
+			{ title: 'Contained in', lines: limited(parentContainers) },
+			{ title: childLaneTitle(), lines: limited(childItems) },
+			{ title: 'Answer lists', lines: limited(answerLists) },
+			{ title: 'Hierarchy path', lines: limited(hierarchyRows) },
+		];
+		return sections
+			.filter((section) => section.lines.length > 0)
+			.map((section) => [section.title, ...section.lines].join('\n'))
+			.join('\n\n');
+	}
+
+	async function copyConcepts() {
+		await writeTextToClipboard(clinicalLaneText());
+		copiedConcepts = true;
+		window.setTimeout(() => {
+			copiedConcepts = false;
+		}, 1600);
+	}
+
+	async function writeTextToClipboard(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			return;
+		} catch {
+			const textarea = document.createElement('textarea');
+			textarea.value = text;
+			textarea.setAttribute('readonly', '');
+			textarea.style.position = 'fixed';
+			textarea.style.left = '-9999px';
+			document.body.appendChild(textarea);
+			textarea.select();
+			document.execCommand('copy');
+			textarea.remove();
+		}
+	}
+
+	function exportConceptsTXT() {
+		const blob = new Blob([clinicalLaneText() + '\n'], { type: 'text/plain;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `loinc-${term.loincNum}-clinical-lanes.txt`;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
 	}
 
 	function nodeLabel(primary: string, secondary: string) {
@@ -236,6 +320,7 @@
 					label: title(item),
 					type: 'hierarchy',
 					nodeId: item.fields?.nodeId ?? '',
+					loincNum: isLoincNumber(item.code) ? item.code : '',
 				},
 				position: { x: 600, y: 150 + index * 95 },
 			});
@@ -333,7 +418,10 @@
 		});
 		cy.on('tap', 'node', (event) => {
 			const loincNum = event.target.data('loincNum');
-			if (loincNum) onOpenTerm(loincNum);
+			if (loincNum) {
+				openTermInNewTab(loincNum);
+				return;
+			}
 			const nodeId = event.target.data('nodeId');
 			if (nodeId) onBrowseHierarchy(nodeId, event.target.data('label') || '');
 		});
@@ -406,6 +494,23 @@
 	<aside class="min-h-0 overflow-auto border-t border-zinc-200 p-4 lg:border-l lg:border-t-0">
 		<div class="flex flex-col gap-3">
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
+				<div class="flex items-center justify-between gap-2">
+					<div>
+						<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Concept list</h3>
+						<p class="mt-1 text-xs text-zinc-500">{parentContainers.length + childItems.length + answerLists.length + hierarchyRows.length + 1} concepts · export max {exportConceptLimit}</p>
+					</div>
+					<div class="flex flex-wrap justify-end gap-2">
+						<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={copyConcepts}>
+							{copiedConcepts ? 'Copied' : 'Copy'}
+						</button>
+						<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={exportConceptsTXT}>
+							Export TXT
+						</button>
+					</div>
+				</div>
+			</section>
+
+			<section class="rounded-md border border-zinc-200 bg-white p-3">
 				<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Clinical role</h3>
 				<div class="mt-2 flex flex-wrap gap-1.5">
 					{#each clinicalRoleBadges() as badge}
@@ -421,9 +526,8 @@
 			</section>
 
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
-				<div class="mb-2 flex items-center justify-between gap-2">
+				<div class="mb-2">
 					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Contained in</h3>
-					<span class="text-xs text-zinc-500">{parentContainers.length}</span>
 				</div>
 				{#if parentContainers.length}
 					<div class="flex flex-col gap-2">
@@ -445,9 +549,8 @@
 			</section>
 
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
-				<div class="mb-2 flex items-center justify-between gap-2">
+				<div class="mb-2">
 					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{childLaneTitle()}</h3>
-					<span class="text-xs text-zinc-500">{childItems.length}</span>
 				</div>
 				{#if childItems.length}
 					<div class="flex flex-col gap-2">
@@ -468,9 +571,8 @@
 			</section>
 
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
-				<div class="mb-2 flex items-center justify-between gap-2">
+				<div class="mb-2">
 					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Answer lists</h3>
-					<span class="text-xs text-zinc-500">{answerLists.length}</span>
 				</div>
 				{#if answerLists.length}
 					<div class="flex flex-col gap-2">
@@ -491,9 +593,8 @@
 			</section>
 
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
-				<div class="mb-2 flex items-center justify-between gap-2">
+				<div class="mb-2">
 					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Hierarchy path</h3>
-					<span class="text-xs text-zinc-500">{hierarchyRows.length}</span>
 				</div>
 				{#if hierarchyRows.length}
 					<div class="flex flex-col gap-2">
@@ -510,9 +611,8 @@
 			</section>
 
 			<section class="rounded-md border border-zinc-200 bg-white p-3">
-				<div class="mb-2 flex items-center justify-between gap-2">
+				<div class="mb-2">
 					<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Nearby context</h3>
-					<span class="text-xs text-zinc-500">{siblingContext.length}</span>
 				</div>
 				{#if siblingContext.length}
 					<p class="text-sm leading-5 text-zinc-600">Use the top parent container to review adjacent panel or questionnaire items in sequence.</p>

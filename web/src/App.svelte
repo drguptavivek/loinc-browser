@@ -1703,7 +1703,7 @@
 									{#each accessorySections(selectedTerm) as section}
 										<section class="rounded-md border border-zinc-200">
 											<div class="flex items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2">
-												<span class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{section.title} ({section.items.length})</span>
+												<span class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{section.title}</span>
 												<button type="button" class="text-xs font-medium text-zinc-700 hover:underline" on:click={() => browseAccessoryForSelected(section.kind)}>Open browser</button>
 											</div>
 											<div class="max-h-72 divide-y divide-zinc-100 overflow-auto">
@@ -1818,6 +1818,10 @@
 						<p class="mt-1 truncate text-xs text-zinc-500">{selectedTerm.loincNum} · {selectedTerm.longCommonName}</p>
 					</div>
 					<div class="flex flex-wrap items-center justify-end gap-2">
+						{#if relationshipViewMode === 'explore'}
+							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
+							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= graphVisibleLimitMax()} on:click={() => (graphVisibleConceptLimit = Math.min(graphVisibleLimitMax(), graphVisibleConceptLimit + 4))}>More</Button>
+						{/if}
 						<div class="inline-flex rounded-md border border-zinc-200 bg-white p-0.5">
 							<button
 								type="button"
@@ -1836,10 +1840,6 @@
 								Exploration graph
 							</button>
 						</div>
-						{#if relationshipViewMode === 'explore'}
-							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit <= 8} on:click={() => (graphVisibleConceptLimit = Math.max(8, graphVisibleConceptLimit - 4))}>Fewer</Button>
-							<Button variant="outline" size="sm" disabled={graphVisibleConceptLimit >= graphVisibleLimitMax()} on:click={() => (graphVisibleConceptLimit = Math.min(graphVisibleLimitMax(), graphVisibleConceptLimit + 4))}>More</Button>
-						{/if}
 						<Button variant="ghost" size="icon" ariaLabel="Close relationship graph" on:click={() => (graphViewerOpen = false)}><X size={16} /></Button>
 					</div>
 				</div>

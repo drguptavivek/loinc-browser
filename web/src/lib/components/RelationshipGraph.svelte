@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import { ExternalLink } from '@lucide/svelte';
 	import type cytoscape from 'cytoscape';
 	import type { Core, ElementDefinition } from 'cytoscape';
 	import type { MapTo, RelationshipConcept, Term, TermAccessory, TermRelationshipGraph, TermSummary } from '$lib/api';
@@ -47,6 +48,8 @@
 	let cytoscapeFactory: typeof cytoscape | null = null;
 	let selectedConcept: RelationshipConcept | null = $state(null);
 	let zoomPercent = $state(100);
+	let copiedRelationships = $state(false);
+	const exportConceptLimit = 100;
 
 	const displayedConcepts = $derived(
 		concepts
@@ -79,6 +82,24 @@
 		return item.displayName || item.shortName || item.longCommonName || item.loincNum;
 	}
 
+	function isLoincNumber(value: string) {
+		return /^\d+-\d$/.test(value);
+	}
+
+	function termURL(loincNum: string) {
+		const params = new URLSearchParams();
+		params.set('mode', 'hierarchy');
+		params.set('q', loincNum);
+		params.set('sort', 'usage');
+		params.set('term', loincNum);
+		return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+	}
+
+	function openTermInNewTab(loincNum: string) {
+		if (!isLoincNumber(loincNum)) return;
+		window.open(termURL(loincNum), '_blank', 'noopener,noreferrer');
+	}
+
 	function compactNodeLabel(primary: string, secondary: string) {
 		const cleanSecondary = secondary.trim();
 		if (!cleanSecondary || cleanSecondary === primary) return primary;
@@ -98,6 +119,84 @@
 
 	function directSubtitle(item: DirectRelationship) {
 		return [sequenceLabel(item), item.subtitle, repeatLabel(item)].filter(Boolean).join(' · ');
+	}
+
+	function relationshipLine(item: DirectRelationship) {
+		return `${item.loincNum || item.code || '-'}\t${item.title}`;
+	}
+
+	function conceptLine(concept: RelationshipConcept) {
+		return `${concept.code || '-'}\t${conceptLabel(concept)}`;
+	}
+
+	function relatedTermLine(item: TermSummary) {
+		return `${item.loincNum}\t${termLabel(item)}`;
+	}
+
+	function relationshipExportText() {
+		let remaining = exportConceptLimit - 1;
+		const directSectionLines = groupDirectRelationships(directRelationships).flatMap((section) => {
+			const items = section.items.slice(0, Math.max(0, remaining));
+			remaining -= items.length;
+			return items.length ? [section.title, ...items.map(relationshipLine), ''] : [];
+		});
+		const conceptSectionLines: string[] = [];
+		for (const concept of concepts) {
+			if (remaining <= 0) break;
+			conceptSectionLines.push(conceptLine(concept));
+			remaining -= 1;
+			for (const related of (concept.relatedTerms ?? []).slice(0, maxTermsPerConcept)) {
+				if (remaining <= 0) break;
+				conceptSectionLines.push(`  ${relatedTermLine(related)}`);
+				remaining -= 1;
+			}
+		}
+		const sections = [
+			['Selected term', `${term.loincNum}\t${term.longCommonName || term.shortName || term.displayName || term.loincNum}`],
+			['Listed relationships', ...directSectionLines],
+			['Shared neighborhoods', ...conceptSectionLines],
+		];
+		return sections
+			.filter((section) => section.length > 1)
+			.map((section) => section.join('\n').trimEnd())
+			.join('\n\n');
+	}
+
+	async function copyRelationships() {
+		await writeTextToClipboard(relationshipExportText());
+		copiedRelationships = true;
+		window.setTimeout(() => {
+			copiedRelationships = false;
+		}, 1600);
+	}
+
+	async function writeTextToClipboard(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			return;
+		} catch {
+			const textarea = document.createElement('textarea');
+			textarea.value = text;
+			textarea.setAttribute('readonly', '');
+			textarea.style.position = 'fixed';
+			textarea.style.left = '-9999px';
+			document.body.appendChild(textarea);
+			textarea.select();
+			document.execCommand('copy');
+			textarea.remove();
+		}
+	}
+
+	function exportRelationshipsTXT() {
+		const blob = new Blob([relationshipExportText() + '\n'], { type: 'text/plain;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `loinc-${term.loincNum}-exploration-graph.txt`;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
 	}
 
 	function directNodeLabel(item: DirectRelationship) {
@@ -489,11 +588,11 @@
 		});
 		cy.on('tap', 'node[type = "related"]', (event) => {
 			const loincNum = event.target.data('loincNum');
-			if (loincNum) onOpenTerm(loincNum);
+			if (loincNum) openTermInNewTab(loincNum);
 		});
 		cy.on('tap', 'node[type = "direct"]', (event) => {
 			const loincNum = event.target.data('loincNum');
-			if (loincNum) onOpenTerm(loincNum);
+			if (loincNum) openTermInNewTab(loincNum);
 		});
 		cy.on('zoom', () => {
 			zoomPercent = Math.round((cy?.zoom() ?? 1) * 100);
@@ -568,6 +667,20 @@
 		{/if}
 	</div>
 	<aside class="min-h-0 overflow-auto border-t border-zinc-200 p-4 lg:border-l lg:border-t-0">
+		<div class="mb-3 flex items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white p-3">
+			<div>
+				<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Relationship list</h3>
+				<p class="mt-1 text-xs text-zinc-500">{directRelationships.length + concepts.length + 1} concepts · export max {exportConceptLimit}</p>
+			</div>
+			<div class="flex flex-wrap justify-end gap-2">
+				<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={copyRelationships}>
+					{copiedRelationships ? 'Copied' : 'Copy'}
+				</button>
+				<button type="button" class="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50" onclick={exportRelationshipsTXT}>
+					Export TXT
+				</button>
+			</div>
+		</div>
 		<div class="mb-3 flex items-center justify-between gap-2">
 			<h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Listed relationships</h3>
 			<span class="text-xs text-zinc-500">{displayedDirectRelationships.length} of {directRelationships.length}</span>
@@ -578,22 +691,31 @@
 			{:else}
 				{#each directSections as section}
 					<section class="rounded-md border border-zinc-300 bg-white p-3">
-						<div class="mb-2 flex items-center justify-between gap-2">
+						<div class="mb-2">
 							<h4 class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{section.title}</h4>
-							<span class="text-xs text-zinc-500">{section.items.length}</span>
 						</div>
 						<div class="flex flex-col gap-2">
 							{#each section.items as item}
 								<div class="rounded-md bg-zinc-50 px-2 py-1.5">
-									<div class="break-words text-sm font-medium text-zinc-950">{item.title}</div>
+									<div class="flex items-start justify-between gap-2">
+										<div class="min-w-0 break-words text-sm font-medium text-zinc-950">{item.title}</div>
+										{#if item.loincNum}
+											<button
+												type="button"
+												class="shrink-0 rounded p-1 text-zinc-500 hover:bg-white hover:text-zinc-950"
+												aria-label={`Open ${item.loincNum} in hierarchy`}
+												title="Open in hierarchy"
+												onclick={() => openTermInNewTab(item.loincNum || '')}
+											>
+												<ExternalLink size={14} />
+											</button>
+										{/if}
+									</div>
 									<div class="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
 										<span class="rounded px-1.5 py-0.5 font-medium" style={conceptToneStyle(item.kind)}>{item.kind}</span>
 										{#if item.code}<span class="font-mono">{item.code}</span>{/if}
 										{#if directSubtitle(item)}<span>{directSubtitle(item)}</span>{/if}
 									</div>
-									{#if item.loincNum}
-										<button type="button" class="mt-1 text-xs font-medium text-zinc-700 hover:underline" onclick={() => onOpenTerm(item.loincNum || '')}>Open term</button>
-									{/if}
 								</div>
 							{/each}
 						</div>
@@ -618,7 +740,7 @@
 						{#if concept.relatedTerms?.length}
 							<div class="mt-2 flex flex-col gap-1.5">
 								{#each concept.relatedTerms.slice(0, maxTermsPerConcept) as related}
-									<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-xs hover:bg-zinc-100" onclick={() => onOpenTerm(related.loincNum)}>
+									<button type="button" class="rounded-md bg-zinc-50 px-2 py-1.5 text-left text-xs hover:bg-zinc-100" onclick={() => openTermInNewTab(related.loincNum)}>
 										<span class="font-mono font-semibold text-zinc-900">{related.loincNum}</span>
 										<span class="mt-0.5 block break-words text-zinc-600">{termLabel(related)}</span>
 									</button>
