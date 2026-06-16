@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,12 +19,23 @@ const (
 	resourceAPIGuide   = "loinc://api-guide"
 )
 
+var conceptDocFiles = []string{
+	"LOINC_CONCEPTS.md",
+	"LOINC_TERM_STRUCTURE.md",
+	"LOINC_NAMES_AND_DISPLAY.md",
+	"LOINC_SPECIAL_CASES.md",
+	"LOINC_DATABASE_STRUCTURE.md",
+	"LOINC_PART_LINKAGES.md",
+	"LOINC_OFFICIAL_API.md",
+	"LOINC_LICENSE_NOTE.md",
+}
+
 type Docs struct {
 	dir string
 }
 
 type ConceptRequest struct {
-	Topic  string `json:"topic,omitempty" jsonschema:"LOINC concept topic, such as status, usage, rank, panels, answer_lists, hierarchy, parts, groups, copyright, or search_strategy"`
+	Topic  string `json:"topic,omitempty" jsonschema:"LOINC concept topic, such as major_parts, names, status, usage, panels, answer_lists, special_cases, microbiology, antimicrobial_susceptibility, database_structure, part_linkages, primary_linkages, semantic_enhancement, map_to_table, source_organization, copyright, or search_strategy"`
 	Detail string `json:"detail,omitempty" jsonschema:"summary, standard, or full"`
 }
 
@@ -44,11 +57,10 @@ func NewDocs(dir string) *Docs {
 }
 
 func (d *Docs) ExplainConcept(ctx context.Context, req ConceptRequest) (TextResponse, error) {
-	text, err := d.readFile(ctx, "LOINC_CONCEPTS.md")
+	sections, err := d.conceptSections(ctx)
 	if err != nil {
 		return TextResponse{}, err
 	}
-	sections := markdownSections(text)
 	if strings.TrimSpace(req.Topic) == "" {
 		return TextResponse{Text: conceptIndex(sections)}, nil
 	}
@@ -62,6 +74,21 @@ func (d *Docs) ExplainConcept(ctx context.Context, req ConceptRequest) (TextResp
 		}
 	}
 	return TextResponse{}, fmt.Errorf("LOINC concept topic %q not found in %s", req.Topic, d.path("LOINC_CONCEPTS.md"))
+}
+
+func (d *Docs) conceptSections(ctx context.Context) ([]markdownSection, error) {
+	var sections []markdownSection
+	for i, name := range conceptDocFiles {
+		text, err := d.readFile(ctx, name)
+		if err != nil {
+			if i > 0 && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		sections = append(sections, markdownSections(text)...)
+	}
+	return sections, nil
 }
 
 func (d *Docs) ReadResource(ctx context.Context, uri string) (TextResponse, error) {

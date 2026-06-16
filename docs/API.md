@@ -196,7 +196,7 @@ Example response:
 
 ```json
 {
-  "version": "0.90",
+  "version": "0.92",
   "commit": "dev",
   "goos": "darwin",
   "goarch": "arm64"
@@ -322,6 +322,143 @@ Supported query parameters:
 | `offset` | Result offset. |
 
 This route is useful for generic browse screens. For structured workflows, prefer the focused answer-list, panel, part, group, hierarchy, and relationship endpoints.
+
+### Official LOINC Search API proxy
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/official/credentials/status` | Check whether encrypted official API credentials are saved and usable. |
+| DELETE | `/api/v1/official/credentials` | Delete saved official API credentials from the local KV store. |
+| POST | `/api/v1/official/search` | Query the official Regenstrief LOINC Search API through the local server. |
+
+The local proxy supports the official Search API scopes `loincs`, `answerlists`, `parts`, and `groups`. It forwards only these official search parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `scope` | One of `loincs`, `answerlists`, `parts`, or `groups`. |
+| `query` | Official LOINC Search query string. |
+| `rows` | Number of upstream rows requested. |
+| `offset` | Upstream result offset. |
+| `sortorder` | Official API sort order string. |
+| `language` | Official API language value. |
+| `includefiltercounts` | Whether to ask the official API for filter counts. |
+
+The local route is `POST` so usernames and passwords never appear in URLs. Use direct credentials for one request:
+
+```bash
+curl -X POST 'http://localhost:9005/api/v1/official/search' \
+  -H 'content-type: application/json' \
+  -d '{"scope":"loincs","query":"Component:glucose System:blood","rows":10,"username":"LOINC_USERNAME","password":"LOINC_PASSWORD"}'
+```
+
+To save credentials locally, include `remember=true` with direct credentials. Later searches can use `useSavedCredentials=true`:
+
+```bash
+curl -X POST 'http://localhost:9005/api/v1/official/search' \
+  -H 'content-type: application/json' \
+  -d '{"scope":"parts","query":"Part:glucose","username":"LOINC_USERNAME","password":"LOINC_PASSWORD","remember":true}'
+
+curl -X POST 'http://localhost:9005/api/v1/official/search' \
+  -H 'content-type: application/json' \
+  -d '{"scope":"parts","query":"Part:glucose","useSavedCredentials":true}'
+```
+
+Official API configuration:
+
+| Environment key | Default | Meaning |
+| --- | --- | --- |
+| `LOINC_OFFICIAL_API_BASE_URL` | `https://loinc.regenstrief.org/searchapi` | Upstream official Search API base URL. |
+| `LOINC_APP_KEY_PATH` | `./data/loinc-browser-app.key` | Random 32-byte app key generated on first run. |
+| `LOINC_KV_PATH` | `./data/loinc-browser-kv.json` | File-backed JSON KV store for encrypted settings. |
+
+The app loads `.env` and then `loinc.env` when either file exists. Keep `loinc.env` local for test credentials.
+
+Saved credentials are encrypted with AES-256-GCM using the app key and a fresh nonce per save. This protects against casual inspection of `loinc-browser-kv.json`, but anyone with both `loinc-browser-app.key` and `loinc-browser-kv.json` can decrypt saved credentials. Delete saved credentials with `DELETE /api/v1/official/credentials`; delete both local files to reset the key and KV state.
+
+The official upstream response shape is intentionally wrapped as a schema-tolerant envelope:
+
+```json
+{
+  "scope": "loincs",
+  "params": {
+    "query": "Component:glucose"
+  },
+  "upstreamStatus": 200,
+  "payload": {},
+  "local": {
+    "available": true,
+    "loincNums": ["2000-1", "9999-9"],
+    "matched": 1,
+    "missing": 1,
+    "matches": {
+      "2000-1": {
+        "loincNum": "2000-1",
+        "found": true,
+        "localUrl": "/api/v1/terms/2000-1",
+        "term": {
+          "loincNum": "2000-1",
+          "longCommonName": "Cholesterol [Mass/volume] in Serum",
+          "status": "ACTIVE"
+        }
+      },
+      "9999-9": {
+        "loincNum": "9999-9",
+        "found": false
+      }
+    }
+  }
+}
+```
+
+`local` is derived by extracting LOINC-looking codes from the official payload and checking them against the local SQLite database. If the local database is not loaded, `local.available=false` and the upstream payload is still returned.
+
+Use the official LOINC search syntax pages for the `query` value: [Search API](https://loinc.org/kb/api/search-api/), [Basic Search Syntax](https://loinc.org/kb/search/basic/), [Advanced Search Syntax](https://loinc.org/kb/search/advanced-search-syntax/), [Part Search](https://loinc.org/kb/search/part-search/), and [Answer List Search](https://loinc.org/kb/search/answer-list-search/).
+
+The browser's Official API mode exposes a query builder for all documented official search syntax categories: free text, fielded search, required `+` clauses, excluded `-` clauses, quoted phrases, wildcards, fuzzy terms, proximity, inclusive ranges, and exclusive ranges. The field selector includes the documented advanced LOINC fields, part-search fields, and answer-list fields; the raw query box remains editable for expert syntax.
+
+### Local Advanced Search API
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/local-search/status` | Check whether the generated local advanced-search index is missing, ready, or unavailable. |
+| POST | `/api/v1/local-search/rebuild` | Manually rebuild the generated local advanced-search index from SQLite. |
+| POST | `/api/v1/local-search/query` | Search the generated local advanced-search index and hydrate results from SQLite. |
+
+Local advanced search uses the generated Bleve index documented in [`LOCAL_LUCENE_SEARCH.md`](LOCAL_LUCENE_SEARCH.md). The index path defaults to `./data/loinc-search.bleve/` and can be overridden with `LOINC_SEARCH_INDEX_PATH`.
+
+The index lifecycle is manual: check status, rebuild after ingest or re-ingest, then query:
+
+```bash
+curl 'http://localhost:9005/api/v1/local-search/status'
+
+curl -X POST 'http://localhost:9005/api/v1/local-search/rebuild'
+
+curl -X POST 'http://localhost:9005/api/v1/local-search/query' \
+  -H 'content-type: application/json' \
+  -d '{"scope":"loincs","query":"Component:morphine AND System:urine","limit":25,"offset":0}'
+```
+
+Supported local scopes are `loincs`, `answerlists`, `parts`, and `groups`.
+
+Supported query syntax includes:
+
+| Syntax | Example |
+| --- | --- |
+| plain terms and implicit `AND` | `morphine cutoff` |
+| quoted phrases | `"virus A"` |
+| explicit boolean operators | `morphine AND cutoff`, `influenza OR parainfluenza`, `influenza NOT equine` |
+| required and excluded terms | `+morphine -equine` |
+| fielded clauses | `Component:morphine`, `System:urine`, `Class:DRUG\\/TOX` |
+| wildcards | `LOINC:80619-?`, `AnswerCode:LA*` |
+| parentheses grouping | `(morphine OR codeine) AND System:Urine` |
+| field grouping | `Component:(morphine OR codeine)` |
+| fuzzy search | `morfine~` |
+| proximity syntax | `"morphine cutoff"~1` |
+| inclusive ranges | `Rank:[1 TO 100]` |
+| exclusive ranges | `Rank:{1 TO 100}` |
+| escaped special characters | `Class:DRUG\\/TOX` |
+
+Unsupported or planned fields are returned as warnings in the local-search response.
 
 ## EMR form-builder workflows
 

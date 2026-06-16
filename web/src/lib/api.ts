@@ -208,6 +208,98 @@ export type VersionInfo = {
 	goarch: string;
 };
 
+export type OfficialCredentialStatus = {
+	saved: boolean;
+	usable: boolean;
+	maskedUsername?: string;
+	message?: string;
+};
+
+export type OfficialSearchRequest = {
+	scope: 'loincs' | 'answerlists' | 'parts' | 'groups';
+	query: string;
+	rows?: number;
+	offset?: number;
+	sortorder?: string;
+	language?: number;
+	includefiltercounts?: boolean;
+	username?: string;
+	password?: string;
+	remember?: boolean;
+	useSavedCredentials?: boolean;
+};
+
+export type OfficialSearchResponse = {
+	scope: string;
+	params: Record<string, unknown>;
+	upstreamStatus: number;
+	payload: unknown;
+	local?: OfficialLocalIntegration;
+};
+
+export type OfficialLocalIntegration = {
+	available: boolean;
+	loincNums: string[];
+	matched: number;
+	missing: number;
+	matches: Record<string, OfficialLocalMatch>;
+	message?: string;
+};
+
+export type OfficialLocalMatch = {
+	loincNum: string;
+	found: boolean;
+	term?: {
+		loincNum: string;
+		longCommonName: string;
+		shortName: string;
+		status: string;
+		system: string;
+		class: string;
+		property: string;
+		scale: string;
+	};
+	localUrl?: string;
+};
+
+export type LocalSearchScope = 'loincs' | 'answerlists' | 'parts' | 'groups';
+
+export type LocalSearchStatus = {
+	state: string;
+	indexPath: string;
+	docCount: number;
+	updatedAt?: string;
+	fieldCoverage?: Record<string, string>;
+	warnings?: string[];
+	message?: string;
+};
+
+export type LocalSearchRequest = {
+	scope: LocalSearchScope;
+	query: string;
+	limit?: number;
+	offset?: number;
+};
+
+export type LocalSearchResult = {
+	id: string;
+	scope: string;
+	key: string;
+	score: number;
+	result: Record<string, unknown>;
+};
+
+export type LocalSearchResponse = {
+	scope: string;
+	query: string;
+	results: LocalSearchResult[];
+	total: number;
+	limit: number;
+	offset: number;
+	warnings?: string[];
+	indexStatus: string;
+};
+
 export type SearchParams = {
 	q?: string;
 	class?: string;
@@ -229,6 +321,15 @@ export type SearchParams = {
 
 async function requestJSON<T>(path: string): Promise<T> {
 	const response = await fetch(path);
+	if (!response.ok) {
+		const body = await response.json().catch(() => ({ error: response.statusText }));
+		throw new Error(body.error || response.statusText);
+	}
+	return response.json() as Promise<T>;
+}
+
+async function requestJSONWithInit<T>(path: string, init: RequestInit): Promise<T> {
+	const response = await fetch(path, init);
 	if (!response.ok) {
 		const body = await response.json().catch(() => ({ error: response.statusText }));
 		throw new Error(body.error || response.statusText);
@@ -268,6 +369,38 @@ export function getCacheStats(): Promise<CacheStats> {
 
 export function getVersion(): Promise<VersionInfo> {
 	return requestJSON<VersionInfo>('/api/version');
+}
+
+export function getOfficialCredentialStatus(): Promise<OfficialCredentialStatus> {
+	return requestJSON<OfficialCredentialStatus>('/api/v1/official/credentials/status');
+}
+
+export function deleteOfficialCredentials(): Promise<OfficialCredentialStatus> {
+	return requestJSONWithInit<OfficialCredentialStatus>('/api/v1/official/credentials', { method: 'DELETE' });
+}
+
+export function officialSearch(request: OfficialSearchRequest): Promise<OfficialSearchResponse> {
+	return requestJSONWithInit<OfficialSearchResponse>('/api/v1/official/search', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(request),
+	});
+}
+
+export function getLocalSearchStatus(): Promise<LocalSearchStatus> {
+	return requestJSON<LocalSearchStatus>('/api/v1/local-search/status');
+}
+
+export function rebuildLocalSearch(): Promise<LocalSearchStatus> {
+	return requestJSONWithInit<LocalSearchStatus>('/api/v1/local-search/rebuild', { method: 'POST' });
+}
+
+export function localLuceneSearch(request: LocalSearchRequest): Promise<LocalSearchResponse> {
+	return requestJSONWithInit<LocalSearchResponse>('/api/v1/local-search/query', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(request),
+	});
 }
 
 export function browseAccessories(params: { kind?: string; q?: string; limit?: number; offset?: number }): Promise<AccessoryBrowseResponse> {

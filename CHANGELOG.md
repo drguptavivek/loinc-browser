@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.92 - 2026-06-16
+
+- Added Official API mode for querying Regenstrief's LOINC Search API through a local POST proxy with optional encrypted local credential storage.
+- Added local Advanced Search mode backed by a generated search index with scoped LOINC, Parts, Answer Lists, and Groups results.
+- Added local advanced-search API endpoints for index status, manual rebuild, and query execution.
+- Added support for fielded clauses, boolean grouping, fuzzy terms, proximity syntax, inclusive and exclusive ranges, wildcards, and escaped special characters in local advanced search.
+- Preserved original release CSV content in generated `raw_csv_*` SQLite tables during ingest for audit and future field promotion.
+- Added focused LOINC agent documentation, official API documentation, local advanced-search documentation, and OpenAPI/Swagger coverage.
+- Improved Advanced Search UI with a dedicated mode button, search-term builder, collapsible options row, pagination, resizable result columns, and row-click detail opening.
+
+Full Changelog: https://github.com/drguptavivek/loinc-browser/compare/v0.91...v0.92
+
 ## 0.91 - 2026-06-15
 
 - Improved clinical relationship lanes with full LOINC names for panel observations and deduplicated parent containers.

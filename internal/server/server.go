@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	stdhtml "html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,30 +14,49 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/version"
 )
 
 type Options struct {
-	Store        *loinc.Store
-	Assets       http.FileSystem
-	DBPath       string
-	UploadDir    string
-	CacheEntries int
-	EnableMCP    bool
-	MCPPath      string
-	DocsDir      string
+	Store              *loinc.Store
+	Assets             http.FileSystem
+	DBPath             string
+	UploadDir          string
+	CacheEntries       int
+	EnableMCP          bool
+	MCPPath            string
+	DocsDir            string
+	OfficialAPIBaseURL string
+	AppKeyPath         string
+	KVPath             string
+	SearchIndexPath    string
+	HTTPClient         *http.Client
 }
 
 func New(options Options) http.Handler {
+	var officialVault *OfficialCredentialVault
+	if strings.TrimSpace(options.AppKeyPath) != "" && strings.TrimSpace(options.KVPath) != "" {
+		vault, err := NewOfficialCredentialVault(options.AppKeyPath, options.KVPath)
+		if err == nil {
+			officialVault = vault
+		}
+	}
 	app := &app{
-		store:        options.Store,
-		assets:       options.Assets,
-		dbPath:       options.DBPath,
-		uploadDir:    options.UploadDir,
-		cacheEntries: options.CacheEntries,
-		docsDir:      options.DocsDir,
+		store:          options.Store,
+		assets:         options.Assets,
+		dbPath:         options.DBPath,
+		uploadDir:      options.UploadDir,
+		cacheEntries:   options.CacheEntries,
+		docsDir:        options.DocsDir,
+		officialClient: newOfficialSearchClient(options.OfficialAPIBaseURL, options.HTTPClient),
+		officialVault:  officialVault,
+		localSearch:    newLocalSearchService(options.SearchIndexPath),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
@@ -80,6 +101,12 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/source-organizations", app.sourceOrganizations)
 	mux.HandleFunc("GET /api/v1/source-organizations/{id}", app.v1SourceOrganization)
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
+	mux.HandleFunc("GET /api/v1/official/credentials/status", app.officialCredentialStatus)
+	mux.HandleFunc("DELETE /api/v1/official/credentials", app.deleteOfficialCredentials)
+	mux.HandleFunc("POST /api/v1/official/search", app.officialSearch)
+	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
+	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
+	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
 	mux.HandleFunc("GET /docs/mcp", app.markdownDoc("MCP.md", "docs"))
@@ -109,13 +136,16 @@ func normalizeMCPPath(path string) string {
 }
 
 type app struct {
-	mu           sync.RWMutex
-	store        *loinc.Store
-	assets       http.FileSystem
-	dbPath       string
-	uploadDir    string
-	cacheEntries int
-	docsDir      string
+	mu             sync.RWMutex
+	store          *loinc.Store
+	assets         http.FileSystem
+	dbPath         string
+	uploadDir      string
+	cacheEntries   int
+	docsDir        string
+	officialClient *officialSearchClient
+	officialVault  *OfficialCredentialVault
+	localSearch    *localSearchService
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +258,82 @@ func (a *app) sourceOrganizations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (a *app) officialCredentialStatus(w http.ResponseWriter, r *http.Request) {
+	if a.officialVault == nil {
+		writeJSON(w, http.StatusOK, OfficialCredentialStatus{Saved: false, Usable: false, Message: "official API credential storage is not configured"})
+		return
+	}
+	status, err := a.officialVault.Status(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *app) deleteOfficialCredentials(w http.ResponseWriter, r *http.Request) {
+	if a.officialVault == nil {
+		writeJSON(w, http.StatusOK, OfficialCredentialStatus{Saved: false, Usable: false, Message: "official API credential storage is not configured"})
+		return
+	}
+	if err := a.officialVault.Delete(r.Context()); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, OfficialCredentialStatus{Saved: false, Usable: false, Message: "saved official API credentials deleted"})
+}
+
+func (a *app) officialSearch(w http.ResponseWriter, r *http.Request) {
+	var request OfficialSearchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid official API search request"))
+		return
+	}
+	credentials, status, err := a.officialCredentialsForRequest(r.Context(), request)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	if request.Remember {
+		if a.officialVault == nil {
+			writeError(w, http.StatusServiceUnavailable, errors.New("official API credential storage is not configured"))
+			return
+		}
+		if err := a.officialVault.Save(r.Context(), credentials); err != nil {
+			writeError(w, http.StatusServiceUnavailable, err)
+			return
+		}
+	}
+	response, status, err := a.officialClient.Search(r.Context(), request, credentials)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	a.attachOfficialLocalMatches(r.Context(), &response)
+	writeJSON(w, status, response)
+}
+
+func (a *app) officialCredentialsForRequest(ctx context.Context, request OfficialSearchRequest) (OfficialCredentials, int, error) {
+	if request.UseSavedCredentials {
+		if a.officialVault == nil {
+			return OfficialCredentials{}, http.StatusServiceUnavailable, errors.New("official API credential storage is not configured")
+		}
+		credentials, err := a.officialVault.Load(ctx)
+		if err != nil {
+			return OfficialCredentials{}, http.StatusUnauthorized, err
+		}
+		return credentials, http.StatusOK, nil
+	}
+	credentials := OfficialCredentials{
+		Username: strings.TrimSpace(request.Username),
+		Password: request.Password,
+	}
+	if credentials.Username == "" || credentials.Password == "" {
+		return OfficialCredentials{}, http.StatusUnauthorized, errors.New("official API credentials are required")
+	}
+	return credentials, http.StatusOK, nil
 }
 
 func (a *app) accessories(w http.ResponseWriter, r *http.Request) {
@@ -727,6 +833,16 @@ func renderMarkdownDocHTML(name string, markdown string) string {
 			break
 		}
 	}
+	var rendered bytes.Buffer
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.Table, extension.Strikethrough, extension.TaskList),
+		goldmark.WithRendererOptions(goldmarkhtml.WithUnsafe()),
+	)
+	if err := md.Convert([]byte(markdown), &rendered); err != nil {
+		rendered.WriteString("<pre>")
+		rendered.WriteString(stdhtml.EscapeString(markdown))
+		rendered.WriteString("</pre>")
+	}
 	return fmt.Sprintf(`<!doctype html>
 <html lang="en">
 <head>
@@ -737,16 +853,26 @@ func renderMarkdownDocHTML(name string, markdown string) string {
     :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f8fafc; color: #18181b; }
     main { max-width: 920px; margin: 0 auto; padding: 32px 24px 56px; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    h1 { margin: 0 0 24px; font-size: 32px; line-height: 1.15; letter-spacing: 0; }
+    h2 { margin: 32px 0 12px; font-size: 22px; line-height: 1.25; letter-spacing: 0; }
+    h3 { margin: 24px 0 10px; font-size: 17px; line-height: 1.35; letter-spacing: 0; }
+    p, li { font-size: 15px; line-height: 1.7; }
+    ul, ol { padding-left: 24px; }
+    code { border-radius: 4px; background: #f4f4f5; padding: 1px 4px; font: 0.92em ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    pre { overflow-x: auto; border-radius: 8px; background: #18181b; color: #fafafa; padding: 14px 16px; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    table { width: 100%%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { border: 1px solid #e4e4e7; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f4f4f5; font-weight: 600; }
     a { color: #0369a1; }
   </style>
 </head>
 <body>
   <main>
-    <pre>%s</pre>
+    %s
   </main>
 </body>
-</html>`, html.EscapeString(title), html.EscapeString(markdown))
+</html>`, stdhtml.EscapeString(title), rendered.String())
 }
 
 func (a *app) agentDocsDir() string {

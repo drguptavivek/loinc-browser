@@ -69,12 +69,16 @@ func commandMode(args []string) (string, []string) {
 }
 
 type serveConfig struct {
-	DBPath       string
-	Addr         string
-	CacheEntries int
-	EnableMCP    bool
-	MCPPath      string
-	DocsDir      string
+	DBPath             string
+	Addr               string
+	CacheEntries       int
+	EnableMCP          bool
+	MCPPath            string
+	DocsDir            string
+	OfficialAPIBaseURL string
+	AppKeyPath         string
+	KVPath             string
+	SearchIndexPath    string
 }
 
 type mcpConfig struct {
@@ -113,6 +117,9 @@ func runServe(args []string) error {
 	if err := loadDotEnv(".env"); err != nil {
 		return err
 	}
+	if err := loadDotEnv("loinc.env"); err != nil {
+		return err
+	}
 	cfg, err := parseServeConfig(args)
 	if err != nil {
 		return err
@@ -131,14 +138,18 @@ func runServe(args []string) error {
 		return err
 	}
 	handler := server.New(server.Options{
-		Store:        store,
-		Assets:       assets,
-		DBPath:       cfg.DBPath,
-		UploadDir:    "./data/uploads",
-		CacheEntries: cfg.CacheEntries,
-		EnableMCP:    cfg.EnableMCP,
-		MCPPath:      cfg.MCPPath,
-		DocsDir:      cfg.DocsDir,
+		Store:              store,
+		Assets:             assets,
+		DBPath:             cfg.DBPath,
+		UploadDir:          "./data/uploads",
+		CacheEntries:       cfg.CacheEntries,
+		EnableMCP:          cfg.EnableMCP,
+		MCPPath:            cfg.MCPPath,
+		DocsDir:            cfg.DocsDir,
+		OfficialAPIBaseURL: cfg.OfficialAPIBaseURL,
+		AppKeyPath:         cfg.AppKeyPath,
+		KVPath:             cfg.KVPath,
+		SearchIndexPath:    cfg.SearchIndexPath,
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -166,6 +177,10 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	disableMCP := flags.Bool("no-mcp", false, "disable local MCP over HTTP")
 	mcpPath := flags.String("mcp-path", "/mcp", "HTTP MCP route path")
 	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
+	officialAPIBaseURL := flags.String("official-api-base-url", defaultOfficialAPIBaseURL(), "official LOINC Search API base URL")
+	appKeyPath := flags.String("app-key-path", defaultAppKeyPath(), "path to local app key for encrypted app settings")
+	kvPath := flags.String("kv-path", defaultKVPath(), "path to local file-backed app settings KV")
+	searchIndexPath := flags.String("search-index-path", defaultSearchIndexPath(), "path to generated local Lucene-style search index")
 	if err := flags.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -192,12 +207,16 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		listenAddr = normalizedPort
 	}
 	return serveConfig{
-		DBPath:       defaultDBPath,
-		Addr:         listenAddr,
-		CacheEntries: *cacheEntries,
-		EnableMCP:    *enableMCP && !*disableMCP,
-		MCPPath:      normalizePathFlag(*mcpPath),
-		DocsDir:      *docsDir,
+		DBPath:             defaultDBPath,
+		Addr:               listenAddr,
+		CacheEntries:       *cacheEntries,
+		EnableMCP:          *enableMCP && !*disableMCP,
+		MCPPath:            normalizePathFlag(*mcpPath),
+		DocsDir:            *docsDir,
+		OfficialAPIBaseURL: *officialAPIBaseURL,
+		AppKeyPath:         *appKeyPath,
+		KVPath:             *kvPath,
+		SearchIndexPath:    *searchIndexPath,
 	}, nil
 }
 
@@ -340,6 +359,9 @@ func isTerminal(file *os.File) bool {
 
 func runMCP(args []string) error {
 	if err := loadDotEnv(".env"); err != nil {
+		return err
+	}
+	if err := loadDotEnv("loinc.env"); err != nil {
 		return err
 	}
 	cfg, err := parseMCPConfig(args)
@@ -527,6 +549,34 @@ func defaultAgentDocsDir() string {
 		return dir
 	}
 	return "./docs/agent"
+}
+
+func defaultOfficialAPIBaseURL() string {
+	if value := strings.TrimSpace(os.Getenv("LOINC_OFFICIAL_API_BASE_URL")); value != "" {
+		return value
+	}
+	return "https://loinc.regenstrief.org/searchapi"
+}
+
+func defaultAppKeyPath() string {
+	if value := strings.TrimSpace(os.Getenv("LOINC_APP_KEY_PATH")); value != "" {
+		return value
+	}
+	return "./data/loinc-browser-app.key"
+}
+
+func defaultKVPath() string {
+	if value := strings.TrimSpace(os.Getenv("LOINC_KV_PATH")); value != "" {
+		return value
+	}
+	return "./data/loinc-browser-kv.json"
+}
+
+func defaultSearchIndexPath() string {
+	if value := strings.TrimSpace(os.Getenv("LOINC_SEARCH_INDEX_PATH")); value != "" {
+		return value
+	}
+	return "./data/loinc-search.bleve"
 }
 
 func normalizePathFlag(path string) string {

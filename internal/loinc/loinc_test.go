@@ -389,6 +389,77 @@ func TestIngestCreatesNormalizedRelationshipModel(t *testing.T) {
 	}
 }
 
+func TestIngestPreservesEveryOriginalCSVAsItsOwnTable(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeTestRelease(t)
+	extraPath := filepath.Join(releaseDir, "AccessoryFiles", "Extra", "Unmodeled.csv")
+	if err := os.MkdirAll(filepath.Dir(extraPath), 0o755); err != nil {
+		t.Fatalf("mkdir extra csv dir: %v", err)
+	}
+	extraContent := []byte("Alpha,Beta\none,two\nquoted,\"three, four\"\n")
+	if err := os.WriteFile(extraPath, extraContent, 0o644); err != nil {
+		t.Fatalf("write extra csv: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "loinc-normalized.sqlite")
+
+	if _, err := Ingest(ctx, IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	var tableCount int
+	if err := db.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = 'raw_csv_files'`).Scan(&tableCount); err != nil {
+		t.Fatalf("check obsolete raw table: %v", err)
+	}
+	if tableCount != 0 {
+		t.Fatalf("expected no single raw_csv_files table, got %d", tableCount)
+	}
+
+	wantFiles := 0
+	if err := filepath.WalkDir(releaseDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".csv") {
+			wantFiles++
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk release csvs: %v", err)
+	}
+	var gotTables int
+	if err := db.QueryRow(`select count(*) from sqlite_master where type = 'table' and name like 'raw_csv_%'`).Scan(&gotTables); err != nil {
+		t.Fatalf("count raw csv tables: %v", err)
+	}
+	if gotTables != wantFiles {
+		t.Fatalf("expected %d raw csv tables, got %d", wantFiles, gotTables)
+	}
+
+	rawTable := rawCSVTableName(filepath.ToSlash(filepath.Join("AccessoryFiles", "Extra", "Unmodeled.csv")))
+	var rowCount int
+	if err := db.QueryRow(`select count(*) from ` + quoteIdentifier(rawTable)).Scan(&rowCount); err != nil {
+		t.Fatalf("count preserved extra csv table: %v", err)
+	}
+	if rowCount != 2 {
+		t.Fatalf("expected extra csv row count 2, got %d", rowCount)
+	}
+	var alpha, beta string
+	if err := db.QueryRow(`select `+quoteIdentifier("Alpha")+`, `+quoteIdentifier("Beta")+` from `+quoteIdentifier(rawTable)+` where _row_number = 2`).Scan(&alpha, &beta); err != nil {
+		t.Fatalf("load preserved extra csv row: %v", err)
+	}
+	if alpha != "quoted" || beta != "three, four" {
+		t.Fatalf("expected original CSV values in generated table, got Alpha=%q Beta=%q", alpha, beta)
+	}
+}
+
 func hasAccessory(items []TermAccessory, kind string, code string) bool {
 	for _, item := range items {
 		if item.Kind == kind && item.Code == code {

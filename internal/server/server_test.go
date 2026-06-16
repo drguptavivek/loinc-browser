@@ -152,6 +152,115 @@ func TestV1API(t *testing.T) {
 	}
 }
 
+func TestLocalSearchIndexLifecycleAndQuery(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeServerTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := loinc.Ingest(ctx, loinc.IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	store, err := loinc.OpenStore(dbPath, loinc.StoreOptions{CacheEntries: 4})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	indexPath := filepath.Join(t.TempDir(), "loinc-search.bleve")
+	server := httptest.NewServer(New(Options{Store: store, SearchIndexPath: indexPath}))
+	defer server.Close()
+
+	var status LocalSearchStatus
+	getJSON(t, server.URL+"/api/v1/local-search/status", &status)
+	if status.State != "missing" || status.IndexPath != indexPath {
+		t.Fatalf("expected missing local search status, got %#v", status)
+	}
+
+	postJSONValue(t, server.URL+"/api/v1/local-search/rebuild", nil, &status)
+	if status.State != "ready" || status.DocCount < 5 {
+		t.Fatalf("expected rebuilt local search status with all scopes, got %#v", status)
+	}
+
+	var loincSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "loincs", Query: "Component:Cholesterol", Limit: 10}, &loincSearch)
+	if loincSearch.Scope != "loincs" || loincSearch.Total == 0 || len(loincSearch.Results) == 0 {
+		t.Fatalf("expected local LOINC search results, got %#v", loincSearch)
+	}
+	if loincSearch.Results[0].Scope != "loincs" || loincSearch.Results[0].Key != "2000-1" {
+		t.Fatalf("expected hydrated cholesterol LOINC hit, got %#v", loincSearch.Results[0])
+	}
+
+	var exactLOINCSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "loincs", Query: "LOINC:2000-1", Limit: 10}, &exactLOINCSearch)
+	if exactLOINCSearch.Total != 1 || len(exactLOINCSearch.Results) != 1 || exactLOINCSearch.Results[0].Key != "2000-1" {
+		t.Fatalf("expected exact local LOINC search to use code key, got %#v", exactLOINCSearch)
+	}
+
+	var wildcardLOINCSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "loincs", Query: "LOINC:2000-?", Limit: 10}, &wildcardLOINCSearch)
+	if wildcardLOINCSearch.Total != 1 || len(wildcardLOINCSearch.Results) != 1 || wildcardLOINCSearch.Results[0].Key != "2000-1" {
+		t.Fatalf("expected wildcard local LOINC search to use code key, got %#v", wildcardLOINCSearch)
+	}
+
+	var partSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "parts", Query: "Part:Cholesterol", Limit: 10}, &partSearch)
+	if partSearch.Total == 0 || len(partSearch.Results) == 0 || partSearch.Results[0].Scope != "parts" {
+		t.Fatalf("expected local part search results, got %#v", partSearch)
+	}
+
+	var answerSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "answerlists", Query: "AnswerDisplayText:Positive", Limit: 10}, &answerSearch)
+	if answerSearch.Total == 0 || len(answerSearch.Results) == 0 || answerSearch.Results[0].Scope != "answerlists" {
+		t.Fatalf("expected local answer-list search results, got %#v", answerSearch)
+	}
+
+	var groupSearch LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "groups", Query: "Name:Chemistry", Limit: 10}, &groupSearch)
+	if groupSearch.Total == 0 || len(groupSearch.Results) == 0 || groupSearch.Results[0].Scope != "groups" {
+		t.Fatalf("expected local group search results, got %#v", groupSearch)
+	}
+
+	var warned LocalSearchResponse
+	postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: "loincs", Query: "PackageInsert:true", Limit: 10}, &warned)
+	if len(warned.Warnings) == 0 {
+		t.Fatalf("expected unsupported field warning, got %#v", warned)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		scope     string
+		query     string
+		wantKeys  []string
+		rejectKey string
+	}{
+		{name: "parentheses grouping", scope: "loincs", query: "(Cholesterol OR Platelets) AND System:Blood", wantKeys: []string{"2001-9"}, rejectKey: "2000-1"},
+		{name: "field grouping", scope: "loincs", query: "Component:(Cholesterol OR Platelets)", wantKeys: []string{"2000-1", "2001-9"}},
+		{name: "fuzzy search", scope: "loincs", query: "Cholestrol~", wantKeys: []string{"2000-1"}},
+		{name: "two edit fuzzy search", scope: "loincs", query: "Colestrol~", wantKeys: []string{"2000-1"}},
+		{name: "proximity search", scope: "loincs", query: `"Cholesterol Serum"~1`, wantKeys: []string{"2000-1"}},
+		{name: "inclusive numeric range", scope: "loincs", query: "Rank:[80 TO 100]", wantKeys: []string{"2000-1", "2001-9"}},
+		{name: "exclusive numeric range", scope: "loincs", query: "Rank:{80 TO 100}", rejectKey: "2000-1"},
+		{name: "escaped special character", scope: "loincs", query: `Class:HEM\/BC`, wantKeys: []string{"2001-9"}, rejectKey: "2000-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var response LocalSearchResponse
+			postJSONValue(t, server.URL+"/api/v1/local-search/query", LocalSearchRequest{Scope: tc.scope, Query: tc.query, Limit: 10}, &response)
+			got := map[string]bool{}
+			for _, result := range response.Results {
+				got[result.Key] = true
+			}
+			for _, key := range tc.wantKeys {
+				if !got[key] {
+					t.Fatalf("expected %s for query %q, got %#v", key, tc.query, response)
+				}
+			}
+			if tc.rejectKey != "" && got[tc.rejectKey] {
+				t.Fatalf("did not expect %s for query %q, got %#v", tc.rejectKey, tc.query, response)
+			}
+		})
+	}
+}
+
 func TestMCPRouteCanBeEnabledWithoutBreakingAPI(t *testing.T) {
 	ctx := context.Background()
 	releaseDir := writeServerTestRelease(t)
@@ -239,6 +348,24 @@ func TestOpenAPISpec(t *testing.T) {
 	requireOpenAPIPathParams(t, paths, "/api/v1/answer-lists/{answerListId}/terms", "answerListId")
 	requireOpenAPIPathParams(t, paths, "/api/v1/parts/{partNumber}/terms", "partNumber")
 	requireOpenAPIPathParams(t, paths, "/api/v1/groups/{groupId}/terms", "groupId")
+	if _, ok := paths["/api/v1/official/search"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/official/search")
+	}
+	if _, ok := paths["/api/v1/official/credentials/status"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/official/credentials/status")
+	}
+	if _, ok := paths["/api/v1/official/credentials"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/official/credentials")
+	}
+	if _, ok := paths["/api/v1/local-search/status"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/local-search/status")
+	}
+	if _, ok := paths["/api/v1/local-search/rebuild"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/local-search/rebuild")
+	}
+	if _, ok := paths["/api/v1/local-search/query"]; !ok {
+		t.Fatal("expected OpenAPI path /api/v1/local-search/query")
+	}
 
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
 	searchResponse := schemas["SearchResponse"].(map[string]any)["properties"].(map[string]any)
@@ -250,6 +377,13 @@ func TestOpenAPISpec(t *testing.T) {
 	requireOpenAPISchemaProperties(t, schemas, "PanelItem", "parentLoincNum", "childLoincNum", "sequence", "itemId", "displayNameForForm", "observationRequired", "entryType", "dataTypeInForm", "answerListIdOverride", "childTerm", "_links")
 	requireOpenAPISchemaProperties(t, schemas, "TermAccessoryPage", "results", "total", "limit", "offset", "hasMore", "_links")
 	requireOpenAPISchemaProperties(t, schemas, "VersionResponse", "version", "commit", "goos", "goarch")
+	requireOpenAPISchemaProperties(t, schemas, "OfficialSearchRequest", "scope", "query", "rows", "offset", "sortorder", "language", "includefiltercounts", "username", "password", "remember", "useSavedCredentials")
+	requireOpenAPISchemaProperties(t, schemas, "OfficialSearchResponse", "scope", "params", "upstreamStatus", "payload")
+	requireOpenAPISchemaProperties(t, schemas, "OfficialCredentialStatus", "saved", "usable", "maskedUsername", "message")
+	requireOpenAPISchemaProperties(t, schemas, "LocalSearchStatus", "state", "indexPath", "docCount", "fieldCoverage", "warnings", "message")
+	requireOpenAPISchemaProperties(t, schemas, "LocalSearchRequest", "scope", "query", "limit", "offset")
+	requireOpenAPISchemaProperties(t, schemas, "LocalSearchResponse", "scope", "query", "results", "total", "limit", "offset", "warnings", "indexStatus")
+	requireOpenAPISchemaProperties(t, schemas, "LocalSearchResult", "id", "scope", "key", "score", "result")
 }
 
 func TestSwaggerUIDocs(t *testing.T) {
@@ -285,7 +419,7 @@ func TestMarkdownDocsRoutes(t *testing.T) {
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(docsRoot, "MCP.md"), []byte("# MCP Guide\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(docsRoot, "MCP.md"), []byte("# MCP Guide\n\n- HTTP transport\n"), 0o644); err != nil {
 		t.Fatalf("write MCP docs: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(docsDir, "LOINC_CONCEPTS.md"), []byte("# Concepts\n"), 0o644); err != nil {
@@ -314,8 +448,12 @@ func TestMarkdownDocsRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s body: %v", path, err)
 		}
-		if !strings.Contains(string(body), "<pre>") {
-			t.Fatalf("expected %s to render markdown in an HTML page", path)
+		source := string(body)
+		if strings.Contains(source, "<pre>") || strings.Contains(source, "# MCP Guide") {
+			t.Fatalf("expected %s to render markdown as HTML, got raw markdown page", path)
+		}
+		if !strings.Contains(source, "<h1>") {
+			t.Fatalf("expected %s to include rendered heading HTML", path)
 		}
 	}
 }
@@ -339,6 +477,14 @@ func TestAPIDocumentationCoversV1Routes(t *testing.T) {
 		"rankMode",
 		"hierarchyNodeId",
 		"EMR form-builder workflows",
+		"/api/v1/official/search",
+		"LOINC_OFFICIAL_API_BASE_URL",
+		"loinc-browser-kv.json",
+		"loinc-browser-app.key",
+		"/api/v1/local-search/status",
+		"/api/v1/local-search/rebuild",
+		"/api/v1/local-search/query",
+		"LOINC_SEARCH_INDEX_PATH",
 	} {
 		if !strings.Contains(documentation, phrase) {
 			t.Fatalf("expected docs/API.md to mention %q", phrase)
@@ -405,6 +551,80 @@ func TestFrontendTabletBrowseDrawer(t *testing.T) {
 	}
 }
 
+func TestFrontendOfficialAPIMode(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "App.svelte"))
+	if err != nil {
+		t.Fatalf("read frontend app: %v", err)
+	}
+	apiBody, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "api.ts"))
+	if err != nil {
+		t.Fatalf("read frontend api: %v", err)
+	}
+	source := string(body)
+	apiSource := string(apiBody)
+	for _, phrase := range []string{
+		"'official'",
+		"Official API",
+		"runOfficialSearch",
+		"loadOfficialCredentialStatus",
+		"deleteOfficialCredentials",
+		"official_api",
+		"official_api_query_options",
+		"Component:glucose",
+		"AnswerDisplayText",
+		"AllowMethodSpecific",
+		"ClassHierarchy",
+		"PackageInsert",
+		"LOINCAnswerListOID",
+		"range-inclusive",
+		"proximity",
+		"useSavedCredentials",
+		"officialLocalMatch",
+		"Open local",
+		"officialResultKeyPriority",
+		"officialColumnHasValue",
+		"officialColumnClass",
+		"officialHeaderLabel",
+		"LONG_COMMON_NAME",
+		"table-auto",
+		"whitespace-normal",
+		"'advanced'",
+		"Advanced Search",
+		"openAdvancedSearch",
+		"advanced_search_header",
+		"local_lucene_form_card",
+		"local_lucene_results_window",
+		"advanced_search_help_modal",
+		"Build index",
+		"runAdvancedSearchFromStart",
+		"advancedSearchNextPage",
+		"advancedSearchPreviousPage",
+	} {
+		if !strings.Contains(source, phrase) {
+			t.Fatalf("expected Official API UI source to contain %q", phrase)
+		}
+	}
+	for _, phrase := range []string{
+		"officialSearch",
+		"getOfficialCredentialStatus",
+		"deleteOfficialCredentials",
+		"/api/v1/official/search",
+		"/api/v1/official/credentials/status",
+		"OfficialLocalIntegration",
+		"localUrl",
+		"getLocalSearchStatus",
+		"rebuildLocalSearch",
+		"localLuceneSearch",
+		"/api/v1/local-search/status",
+		"/api/v1/local-search/rebuild",
+		"/api/v1/local-search/query",
+	} {
+		if !strings.Contains(apiSource, phrase) {
+			t.Fatalf("expected Official API client source to contain %q", phrase)
+		}
+	}
+}
+
 func v1OpenAPIPaths() []string {
 	return []string{
 		"/api/v1/health",
@@ -438,6 +658,9 @@ func v1OpenAPIPaths() []string {
 		"/api/v1/source-organizations",
 		"/api/v1/source-organizations/{id}",
 		"/api/v1/accessories",
+		"/api/v1/local-search/status",
+		"/api/v1/local-search/rebuild",
+		"/api/v1/local-search/query",
 	}
 }
 
@@ -569,6 +792,32 @@ func getJSON(t *testing.T, url string, target any) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		t.Fatalf("decode %s: %v", url, err)
+	}
+}
+
+func postJSONValue(t *testing.T, url string, payload any, target any) {
+	t.Helper()
+	var body io.Reader = http.NoBody
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal %s payload: %v", url, err)
+		}
+		body = bytes.NewReader(raw)
+	}
+	resp, err := http.Post(url, "application/json", body)
+	if err != nil {
+		t.Fatalf("post %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("post %s returned %d: %s", url, resp.StatusCode, responseBody)
+	}
+	if target != nil {
+		if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+			t.Fatalf("decode %s: %v", url, err)
+		}
 	}
 }
 
@@ -721,7 +970,7 @@ func writeServerRequiredZipFiles(t *testing.T, zipWriter *zip.Writer) {
 		if err != nil {
 			t.Fatalf("create zip entry %s: %v", spec.path, err)
 		}
-		writeRowsCSV(t, file, spec.header, spec.rows)
+		writeRowsCSV(t, file, spec.header, nil)
 	}
 }
 
@@ -735,15 +984,15 @@ func serverRequiredCSVSpecs() []serverCSVSpec {
 	return []serverCSVSpec{
 		{path: "LoincTable/MapTo.csv", header: []string{"LOINC", "MAP_TO", "COMMENT"}},
 		{path: "LoincTable/SourceOrganization.csv", header: []string{"ID", "COPYRIGHT_ID", "NAME", "COPYRIGHT", "TERMS_OF_USE", "URL"}},
-		{path: "AccessoryFiles/PartFile/Part.csv", header: []string{"PartNumber", "PartTypeName", "PartName", "PartDisplayName", "Status"}},
-		{path: "AccessoryFiles/PartFile/LoincPartLink_Primary.csv", header: []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}},
+		{path: "AccessoryFiles/PartFile/Part.csv", header: []string{"PartNumber", "PartTypeName", "PartName", "PartDisplayName", "Status"}, rows: [][]string{{"LP1000-1", "COMPONENT", "Cholesterol", "Cholesterol", "ACTIVE"}}},
+		{path: "AccessoryFiles/PartFile/LoincPartLink_Primary.csv", header: []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}, rows: [][]string{{"2000-1", "Cholesterol [Mass/volume] in Serum", "LP1000-1", "Cholesterol", "LN", "COMPONENT", "COMPONENT", "COMPONENT"}}},
 		{path: "AccessoryFiles/PartFile/LoincPartLink_Supplementary.csv", header: []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}},
-		{path: "AccessoryFiles/AnswerFile/AnswerList.csv", header: []string{"AnswerListId", "AnswerListName", "AnswerListOID", "ExtDefinedYN", "ExtDefinedAnswerListCodeSystem", "ExtDefinedAnswerListLink", "AnswerStringId", "LocalAnswerCode", "LocalAnswerCodeSystem", "SequenceNumber", "DisplayText", "ExtCodeId", "ExtCodeDisplayName", "ExtCodeSystem", "ExtCodeSystemVersion", "ExtCodeSystemCopyrightNotice", "SubsequentTextPrompt", "Description", "Score"}},
-		{path: "AccessoryFiles/AnswerFile/LoincAnswerListLink.csv", header: []string{"LoincNumber", "LongCommonName", "AnswerListId", "AnswerListName", "AnswerListLinkType", "ApplicableContext"}},
+		{path: "AccessoryFiles/AnswerFile/AnswerList.csv", header: []string{"AnswerListId", "AnswerListName", "AnswerListOID", "ExtDefinedYN", "ExtDefinedAnswerListCodeSystem", "ExtDefinedAnswerListLink", "AnswerStringId", "LocalAnswerCode", "LocalAnswerCodeSystem", "SequenceNumber", "DisplayText", "ExtCodeId", "ExtCodeDisplayName", "ExtCodeSystem", "ExtCodeSystemVersion", "ExtCodeSystemCopyrightNotice", "SubsequentTextPrompt", "Description", "Score"}, rows: [][]string{{"LL1000-1", "Positive negative", "1.2.3.4", "N", "", "", "LA1-1", "POS", "LOCAL", "1", "Positive", "", "", "", "", "", "", "Positive answer", "1"}}},
+		{path: "AccessoryFiles/AnswerFile/LoincAnswerListLink.csv", header: []string{"LoincNumber", "LongCommonName", "AnswerListId", "AnswerListName", "AnswerListLinkType", "ApplicableContext"}, rows: [][]string{{"2000-1", "Cholesterol [Mass/volume] in Serum", "LL1000-1", "Positive negative", "NORMATIVE", ""}}},
 		{path: "AccessoryFiles/PanelsAndForms/PanelsAndForms.csv", header: []string{"ParentId", "ParentLoinc", "ParentName", "ID", "SEQUENCE", "Loinc", "LoincName", "DisplayNameForForm", "ObservationRequiredInPanel", "ObservationIdInForm", "SkipLogicHelpText", "DefaultValue", "EntryType", "DataTypeInForm", "DataTypeSource", "AnswerSequenceOverride", "ConditionForInclusion", "AllowableAlternative", "ObservationCategory", "Context", "ConsistencyChecks", "RelevanceEquation", "CodingInstructions", "QuestionCardinality", "AnswerCardinality", "AnswerListIdOverride", "AnswerListTypeOverride", "EXTERNAL_COPYRIGHT_NOTICE", "AdditionalCopyright"}},
-		{path: "AccessoryFiles/GroupFile/ParentGroup.csv", header: []string{"ParentGroupId", "ParentGroup", "Status"}},
-		{path: "AccessoryFiles/GroupFile/Group.csv", header: []string{"ParentGroupId", "GroupId", "Group", "Archetype", "Status", "VersionFirstReleased"}},
-		{path: "AccessoryFiles/GroupFile/GroupLoincTerms.csv", header: []string{"Category", "GroupId", "Archetype", "LoincNumber", "LongCommonName"}},
+		{path: "AccessoryFiles/GroupFile/ParentGroup.csv", header: []string{"ParentGroupId", "ParentGroup", "Status"}, rows: [][]string{{"PG1000", "Chemistry", "ACTIVE"}}},
+		{path: "AccessoryFiles/GroupFile/Group.csv", header: []string{"ParentGroupId", "GroupId", "Group", "Archetype", "Status", "VersionFirstReleased"}, rows: [][]string{{"PG1000", "LG1000-1", "Chemistry tests", "Laboratory", "ACTIVE", "2.80"}}},
+		{path: "AccessoryFiles/GroupFile/GroupLoincTerms.csv", header: []string{"Category", "GroupId", "Archetype", "LoincNumber", "LongCommonName"}, rows: [][]string{{"Laboratory", "LG1000-1", "Laboratory", "2000-1", "Cholesterol [Mass/volume] in Serum"}}},
 		{path: "AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv", header: []string{"PATH_TO_ROOT", "SEQUENCE", "IMMEDIATE_PARENT", "CODE", "CODE_TEXT"}},
 	}
 }

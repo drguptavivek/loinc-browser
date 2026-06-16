@@ -48,6 +48,67 @@ Answer lists define allowed answer choices.
 	}
 }
 
+func TestConceptDocsSearchStructuredFiles(t *testing.T) {
+	docsDir := t.TempDir()
+	writeTestFile(t, docsDir, "LOINC_CONCEPTS.md", `# LOINC Concepts
+
+## Purpose
+
+Core concept index.
+`)
+	writeTestFile(t, docsDir, "LOINC_SPECIAL_CASES.md", `# LOINC Special Cases
+
+## Microbiology
+
+Culture terms identify the observation; organisms are usually result values.
+`)
+	writeTestFile(t, docsDir, "LOINC_DATABASE_STRUCTURE.md", `# LOINC Database Structure
+
+## Map To Table
+
+Replacement mappings link deprecated terms to candidate replacements.
+`)
+	writeTestFile(t, docsDir, "LOINC_PART_LINKAGES.md", `# LOINC Part Linkages
+
+## Primary Linkages
+
+Primary links represent the exact five or six FSN axis fields.
+`)
+
+	docs := NewDocs(docsDir)
+	index, err := docs.ExplainConcept(context.Background(), ConceptRequest{})
+	if err != nil {
+		t.Fatalf("explain concept index: %v", err)
+	}
+	if !strings.Contains(index.Text, "purpose") || !strings.Contains(index.Text, "microbiology") || !strings.Contains(index.Text, "map_to_table") || !strings.Contains(index.Text, "primary_linkages") {
+		t.Fatalf("expected index to include topics from structured docs, got %q", index.Text)
+	}
+
+	section, err := docs.ExplainConcept(context.Background(), ConceptRequest{Topic: "microbiology"})
+	if err != nil {
+		t.Fatalf("explain microbiology: %v", err)
+	}
+	if !strings.Contains(section.Text, "organisms are usually result values") {
+		t.Fatalf("expected microbiology section from structured doc, got %q", section.Text)
+	}
+
+	replacementSection, err := docs.ExplainConcept(context.Background(), ConceptRequest{Topic: "map_to_table"})
+	if err != nil {
+		t.Fatalf("explain map to table: %v", err)
+	}
+	if !strings.Contains(replacementSection.Text, "candidate replacements") {
+		t.Fatalf("expected map to section from structured doc, got %q", replacementSection.Text)
+	}
+
+	linkageSection, err := docs.ExplainConcept(context.Background(), ConceptRequest{Topic: "primary_linkages"})
+	if err != nil {
+		t.Fatalf("explain primary linkages: %v", err)
+	}
+	if !strings.Contains(linkageSection.Text, "exact five or six FSN axis fields") {
+		t.Fatalf("expected part linkage section from structured doc, got %q", linkageSection.Text)
+	}
+}
+
 func TestReadAgentResourceReadsMarkdownAtRequestTime(t *testing.T) {
 	rootDir := t.TempDir()
 	docsDir := filepath.Join(rootDir, "agent")

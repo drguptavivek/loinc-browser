@@ -37,7 +37,7 @@ Licensed LOINC release files and generated SQLite databases must stay out of git
 
 ## Getting Started Quickly
 
-1. Download the `v0.91` binary for your platform from GitHub Releases.
+1. Download the `v0.92` binary for your platform from GitHub Releases.
 2. Download the licensed LOINC 2.82 release ZIP from LOINC after accepting the LOINC license.
 3. Place the release ZIP beside the executable, for example `Loinc_2.82.zip`.
 4. Run one command.
@@ -100,6 +100,16 @@ Use it when an agent needs to connect to the local LOINC MCP server, choose HTTP
 - `http://localhost:9005/docs/concepts`
 - `http://localhost:9005/docs/agent-guide`
 
+The agent KB is split into focused Markdown files:
+
+- `docs/agent/LOINC_CONCEPTS.md`: overview, scope, search strategy, and topic map.
+- `docs/agent/LOINC_TERM_STRUCTURE.md`: identifiers, major parts, abbreviations, and structural metadata.
+- `docs/agent/LOINC_NAMES_AND_DISPLAY.md`: FSN, Long Common Name, Short Name, and display guidance.
+- `docs/agent/LOINC_SPECIAL_CASES.md`: mapping patterns for microbiology, antimicrobial susceptibility, molecular genetics, allergy, urinalysis strips, and related special cases.
+- `docs/agent/LOINC_DATABASE_STRUCTURE.md`: technical reference for LOINC release fields, replacement mappings, source organizations, and import guidance.
+- `docs/agent/LOINC_PART_LINKAGES.md`: technical reference for enriched term-to-part linkages, link types, properties, and import guidance.
+- `docs/agent/LOINC_LICENSE_NOTE.md`: license, copyright, and repository data-handling constraints.
+
 ## UI Browsing
 
 The browser UI is served at:
@@ -125,10 +135,33 @@ curl 'http://localhost:9005/api/v1/terms/14749-6/relationships'
 curl 'http://localhost:9005/api/v1/hierarchy/roots'
 curl 'http://localhost:9005/api/v1/answer-lists/search?q=positive'
 curl 'http://localhost:9005/api/v1/source-organizations'
+curl -X POST 'http://localhost:9005/api/v1/official/search' \
+  -H 'content-type: application/json' \
+  -d '{"scope":"loincs","query":"Component:glucose","rows":10,"username":"LOINC_USERNAME","password":"LOINC_PASSWORD"}'
 curl -F 'releaseZip=@./Loinc_2.82.zip' 'http://localhost:9005/api/import/upload'
 ```
 
 Swagger UI is served at `http://localhost:9005/api/docs`. The underlying OpenAPI 3.1 spec is served at `http://localhost:9005/openapi.json`. See `docs/API.md` for the structured v1 API guide.
+
+## Official LOINC Search API
+
+The browser includes a dedicated **Official API** mode for querying Regenstrief's official LOINC Search API. The mode is opened from the Modes menu next to hierarchy, facets, rank, and relationships.
+
+The local server proxies official API requests so credentials are not sent in browser URL query strings. You can enter credentials per search or save them locally. Saved credentials are encrypted into `./data/loinc-browser-kv.json` using a random app key in `./data/loinc-browser-app.key`. Both files are local generated data and must stay out of git.
+
+Official search results are also checked against the local offline SQLite database when LOINC codes are present in the upstream payload. The results window marks local matches and can open matched terms in the local detail pane while keeping the official raw JSON available.
+
+The planned and local Lucene-style index, fields, query syntax, and generated index lifecycle are documented in [`docs/LOCAL_LUCENE_SEARCH.md`](docs/LOCAL_LUCENE_SEARCH.md).
+
+The app loads `.env` and then `loinc.env` when present. Use `loinc.env` for local test credentials or official API settings:
+
+```bash
+LOINC_OFFICIAL_API_BASE_URL=https://loinc.regenstrief.org/searchapi
+LOINC_APP_KEY_PATH=./data/loinc-browser-app.key
+LOINC_KV_PATH=./data/loinc-browser-kv.json
+```
+
+Local app-key encryption protects against casual inspection of the KV file. Anyone with both the app key file and KV file can decrypt saved credentials, so treat both files as secrets.
 
 ## High-Level Relationship Model
 
@@ -147,6 +180,16 @@ The v1 API exposes focused resources for term search, term detail, grouped relat
 The app also supports **Browse by rank**, based on LOINC's `COMMON_TEST_RANK` and `COMMON_ORDER_RANK` fields. Ranked browsing can use observation or order rank mode, limits results to positive ranks when requested, and orders the most frequently used LOINC codes first. Unranked terms remain searchable through normal search and facet browsing.
 
 See `ERD.md` for the fuller relationship diagram and storage model.
+
+## Local Abbreviation Lookup
+
+To build a local CSV lookup from the [LOINC abbreviations and acronyms page](https://loinc.org/kb/abbreviations/), run:
+
+```bash
+/Users/vivekgupta/.codex/.venv/bin/python scripts/build-loinc-abbreviations-csv.py
+```
+
+The generated file is `data/loinc-abbreviations.csv`. It is intended for local UI/API experiments or a future ingest step into SQLite/Go lookup code. The `data/` directory is ignored so the generated LOINC-derived CSV remains outside source control.
 
 ## License and Attribution
 
@@ -218,7 +261,7 @@ The importer requires these release files and fails if any are missing:
 - `AccessoryFiles/GroupFile/GroupLoincTerms.csv`
 - `AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv`
 
-The ingest schema is normalized-only for relationship data. v1 API endpoints read these tables directly; there are no compatibility relationship tables or raw JSON fallback columns.
+The v1 API endpoints read normalized relationship tables directly; there are no compatibility relationship tables or raw JSON fallback columns. Ingest also creates generated `raw_csv_*` tables, one per source CSV, so original release columns are preserved locally for audit and future field promotion.
 
 ## Check
 
@@ -235,8 +278,8 @@ GitHub releases are created automatically by GitHub Actions. The release workflo
 To create a release, push a version tag:
 
 ```bash
-git tag v0.91
-git push origin v0.91
+git tag v0.92
+git push origin v0.92
 ```
 
 The workflow builds and uploads these release assets:
@@ -253,7 +296,7 @@ The workflow also smoke-tests the Linux amd64 and Windows amd64 binaries before 
 For optional local packaging checks only:
 
 ```bash
-make release VERSION=0.91
+make release VERSION=0.92
 ```
 
 Local packages are written under `dist/`; GitHub release assets should normally come from the workflow.

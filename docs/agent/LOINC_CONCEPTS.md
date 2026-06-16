@@ -1,49 +1,41 @@
 # LOINC Concepts For Agents
 
-## Term
+This is the lightweight index for the agent-facing LOINC knowledge base. Use `loinc_explain_concepts` with a focused topic instead of loading whole files when possible.
 
-A LOINC term identifies one clinical observation, orderable test, panel, survey question, or related health measurement concept. Use the LOINC number as the stable identifier for follow-up calls. Prefer narrow lookups by LOINC number after search.
+## Purpose
 
-## Axes
+LOINC provides universal identifiers and names for laboratory and clinical observations so results can be exchanged, pooled, and interpreted across heterogeneous systems. Use a LOINC code when the task is to identify an observation, orderable test, survey question, clinical document, panel, or related health measurement concept. LOINC is not meant to carry every operational detail about the observation; instrument, collection-site detail, priority, verifier, sample size, and place of testing usually belong in other message fields.
 
-LOINC terms are described by six main axes: component, property, time aspect, system, scale, and method. These axes explain what is measured, the kind of property, timing, specimen or system, result scale, and method when a method is specified.
+Source: [LOINC Users' Guide, "1 - Introduction"](https://loinc.org/kb/users-guide/introduction/).
 
-## Status
+## Scope
 
-Status matters for agent recommendations. Active terms are normally preferred. Deprecated, discouraged, and inactive terms require caution and should be selected only when the task explicitly needs them or when mapping legacy data.
+LOINC covers things that can be tested, measured, or observed about a patient. Its two broad divisions are Laboratory and Clinical.
 
-## Usage
+Laboratory content covers observations about specimens, including chemistry, hematology, serology, microbiology, virology, parasitology, toxicology, cell counts, antibiotic susceptibilities, and related laboratory domains.
 
-`ORDER_OBS` describes whether a term is suitable as an order, an observation, or both. For form-builder work, match the intended workflow: observation terms for captured results, order terms for ordering workflows, and both only when appropriate.
+Clinical content covers observations about a patient that do not require removing a specimen, including vital signs, hemodynamics, intake/output, EKG, imaging observations, procedure-related observations, radiology studies, clinical documents, selected survey instruments, and patient assessment measures.
 
-## Rank
+LOINC has terms for both discrete observations and collections. Discrete observations include single lab tests, survey questions, patient measurements, and report elements. Collections include panels, batteries, question sets, groups of clinical measurements, documents, and reports.
 
-Common test and common order ranks are usage signals. Lower positive ranks are more common. Use `rankMode=observation` for result-capture workflows and `rankMode=order` for ordering workflows. `rankedOnly=true` narrows results to commonly used terms.
-
-## Panels
-
-Panels and forms are LOINC terms that contain authored child items. Use panel tools when building questionnaires, lab panels, or forms. Inspect panel items before assuming the parent term alone is enough.
-
-## Answer Lists
-
-Answer lists define allowed answer choices for coded questions. A term may link to one or more answer lists, and a panel item may override the answer list. Inspect answer choices before using a term in a structured form.
-
-## Hierarchy
-
-Hierarchy browsing uses occurrence `nodeId` values. Do not use hierarchy concept codes as tree state because a concept can appear in multiple branches. Use node IDs for children, breadcrumbs, and subtree term calls.
-
-## Parts
-
-Parts are reusable pieces of LOINC term meaning, such as components, systems, methods, and other axes. Part searches help agents find related terms when direct term search is too broad.
-
-## Groups
-
-Groups collect related LOINC terms for clinical or domain-oriented browsing. Group membership can help compare candidates, but final selection should still use term detail and fit metadata.
-
-## Copyright
-
-Some terms or related metadata may have external copyright/source constraints. Use copyright/source endpoints when exporting, displaying, or reusing detailed metadata outside local search.
+Source: [LOINC, "Scope of LOINC"](https://loinc.org/get-started/scope-of-loinc/).
 
 ## Search Strategy
 
 Start broad with compact search results, then narrow by status, usage type, rank mode, class, system, scale, method, hierarchy node, part, or group. Validate selected terms with fit metadata and inspect answer lists or panel items when building forms.
+
+For mapping, prioritize the Fully-Specified Name and its major parts. Compare local meaning against Component, Property, Time, System, Scale, and Method before relying on display-name similarity.
+
+Sources: [LOINC Term Basics](https://loinc.org/get-started/loinc-term-basics/) and [LOINC Users' Guide, "2 - Major Parts of a LOINC term"](https://loinc.org/kb/users-guide/major-parts-of-a-loinc-term/).
+
+## Topic Map
+
+- Term structure: see `LOINC_TERM_STRUCTURE.md` for `term_identity`, `major_parts`, `five_parts`, `abbreviations`, `component`, `property`, `time`, `system`, `scale`, `method`, `status`, `usage`, `rank`, `panels`, `answer_lists`, `hierarchy`, `parts`, and `groups`.
+- Names and display: see `LOINC_NAMES_AND_DISPLAY.md` for `names` and `display_names`.
+- Special cases: see `LOINC_SPECIAL_CASES.md` for `special_cases`, `binary_vs_multiple_answer`, `blood_bank`, `flow_cytometry`, `microbiology`, `antimicrobial_susceptibility`, `molecular_genetics`, `allergy`, and `urinalysis_strips`.
+- Database structure: see `LOINC_DATABASE_STRUCTURE.md` for `database_structure`, `loinc_table`, `identifier_fields`, `axis_fields`, `change_tracking`, `status_fields`, `name_fields`, `order_observation_fields`, `units_and_examples`, `map_to_table`, `source_organization`, and `import_guidance`.
+- Part linkages: see `LOINC_PART_LINKAGES.md` for `part_linkages`, `linkage_files`, `link_types`, `primary_linkages`, `detailed_model_linkages`, `syntax_enhancement`, `semantic_enhancement`, `metadata_linkages`, `radiology_linkages`, `document_ontology_linkages`, and `part_linkage_import_guidance`.
+- Official API: see `LOINC_OFFICIAL_API.md` for `official_api_search`, `official_api_credentials`, `official_api_query_syntax`, and `official_api_use_guidance`.
+- License: see `LOINC_LICENSE_NOTE.md` for `copyright`.
+
+All source-derived sections should include a direct Markdown link to the LOINC or related source page.

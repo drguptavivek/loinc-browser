@@ -2,8 +2,10 @@ package loinc
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +57,9 @@ func Ingest(ctx context.Context, options IngestOptions) (IngestSummary, error) {
 		return IngestSummary{}, err
 	}
 	if err := createSchema(ctx, db); err != nil {
+		return IngestSummary{}, err
+	}
+	if err := importRawCSVTables(ctx, db, options.ReleaseDir); err != nil {
 		return IngestSummary{}, err
 	}
 
@@ -296,6 +301,189 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func importRawCSVTables(ctx context.Context, db *sql.DB, releaseDir string) error {
+	paths := []string{}
+	err := filepath.WalkDir(releaseDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".csv") {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Strings(paths)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, path := range paths {
+		if err := importRawCSVTable(ctx, tx, releaseDir, path); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit raw CSV table preservation: %w", err)
+	}
+	return nil
+}
+
+func importRawCSVTable(ctx context.Context, tx *sql.Tx, releaseDir string, path string) error {
+	relativePath, err := filepath.Rel(releaseDir, path)
+	if err != nil {
+		return fmt.Errorf("compute relative CSV path for %s: %w", path, err)
+	}
+	relativePath = filepath.ToSlash(relativePath)
+	header, maxFields, err := inspectCSVShape(path)
+	if err != nil {
+		return fmt.Errorf("inspect raw CSV %s: %w", relativePath, err)
+	}
+	tableName := rawCSVTableName(relativePath)
+	columns := rawCSVColumnNames(header, maxFields)
+	createParts := []string{quoteIdentifier("_row_number") + " integer not null primary key"}
+	for _, column := range columns {
+		createParts = append(createParts, quoteIdentifier(column)+" text not null default ''")
+	}
+	if _, err := tx.ExecContext(ctx, `create table `+quoteIdentifier(tableName)+` (`+strings.Join(createParts, ", ")+`)`); err != nil {
+		return fmt.Errorf("create raw CSV table %s for %s: %w", tableName, relativePath, err)
+	}
+	insertColumns := []string{quoteIdentifier("_row_number")}
+	placeholders := []string{"?"}
+	for _, column := range columns {
+		insertColumns = append(insertColumns, quoteIdentifier(column))
+		placeholders = append(placeholders, "?")
+	}
+	stmt, err := tx.PrepareContext(ctx, `insert into `+quoteIdentifier(tableName)+` (`+strings.Join(insertColumns, ", ")+`) values (`+strings.Join(placeholders, ", ")+`)`)
+	if err != nil {
+		return fmt.Errorf("prepare raw CSV insert %s: %w", tableName, err)
+	}
+	defer stmt.Close()
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open raw CSV %s: %w", relativePath, err)
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	if _, err := reader.Read(); errors.Is(err, io.EOF) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read raw CSV header %s: %w", relativePath, err)
+	}
+	rowNumber := 0
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read raw CSV row %s/%d: %w", relativePath, rowNumber+2, err)
+		}
+		rowNumber++
+		args := make([]any, 0, len(columns)+1)
+		args = append(args, rowNumber)
+		for i := range columns {
+			value := ""
+			if i < len(record) {
+				value = record[i]
+			}
+			args = append(args, value)
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			return fmt.Errorf("insert raw CSV row %s/%d: %w", relativePath, rowNumber, err)
+		}
+	}
+	return nil
+}
+
+func inspectCSVShape(path string) ([]string, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if errors.Is(err, io.EOF) {
+		return []string{}, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	maxFields := len(header)
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(record) > maxFields {
+			maxFields = len(record)
+		}
+	}
+	return header, maxFields, nil
+}
+
+func rawCSVTableName(relativePath string) string {
+	withoutExt := strings.TrimSuffix(filepath.ToSlash(relativePath), filepath.Ext(relativePath))
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range strings.ToLower(withoutExt) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			builder.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	base := strings.Trim(builder.String(), "_")
+	if base == "" {
+		base = "file"
+	}
+	if len(base) > 80 {
+		base = base[:80]
+		base = strings.TrimRight(base, "_")
+	}
+	sum := sha256.Sum256([]byte(filepath.ToSlash(relativePath)))
+	return "raw_csv_" + base + "_" + hex.EncodeToString(sum[:4])
+}
+
+func rawCSVColumnNames(header []string, maxFields int) []string {
+	columns := make([]string, 0, maxFields)
+	seen := map[string]int{}
+	for i := 0; i < maxFields; i++ {
+		column := ""
+		if i < len(header) {
+			column = strings.TrimSpace(header[i])
+		}
+		if column == "" {
+			column = fmt.Sprintf("_column_%d", i+1)
+		}
+		base := column
+		if seen[base] > 0 {
+			column = fmt.Sprintf("%s_%d", base, seen[base]+1)
+		}
+		seen[base]++
+		columns = append(columns, column)
+	}
+	return columns
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func finalizeIngestDatabase(ctx context.Context, db *sql.DB) error {

@@ -4,7 +4,7 @@ var openAPISpec = map[string]any{
 	"openapi": "3.1.0",
 	"info": map[string]any{
 		"title":       "LOINC Browser API",
-		"version":     "0.90",
+		"version":     "0.92",
 		"description": "Local API for searching and browsing an imported licensed LOINC release.",
 	},
 	"servers": []map[string]any{
@@ -274,6 +274,78 @@ var openAPISpec = map[string]any{
 				},
 				"responses": map[string]any{
 					"200": response("Accessory records", ref("AccessoryBrowseResponse")),
+				},
+			},
+		},
+		"/api/v1/local-search/status": map[string]any{
+			"get": map[string]any{
+				"summary":     "Check local Lucene-style search index status",
+				"description": "Reports whether the embedded Bleve local search index exists, can be opened, and has indexed documents.",
+				"responses": map[string]any{
+					"200": response("Local search index status", ref("LocalSearchStatus")),
+				},
+			},
+		},
+		"/api/v1/local-search/rebuild": map[string]any{
+			"post": map[string]any{
+				"summary":     "Rebuild local Lucene-style search index",
+				"description": "Deletes and rebuilds the generated Bleve index from the canonical normalized SQLite database.",
+				"responses": map[string]any{
+					"200": response("Local search index status", ref("LocalSearchStatus")),
+					"503": response("Local SQLite database unavailable", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/local-search/query": map[string]any{
+			"post": map[string]any{
+				"summary":     "Run a basic local Lucene-style search",
+				"description": "Searches the generated Bleve index for one scope and hydrates typed results from the canonical SQLite database.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content": map[string]any{
+						"application/json": map[string]any{"schema": ref("LocalSearchRequest")},
+					},
+				},
+				"responses": map[string]any{
+					"200": response("Local search results", ref("LocalSearchResponse")),
+					"400": response("Invalid local search query", ref("ErrorResponse")),
+					"503": response("Local search index unavailable", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/official/credentials/status": map[string]any{
+			"get": map[string]any{
+				"summary":     "Check saved official LOINC API credential status",
+				"description": "Reports whether encrypted official LOINC API credentials are saved and usable by the local proxy.",
+				"responses": map[string]any{
+					"200": response("Official API credential status", ref("OfficialCredentialStatus")),
+				},
+			},
+		},
+		"/api/v1/official/credentials": map[string]any{
+			"delete": map[string]any{
+				"summary":     "Delete saved official LOINC API credentials",
+				"description": "Removes encrypted credentials from the local file-backed settings store. It does not delete the app key file.",
+				"responses": map[string]any{
+					"200": response("Official API credential status", ref("OfficialCredentialStatus")),
+				},
+			},
+		},
+		"/api/v1/official/search": map[string]any{
+			"post": map[string]any{
+				"summary":     "Proxy official LOINC Search API queries",
+				"description": "Server-side proxy for the official LOINC Search API. Credentials are accepted in the JSON body or loaded from encrypted local settings so they are never sent in URL query strings.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content": map[string]any{
+						"application/json": map[string]any{"schema": ref("OfficialSearchRequest")},
+					},
+				},
+				"responses": map[string]any{
+					"200": response("Official LOINC Search API response envelope", ref("OfficialSearchResponse")),
+					"400": response("Invalid official API request", ref("ErrorResponse")),
+					"401": response("Missing or rejected official API credentials", ref("ErrorResponse")),
+					"502": response("Official API upstream error", ref("ErrorResponse")),
 				},
 			},
 		},
@@ -629,6 +701,88 @@ var openAPISpec = map[string]any{
 				"state":                map[string]any{"type": "string"},
 				"sourceOrganizations":  map[string]any{"type": "array", "items": ref("SourceOrganization")},
 				"_links":               linksSchema(),
+			}),
+			"OfficialCredentialStatus": object(map[string]any{
+				"saved":          map[string]any{"type": "boolean"},
+				"usable":         map[string]any{"type": "boolean"},
+				"maskedUsername": map[string]any{"type": "string"},
+				"message":        map[string]any{"type": "string"},
+			}),
+			"OfficialSearchRequest": object(map[string]any{
+				"scope":               map[string]any{"type": "string", "enum": []string{"loincs", "answerlists", "parts", "groups"}},
+				"query":               map[string]any{"type": "string"},
+				"rows":                map[string]any{"type": "integer"},
+				"offset":              map[string]any{"type": "integer"},
+				"sortorder":           map[string]any{"type": "string"},
+				"language":            map[string]any{"type": "integer"},
+				"includefiltercounts": map[string]any{"type": "boolean"},
+				"username":            map[string]any{"type": "string"},
+				"password":            map[string]any{"type": "string", "format": "password"},
+				"remember":            map[string]any{"type": "boolean"},
+				"useSavedCredentials": map[string]any{"type": "boolean"},
+			}),
+			"OfficialSearchResponse": object(map[string]any{
+				"scope":          map[string]any{"type": "string"},
+				"params":         map[string]any{"type": "object", "additionalProperties": true},
+				"upstreamStatus": map[string]any{"type": "integer"},
+				"payload":        map[string]any{},
+				"local":          ref("OfficialLocalIntegration"),
+			}),
+			"OfficialLocalIntegration": object(map[string]any{
+				"available": map[string]any{"type": "boolean"},
+				"loincNums": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"matched":   map[string]any{"type": "integer"},
+				"missing":   map[string]any{"type": "integer"},
+				"matches":   map[string]any{"type": "object", "additionalProperties": ref("OfficialLocalMatch")},
+				"message":   map[string]any{"type": "string"},
+			}),
+			"OfficialLocalMatch": object(map[string]any{
+				"loincNum": map[string]any{"type": "string"},
+				"found":    map[string]any{"type": "boolean"},
+				"term":     ref("OfficialLocalTermSummary"),
+				"localUrl": map[string]any{"type": "string"},
+			}),
+			"OfficialLocalTermSummary": object(map[string]any{
+				"loincNum":       map[string]any{"type": "string"},
+				"longCommonName": map[string]any{"type": "string"},
+				"shortName":      map[string]any{"type": "string"},
+				"status":         map[string]any{"type": "string"},
+				"system":         map[string]any{"type": "string"},
+				"class":          map[string]any{"type": "string"},
+				"property":       map[string]any{"type": "string"},
+				"scale":          map[string]any{"type": "string"},
+			}),
+			"LocalSearchStatus": object(map[string]any{
+				"state":         map[string]any{"type": "string", "enum": []string{"missing", "ready", "requires_reingest", "error"}},
+				"indexPath":     map[string]any{"type": "string"},
+				"docCount":      map[string]any{"type": "integer"},
+				"updatedAt":     map[string]any{"type": "string"},
+				"fieldCoverage": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"warnings":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"message":       map[string]any{"type": "string"},
+			}),
+			"LocalSearchRequest": object(map[string]any{
+				"scope":  map[string]any{"type": "string", "enum": []string{"loincs", "answerlists", "parts", "groups"}},
+				"query":  map[string]any{"type": "string"},
+				"limit":  map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+			}),
+			"LocalSearchResponse": object(map[string]any{
+				"scope":       map[string]any{"type": "string"},
+				"query":       map[string]any{"type": "string"},
+				"results":     map[string]any{"type": "array", "items": ref("LocalSearchResult")},
+				"total":       map[string]any{"type": "integer"},
+				"limit":       map[string]any{"type": "integer"},
+				"offset":      map[string]any{"type": "integer"},
+				"warnings":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"indexStatus": map[string]any{"type": "string"},
+			}),
+			"LocalSearchResult": object(map[string]any{
+				"id":     map[string]any{"type": "string"},
+				"scope":  map[string]any{"type": "string"},
+				"key":    map[string]any{"type": "string"},
+				"score":  map[string]any{"type": "number"},
+				"result": map[string]any{"type": "object", "additionalProperties": true},
 			}),
 			"Facets": object(map[string]any{
 				"classes":     stringIntMap(),

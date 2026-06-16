@@ -25,6 +25,10 @@ Search results hide `STATUS=DEPRECATED` by default. Selecting the `DEPRECATED` s
 
 The explicit `ingest --release ./Loinc_2.82` command remains available for manual import into the default normalized SQLite database.
 
+Agent-facing LOINC KB docs live in `docs/agent/`. `LOINC_CONCEPTS.md` is the lightweight index; focused docs include `LOINC_TERM_STRUCTURE.md`, `LOINC_NAMES_AND_DISPLAY.md`, `LOINC_SPECIAL_CASES.md`, `LOINC_DATABASE_STRUCTURE.md`, `LOINC_PART_LINKAGES.md`, and `LOINC_LICENSE_NOTE.md`. Keep source-derived KB sections linked to the original LOINC or related source page.
+
+Technical docs are distinct from conceptual docs. Use `LOINC_DATABASE_STRUCTURE.md` for release-file fields, import/schema guidance, `MapTo`, and `SourceOrganization`. Use `LOINC_PART_LINKAGES.md` for `LoincPartLink_Primary.csv`, `LoincPartLink_Supplementary.csv`, `LinkTypeName`, `PartTypeName`, `Property`, and `PartCodeSystem` guidance. When adding technical KB topics, also update the topic map in `LOINC_CONCEPTS.md`, the workflow hints in `LOINC_AGENT_GUIDE.md`, and MCP topic lookup if a new file is introduced.
+
 Before claiming completion, run:
 
 ```bash

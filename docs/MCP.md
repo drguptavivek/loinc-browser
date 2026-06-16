@@ -32,6 +32,8 @@ loinc-browser mcp --docs-dir ./docs/agent
 
 MCP resources read Markdown files from disk at request time. Edits made in a code editor are visible on the next resource/tool call.
 
+`loinc://concepts` returns the lightweight concept index at `docs/agent/LOINC_CONCEPTS.md`. The `loinc_explain_concepts` tool searches topic sections across the structured agent KB files in `docs/agent/`, including term structure, names/display, special cases, database structure, part linkages, and license notes.
+
 Default docs directory:
 
 ```text

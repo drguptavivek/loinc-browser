@@ -7,8 +7,15 @@ Loinc_*/
 data/
 /loinc-browser
 /dist/
+.env
+loinc.env
+loinc-browser-app.key
+loinc-browser-kv.json
+loinc-search.bleve/
+.serena/
 
 .DS_Store
+search examples
 
 web/node_modules/
 web/dist/
