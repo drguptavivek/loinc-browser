@@ -35,6 +35,7 @@
 	import ClinicalRelationshipLanes from '$lib/components/ClinicalRelationshipLanes.svelte';
 	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
+	import ApiConsole from '$lib/components/ApiConsole.svelte';
 	import type { PaneAPI } from 'paneforge';
 	import {
 		browseAccessories,
@@ -48,6 +49,7 @@
 		getTermRelationships,
 		getVersion,
 		localLuceneSearch,
+		localSearchAPI,
 		officialSearch,
 		rebuildLocalSearch,
 		searchTerms,
@@ -119,7 +121,8 @@
 	let initialTerm = '';
 	let error = '';
 	let offset = 0;
-	let activeView: 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' = 'browse';
+	let activeView: 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' | 'apis' = 'browse';
+	let apiConsolePresetId = '';
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
 	let graphViewerOpen = false;
@@ -168,6 +171,7 @@
 	let accessoryLoading = false;
 	let accessoryResults: AccessoryRecord[] = [];
 	let accessoryTotal = 0;
+	let officialSource: 'proxy' | 'local' = 'local';
 	let officialScope: 'loincs' | 'answerlists' | 'parts' | 'groups' = 'loincs';
 	let officialQuery = '';
 	let officialRows = 10;
@@ -385,7 +389,7 @@
 			await loadFacets();
 			if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
-			} else if (activeView === 'official' || activeView === 'advanced') {
+			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
 				updateURL(true);
 			} else if (activeView === 'loader') {
 				await runSearch(offset, true, false);
@@ -402,7 +406,7 @@
 			applyURLState();
 			if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
-			} else if (activeView === 'official' || activeView === 'advanced') {
+			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
 				updateURL(true);
 			} else if (activeView === 'loader') {
 				await runSearch(offset, true, false);
@@ -469,7 +473,7 @@
 					: currentBrowseMode === 'advanced'
 						? 'Advanced Search'
 						: currentBrowseMode === 'official'
-						? 'Official API'
+						? 'Search API'
 						: 'Browse facets';
 
 	function applyURLState() {
@@ -510,6 +514,9 @@
 			activeView = 'advanced';
 		} else if (mode === 'loader') {
 			activeView = 'loader';
+		} else if (mode === 'apis') {
+			activeView = 'apis';
+			apiConsolePresetId = params.get('preset') ?? '';
 		} else {
 			activeView = 'browse';
 			if (mode === 'rank') rankedOnly = true;
@@ -526,6 +533,17 @@
 		const params = new URLSearchParams();
 		const mode = activeBrowseMode();
 		if (activeView === 'loader') params.set('mode', 'loader');
+		else if (activeView === 'apis') {
+			params.set('mode', 'apis');
+			if (apiConsolePresetId) params.set('preset', apiConsolePresetId);
+			const nextURL = `${window.location.pathname}?${params.toString()}`;
+			if (replace) {
+				window.history.replaceState(null, '', nextURL);
+			} else {
+				window.history.pushState(null, '', nextURL);
+			}
+			return;
+		}
 		else if (activeView === 'official' || activeView === 'advanced') {
 			params.set('mode', activeView === 'advanced' ? 'advanced' : 'official');
 			const nextURL = `${window.location.pathname}?${params.toString()}`;
@@ -628,22 +646,39 @@
 		error = '';
 		officialRawOpen = false;
 		try {
-			officialResult = await officialSearch({
-				scope: officialScope,
-				query: officialQuery.trim(),
-				rows: officialRows,
-				offset: officialOffset,
-				sortorder: officialSortOrder.trim(),
-				language: officialLanguage,
-				includefiltercounts: officialIncludeFilterCounts,
-				username: officialUseSavedCredentials ? undefined : officialUsername.trim(),
-				password: officialUseSavedCredentials ? undefined : officialPassword,
-				remember: officialUseSavedCredentials ? false : officialRemember,
-				useSavedCredentials: officialUseSavedCredentials,
-			});
-			if (officialRemember && !officialUseSavedCredentials) {
-				officialPassword = '';
-				await loadOfficialCredentialStatus();
+			if (officialSource === 'local') {
+				const payload = await localSearchAPI(officialScope, {
+					query: officialQuery.trim(),
+					rows: officialRows,
+					offset: officialOffset,
+					sortorder: officialSortOrder.trim(),
+					language: officialLanguage,
+					includefiltercounts: officialIncludeFilterCounts,
+				});
+				officialResult = {
+					scope: officialScope,
+					params: { query: officialQuery.trim(), rows: officialRows, offset: officialOffset },
+					upstreamStatus: 200,
+					payload,
+				};
+			} else {
+				officialResult = await officialSearch({
+					scope: officialScope,
+					query: officialQuery.trim(),
+					rows: officialRows,
+					offset: officialOffset,
+					sortorder: officialSortOrder.trim(),
+					language: officialLanguage,
+					includefiltercounts: officialIncludeFilterCounts,
+					username: officialUseSavedCredentials ? undefined : officialUsername.trim(),
+					password: officialUseSavedCredentials ? undefined : officialPassword,
+					remember: officialUseSavedCredentials ? false : officialRemember,
+					useSavedCredentials: officialUseSavedCredentials,
+				});
+				if (officialRemember && !officialUseSavedCredentials) {
+					officialPassword = '';
+					await loadOfficialCredentialStatus();
+				}
 			}
 			updateURL();
 		} catch (err) {
@@ -922,7 +957,7 @@
 		if (mode === 'rank') return 'Browse rank';
 		if (mode === 'relationships') return 'Browse relationships';
 		if (mode === 'advanced') return 'Advanced Search';
-		if (mode === 'official') return 'Official API';
+		if (mode === 'official') return 'Search API';
 		return 'Browse facets';
 	}
 
@@ -1190,7 +1225,7 @@
 		if (!local) return '';
 		if (local.loincNums.length === 0) return local.message || 'No LOINC numbers found in the official payload.';
 		if (!local.available) return local.message || 'Local database matching is unavailable.';
-		return `${local.matched} of ${local.loincNums.length} official LOINC codes found in the local database.`;
+		return `${local.matched} of ${local.loincNums.length} upstream result codes found in the local database.`;
 	}
 
 	function officialRawJSON() {
@@ -1362,6 +1397,13 @@
 	function openLoader() {
 		activeView = 'loader';
 		resultsFullscreen = false;
+		updateURL(false);
+	}
+
+	function openApiConsole() {
+		activeView = 'apis';
+		resultsFullscreen = false;
+		mobileBrowseMenuOpen = false;
 		updateURL(false);
 	}
 
@@ -1699,7 +1741,7 @@
 						</button>
 						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'official' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('official')}>
 							<KeyRound size={14} />
-							Official API
+							Search API
 						</button>
 						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'advanced' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('advanced')}>
 							<Search size={14} />
@@ -1727,7 +1769,7 @@
 				</button>
 				<button type="button" class={modeButtonClass('official', currentBrowseMode)} on:click={openOfficialAPI}>
 					<KeyRound size={14} />
-					Official API
+					Search API
 				</button>
 				<button type="button" class={modeButtonClass('advanced', currentBrowseMode)} on:click={openAdvancedSearch}>
 					<Search size={14} />
@@ -1838,7 +1880,7 @@
 							</section>
 						{:else if currentBrowseMode === 'official'}
 							<section class="rounded-md border border-zinc-200 bg-white">
-								<div class="border-b border-zinc-100 px-2.5 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-600">Official scopes</div>
+								<div class="border-b border-zinc-100 px-2.5 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-600">Search scopes</div>
 								<div class="flex flex-col gap-1 p-2">
 									{#each officialScopes as item}
 										<button
@@ -1852,8 +1894,8 @@
 								</div>
 							</section>
 							<section class="rounded-md border border-zinc-200 bg-white p-3 text-xs leading-5 text-zinc-600">
-								<div class="font-semibold uppercase tracking-wide text-zinc-500">Official syntax</div>
-								<p class="mt-1">Use the options builder for all official fielded queries, required or excluded clauses, quoted phrases, wildcards, fuzzy terms, proximity, ranges, and documented LOINC, part, or answer-list fields.</p>
+								<div class="font-semibold uppercase tracking-wide text-zinc-500">Query syntax</div>
+								<p class="mt-1">Use the options builder for fielded queries, required or excluded clauses, quoted phrases, wildcards, fuzzy terms, proximity, ranges, and documented LOINC, part, or answer-list fields.</p>
 							</section>
 						{:else if currentBrowseMode === 'advanced'}
 							{#key localLuceneScope}
@@ -2137,8 +2179,8 @@
 			{:else if activeView === 'official'}
 				<div class="flex items-center justify-between gap-4 border-b border-zinc-200 px-4 py-3 pr-14 lg:shrink-0" data-testid="official_api_header">
 					<div class="min-w-0">
-						<h2 class="text-sm font-semibold">Official API</h2>
-						<p class="mt-1 text-xs text-zinc-500">Query Regenstrief's official LOINC Search API through the local credential-safe proxy.</p>
+						<h2 class="text-sm font-semibold">Search API</h2>
+						<p class="mt-1 text-xs text-zinc-500">{officialSource === 'local' ? 'LOINC Search API–compatible queries answered from the local database. Not affiliated with Regenstrief.' : 'Queries Regenstrief\'s LOINC Search API upstream through the local credential-safe proxy (network call, LOINC account required).'}</p>
 					</div>
 					<div class="flex items-center gap-2">
 						<Button variant="outline" size="sm" on:click={openFacetBrowser}>Back to local search</Button>
@@ -2148,6 +2190,30 @@
 						<div class="flex flex-col gap-4 p-4">
 							<section class="rounded-lg border border-zinc-200 bg-white p-4" data-testid="official_api_form_card">
 								<form class="flex flex-col gap-4" on:submit|preventDefault={runOfficialSearch}>
+									<div class="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Search source">
+										<span class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Source</span>
+										<button
+											type="button"
+											role="radio"
+											aria-checked={officialSource === 'proxy'}
+											class={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${officialSource === 'proxy' ? 'border-zinc-950 bg-zinc-950 text-white' : 'border-zinc-200 text-zinc-700 hover:bg-zinc-50'}`}
+											on:click={() => (officialSource = 'proxy')}
+										>
+											Regenstrief upstream (proxy)
+										</button>
+										<button
+											type="button"
+											role="radio"
+											aria-checked={officialSource === 'local'}
+											class={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${officialSource === 'local' ? 'border-zinc-950 bg-zinc-950 text-white' : 'border-zinc-200 text-zinc-700 hover:bg-zinc-50'}`}
+											on:click={() => (officialSource = 'local')}
+										>
+											Local database
+										</button>
+										{#if officialSource === 'local'}
+											<span class="text-xs text-zinc-500">No credentials needed; answered entirely from the local database.</span>
+										{/if}
+									</div>
 									<div class="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
 										<Field label="Scope">
 											<Select
@@ -2169,8 +2235,8 @@
 									<div class="rounded-md border border-zinc-200 bg-zinc-50 p-3" data-testid="official_api_query_options">
 										<div class="flex flex-wrap items-center justify-between gap-2">
 											<div>
-												<div class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Official search options</div>
-												<div class="mt-1 text-xs text-zinc-600">Build fielded, boolean, phrase, wildcard, fuzzy, proximity, and range clauses supported by the official search syntax.</div>
+												<div class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Search options</div>
+												<div class="mt-1 text-xs text-zinc-600">Build fielded, boolean, phrase, wildcard, fuzzy, proximity, and range clauses supported by the LOINC search syntax.</div>
 											</div>
 											<Badge variant="secondary">{officialFieldsForScope().length ? `${officialFieldsForScope().length} fields` : 'Free text'}</Badge>
 										</div>
@@ -2220,6 +2286,7 @@
 										Include upstream filter counts
 									</label>
 
+								{#if officialSource === 'proxy'}
 								<div class="rounded-md border border-zinc-200 bg-zinc-50 p-3">
 									<div class="flex flex-wrap items-center justify-between gap-2">
 										<div>
@@ -2250,13 +2317,16 @@
 											</label>
 									{/if}
 								</div>
+								{/if}
 
 								<div class="flex flex-wrap items-center gap-3">
 									<Button type="submit" disabled={officialLoading}>
 										<Search size={16} />
-										{officialLoading ? 'Searching official API...' : 'Search official API'}
+										{officialLoading ? 'Searching...' : officialSource === 'local' ? 'Search local database' : 'Search Regenstrief upstream'}
 									</Button>
-									<span class="text-xs text-zinc-500">Credentials are sent in this local POST body, never as URL query parameters.</span>
+									<span class="text-xs text-zinc-500">
+										{officialSource === 'local' ? 'Answered entirely from the local database; no network call.' : 'Credentials are sent in this local POST body, never as URL query parameters.'}
+									</span>
 								</div>
 							</form>
 						</section>
@@ -2282,23 +2352,24 @@
 									</div>
 									</div>
 								</div>
-								<p class="mt-3 text-xs leading-5 text-zinc-500">The options builder above includes the complete official advanced LOINC field catalog, part-search fields, answer-list fields, and operators documented by LOINC.</p>
+								<p class="mt-3 text-xs leading-5 text-zinc-500">The options builder above includes the advanced LOINC field catalog, part-search fields, answer-list fields, and operators documented by LOINC.</p>
 							</section>
 
 							<section class="rounded-lg border border-zinc-200 bg-white" data-testid="official_api_results_window">
 							<div class="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
 								<div>
-									<h3 class="text-sm font-semibold">Official results</h3>
+									<h3 class="text-sm font-semibold">Results</h3>
 									<p class="mt-1 text-xs text-zinc-500">
 										{#if officialLoading}
 											Searching...
 										{:else if officialResult}
-											Upstream status {officialResult.upstreamStatus} for {officialResult.scope}
+											<Badge variant={officialSource === 'local' ? 'secondary' : 'outline'} className="mr-1">{officialSource === 'local' ? 'Local database' : 'Regenstrief upstream'}</Badge>
+											status {officialResult.upstreamStatus} for {officialResult.scope}
 											{#if officialLocalSummary()}
 												<span class="ml-2">{officialLocalSummary()}</span>
 											{/if}
 										{:else}
-											Run an official API query to inspect upstream payloads.
+											Run a query to inspect results.
 										{/if}
 									</p>
 								</div>
@@ -2315,7 +2386,7 @@
 										{#each Array(5) as _}<div class="h-14 animate-pulse rounded-md bg-zinc-100"></div>{/each}
 									</div>
 								{:else if !officialResult}
-									<div class="p-4"><EmptyState title="No official API query yet" body="Choose a scope, enter credentials or use saved credentials, then search." /></div>
+									<div class="p-4"><EmptyState title="No search yet" body={officialSource === 'local' ? 'Choose a scope and search the local database.' : 'Choose a scope, enter LOINC credentials or use saved credentials, then search upstream.'} /></div>
 								{:else if officialRawOpen}
 									<pre class="whitespace-pre-wrap break-words p-4 text-xs leading-5 text-zinc-700">{officialRawJSON()}</pre>
 								{:else if officialPayloadRows(officialResult.payload).length === 0}
@@ -2440,6 +2511,19 @@
 							</form>
 						</section>
 					</div>
+				</div>
+			{:else if activeView === 'apis'}
+				<div class="flex items-center justify-between gap-4 border-b border-zinc-200 px-4 py-3 pr-14 lg:shrink-0">
+					<div class="min-w-0">
+						<h2 class="text-sm font-semibold">Local APIs</h2>
+						<p class="mt-1 text-xs text-zinc-500">Try the local FHIR and LOINC Search API–compatible endpoints served by this app (not official Regenstrief services). See <a class="underline underline-offset-2" href="/docs/local-apis">the guide</a>.</p>
+					</div>
+					<div class="flex items-center gap-2">
+						<Button variant="outline" size="sm" on:click={openFacetBrowser}>Back to browse</Button>
+					</div>
+				</div>
+				<div class="lg:min-h-0 lg:flex-1 lg:overflow-auto">
+					<ApiConsole initialPresetId={apiConsolePresetId} />
 				</div>
 			{:else if activeView === 'accessories' || activeView === 'hierarchy'}
 				<div class="flex items-center justify-between gap-4 border-b border-zinc-200 px-4 py-3 pr-14 lg:shrink-0">
@@ -3150,11 +3234,21 @@
 					<Upload size={13} />
 					Load release zip
 				</button>
+				<button
+					type="button"
+					class={`inline-flex items-center gap-1 rounded-md border px-2 py-1 font-medium transition-colors ${activeView === 'apis' ? 'border-zinc-950 bg-zinc-950 text-white' : 'border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950'}`}
+					on:click={openApiConsole}
+				>
+					<Server size={13} />
+					Local APIs
+				</button>
 			</div>
 			<nav class="flex flex-wrap gap-x-3 gap-y-1" aria-label="Footer links">
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/api/docs">Swagger API</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/openapi.json">OpenAPI</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/mcp">MCP endpoint</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/api">API docs</a>
+				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/local-apis">Local APIs guide</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/mcp">MCP guide</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/concepts">LOINC concepts</a>
 				<a class="font-medium underline underline-offset-2 hover:text-zinc-900" href="/docs/agent-guide">Agent guide</a>

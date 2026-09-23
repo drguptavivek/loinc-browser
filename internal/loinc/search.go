@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -16,27 +17,83 @@ import (
 type Store struct {
 	db    *sql.DB
 	cache *objectCache
+
+	// readOnly is true when this Store was opened with StoreOptions.ReadOnly, meaning every lazy
+	// index-creation path below must skip CREATE INDEX (the connection can't write) rather than
+	// fail the request. See readOnlyIndexLogOnce.
+	readOnly bool
+	// readOnlyIndexLogOnce logs the "skipping lazy index creation" notice at most once per Store,
+	// the first time any ensure*Index path is skipped, instead of once per query.
+	readOnlyIndexLogOnce sync.Once
+
+	// rawIndexed tracks which raw_csv_* (table, column) pairs already have a covering index, so
+	// ensureRawIndex only issues CREATE INDEX once per table per process (see fhir_queries.go).
+	rawIndexed sync.Map
+
+	// termSourceCounts/termSourceEmbeds/termSourceExpandLists cache CachedCountTermSource/
+	// CachedEmbedTermSource/CachedExpandMembers results per named ValueSet term source (see
+	// fhir_valueset_queries.go), bounded LRUs (termsourcecache.go) rather than unbounded maps --
+	// implicit `vs/{LP}` sets alone have thousands of possible keys, and all-LOINC is ~109k
+	// members. Keyed per *Store, so they are invalidated for free whenever a new release replaces
+	// this Store with a new one.
+	termSourceCounts     *termSourceCache[int]
+	termSourceEmbeds     *termSourceCache[[]FHIRConceptRef]
+	termSourceExpandList *termSourceCache[[]FHIRExpandedConcept]
+
+	// linguisticVariantUnion caches the built-once UNION ALL query (and its resolved language
+	// order) that FHIRLinguisticVariants runs instead of one query per language table.
+	linguisticVariantUnion     linguisticVariantUnionQuery
+	linguisticVariantUnionOnce sync.Once
 }
 
 func OpenStore(dbPath string, options StoreOptions) (*Store, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return nil, errors.New("database path is required")
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath, options.ReadOnly))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := configureRuntimePragmas(db); err != nil {
+	if err := configureRuntimePragmas(db, options.ReadOnly); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	// The store-open indexes below are plain CREATE INDEX (no schema change) and fail on a
+	// read-only connection; skip them entirely here and let the per-request ensure*Index paths
+	// (fhir_queries.go, fhir_map_queries.go) log and skip too. A fresh DB already carries these
+	// from ingest (internal/loinc/ingest.go createPostImportIndexes); only an old DB opened
+	// read-only loses the speed-up, not correctness.
+	if !options.ReadOnly {
+		if err := ensureFHIRIndexes(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := ensureFHIRValueSetIndexes(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return &Store{
-		db:    db,
-		cache: newObjectCache(options.CacheEntries),
+		db:                   db,
+		cache:                newObjectCache(options.CacheEntries),
+		readOnly:             options.ReadOnly,
+		termSourceCounts:     newTermSourceCache[int](termSourceCacheMaxEntries, 0, nil),
+		termSourceEmbeds:     newTermSourceCache(termSourceListMaxEntries, termSourceListMaxTotalMembers, func(v []FHIRConceptRef) int { return len(v) }),
+		termSourceExpandList: newTermSourceCache(termSourceListMaxEntries, termSourceListMaxTotalMembers, func(v []FHIRExpandedConcept) int { return len(v) }),
 	}, nil
 }
 
-func configureRuntimePragmas(db *sql.DB) error {
+// sqliteDSN builds the modernc.org/sqlite DSN for dbPath, adding the `mode=ro` URI query param
+// when readOnly (plan §2 Mode A: a second process reading a WAL-mode database a running server
+// already has open).
+func sqliteDSN(dbPath string, readOnly bool) string {
+	if !readOnly {
+		return dbPath
+	}
+	return "file:" + dbPath + "?mode=ro"
+}
+
+func configureRuntimePragmas(db *sql.DB, readOnly bool) error {
 	statements := []string{
 		`pragma foreign_keys = on`,
 		`pragma journal_mode = wal`,
@@ -44,7 +101,11 @@ func configureRuntimePragmas(db *sql.DB) error {
 		`pragma temp_store = memory`,
 		`pragma busy_timeout = 5000`,
 		`pragma mmap_size = 268435456`,
-		`pragma optimize`,
+	}
+	if !readOnly {
+		// optimize runs ANALYZE where needed, writing sqlite_stat1 -- fails on a read-only
+		// connection even when the rest of these session-only pragmas succeed.
+		statements = append(statements, `pragma optimize`)
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

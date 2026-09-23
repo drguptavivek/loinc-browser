@@ -28,8 +28,11 @@ Primary documentation endpoints:
 | `/api/version` | Application version metadata for the UI, scripts, and release checks. |
 | `/api/v1/version` | v1 version metadata endpoint. |
 | `/docs/mcp` | Live Markdown MCP guide served from `docs/MCP.md`. |
+| `/docs/api` | This guide, served live from `docs/API.md`. |
+| `/docs/local-apis` | Live Markdown guide to the local FHIR + Search API clones, served from `docs/LOCAL_APIS.md`. |
 | `/docs/concepts` | Live Markdown concept guide served from `docs/agent/LOINC_CONCEPTS.md`. |
 | `/docs/agent-guide` | Live Markdown agent guide served from `docs/agent/LOINC_AGENT_GUIDE.md`. |
+| `/docs/{file}.md` | Any other top-level file in `docs/`, rendered live (for example `/docs/LOCAL_APIS.md`, `/docs/FHIR_TERMINOLOGY_PLAN.md`). Only a bare top-level filename ending in `.md` resolves; no subdirectories. |
 
 Operational endpoints outside `/api/v1`, such as `/api/import/upload`, may remain for local release loading and development. New API clients should use `/api/v1` for LOINC search, relationships, hierarchy browsing, and form-builder workflows.
 
@@ -415,6 +418,18 @@ The official upstream response shape is intentionally wrapped as a schema-tolera
 Use the official LOINC search syntax pages for the `query` value: [Search API](https://loinc.org/kb/api/search-api/), [Basic Search Syntax](https://loinc.org/kb/search/basic/), [Advanced Search Syntax](https://loinc.org/kb/search/advanced-search-syntax/), [Part Search](https://loinc.org/kb/search/part-search/), and [Answer List Search](https://loinc.org/kb/search/answer-list-search/).
 
 The browser's Official API mode exposes a query builder for all documented official search syntax categories: free text, fielded search, required `+` clauses, excluded `-` clauses, quoted phrases, wildcards, fuzzy terms, proximity, inclusive ranges, and exclusive ranges. The field selector includes the documented advanced LOINC fields, part-search fields, and answer-list fields; the raw query box remains editable for expert syntax.
+
+### Local FHIR + LOINC Search API clones
+
+| Base path | Purpose |
+| --- | --- |
+| `/fhir/...` | Local, wire-compatible clone of `https://fhir.loinc.org` (FHIR R4: CodeSystem, ValueSet, ConceptMap, Questionnaire). |
+| `/searchapi/{scope}` | Local, wire-compatible clone of `https://loinc.regenstrief.org/searchapi/{scope}`. |
+
+Existing clients built against either official service only need to change their base URL;
+both are served entirely from the local database, with no network calls. See
+[`LOCAL_APIS.md`](LOCAL_APIS.md) for the full route list, curl examples, transports (TCP, Unix
+domain socket, UDP), and documented divergences from the official servers.
 
 ### Local Advanced Search API
 

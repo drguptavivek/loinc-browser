@@ -29,6 +29,8 @@ Agent-facing LOINC KB docs live in `docs/agent/`. `LOINC_CONCEPTS.md` is the lig
 
 Technical docs are distinct from conceptual docs. Use `LOINC_DATABASE_STRUCTURE.md` for release-file fields, import/schema guidance, `MapTo`, and `SourceOrganization`. Use `LOINC_PART_LINKAGES.md` for `LoincPartLink_Primary.csv`, `LoincPartLink_Supplementary.csv`, `LinkTypeName`, `PartTypeName`, `Property`, and `PartCodeSystem` guidance. When adding technical KB topics, also update the topic map in `LOINC_CONCEPTS.md`, the workflow hints in `LOINC_AGENT_GUIDE.md`, and MCP topic lookup if a new file is introduced.
 
+The local FHIR (`/fhir`) and LOINC Search API–compatible (`/searchapi`) endpoints are specified in `docs/FHIR_TERMINOLOGY_PLAN.md`. Their reference material is gitignored third-party content: `docs/vendor/` (HL7, loinc.org, MCP docs) and `docs/exemplars/` (captured upstream responses). Regenerate both with `make dev-refs`; exemplar capture needs a LOINC account in `loinc.env`. Parity tests skip when these are absent. Compare a running server against the exemplars with `make parity`. Never commit these folders.
+
 Before claiming completion, run:
 
 ```bash

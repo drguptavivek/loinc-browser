@@ -221,6 +221,16 @@ POST /api/v1/local-search/rebuild
 POST /api/v1/local-search/query
 ```
 
+## LOINC Search API–compatible endpoint
+
+`GET /searchapi/{scope}` (`scope` one of `loincs`, `parts`, `answerlists`, `groups`) exposes
+this same Bleve index through the upstream LOINC Search API's response shape
+(`{ResponseSummary, Results[, FilterCounts]}`) instead of the planned API's envelope above, so
+existing Search API clients work against it by only changing their base URL from
+`https://loinc.regenstrief.org/searchapi` to the local host. No credentials are required; no
+network call is made. See [`LOCAL_APIS.md`](LOCAL_APIS.md) for parameters and examples and
+[`FHIR_TERMINOLOGY_PLAN.md`](FHIR_TERMINOLOGY_PLAN.md) §5 for the response field reference.
+
 Query request:
 
 ```json

@@ -5,7 +5,7 @@ DEV_WEB_PORT ?= 5173
 VERSION ?= $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo dev)
 RELEASE ?= ./Loinc_2.82
 
-.PHONY: help install web check test build serve mcp dev dev-api dev-web ingest reingest release clean
+.PHONY: help install web check test build serve mcp dev dev-api dev-web ingest reingest release clean dev-refs parity
 
 help:
 	@echo "Targets:"
@@ -22,6 +22,8 @@ help:
 	@echo "  make reingest         Remove DB=$(DB), then ingest RELEASE=$(RELEASE)"
 	@echo "  make release          Build macOS arm64, Linux amd64, and Windows amd64 packages"
 	@echo "  make clean            Remove generated local build artifacts"
+	@echo "  make dev-refs         Fetch vendor docs + capture upstream exemplars (gitignored; exemplars need loinc.env)"
+	@echo "  make parity           Compare a running server (ADDR=$(ADDR)) with captured exemplars"
 
 install:
 	npm --prefix web install
@@ -57,6 +59,15 @@ dev-web:
 
 ingest:
 	go run ./cmd/loinc-browser ingest --release $(RELEASE)
+
+# Dev-only reference material, gitignored (third-party content). Exemplar capture calls
+# fhir.loinc.org and the LOINC Search API with the account in loinc.env; skipped if absent.
+dev-refs:
+	./scripts/fetch-vendor-docs.sh
+	@if [ -f loinc.env ]; then ./scripts/capture-exemplars.sh; else echo "loinc.env missing: skipped exemplar capture (see scripts/capture-exemplars.sh)"; fi
+
+parity:
+	./scripts/fhir-parity.sh http://localhost$(ADDR)
 
 reingest:
 	rm -f $(DEFAULT_DB) $(DEFAULT_DB)-shm $(DEFAULT_DB)-wal

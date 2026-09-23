@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"loinc-browser/internal/loinc"
+	"loinc-browser/pkg/terminology"
 )
 
 func TestConceptDocsReturnTopicIndexAndSections(t *testing.T) {
@@ -271,7 +272,9 @@ func newTestService(t *testing.T) *Service {
 	writeTestFile(t, docsDir, "LOINC_CONCEPTS.md", "# Concepts\n\n## Status\n\nDiscouraged terms require caution.\n")
 	writeTestFile(t, docsDir, "LOINC_AGENT_GUIDE.md", "# Guide\n")
 	writeTestFile(t, docsDir, "LOINC_LICENSE_NOTE.md", "# License\n")
-	return NewService(store, NewDocs(docsDir))
+	getStore := func() (*loinc.Store, error) { return store, nil }
+	termSvc := terminology.NewService(getStore)
+	return NewService(getStore, NewDocs(docsDir), termSvc, nil)
 }
 
 func writeMCPTestRelease(t *testing.T) string {
@@ -304,7 +307,7 @@ func writeMCPTestRelease(t *testing.T) string {
 
 func writeMCPOptionalFiles(t *testing.T, releaseDir string) {
 	t.Helper()
-	writeMCPRows(t, filepath.Join(releaseDir, "LoincTable", "MapTo.csv"), []string{"LOINC", "MAP_TO", "COMMENT"}, nil)
+	writeMCPRows(t, filepath.Join(releaseDir, "LoincTable", "MapTo.csv"), []string{"LOINC", "MAP_TO", "COMMENT"}, [][]string{{"1002-7", "1000-1", ""}})
 	writeMCPRows(t, filepath.Join(releaseDir, "LoincTable", "SourceOrganization.csv"), []string{"ID", "COPYRIGHT_ID", "NAME", "COPYRIGHT", "TERMS_OF_USE", "URL"}, nil)
 	writeMCPRows(t, filepath.Join(releaseDir, "AccessoryFiles", "PartFile", "Part.csv"), []string{"PartNumber", "PartTypeName", "PartName", "PartDisplayName", "Status"}, [][]string{{"LP1", "COMPONENT", "Glucose", "Glucose", "ACTIVE"}, {"LPROOT", "HIERARCHY", "Root", "Root", "ACTIVE"}})
 	writeMCPRows(t, filepath.Join(releaseDir, "AccessoryFiles", "PartFile", "LoincPartLink_Primary.csv"), []string{"LoincNumber", "LongCommonName", "PartNumber", "PartName", "PartCodeSystem", "PartTypeName", "LinkTypeName", "Property"}, [][]string{{"1000-1", "Glucose [Mass/volume] in Plasma", "LP1", "Glucose", "http://loinc.org", "COMPONENT", "Primary", "http://loinc.org/property/COMPONENT"}})

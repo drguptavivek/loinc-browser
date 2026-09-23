@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,7 +26,9 @@ import (
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/server"
+	"loinc-browser/internal/udp"
 	"loinc-browser/internal/version"
+	"loinc-browser/pkg/terminology"
 	"loinc-browser/web"
 )
 
@@ -71,6 +75,8 @@ func commandMode(args []string) (string, []string) {
 type serveConfig struct {
 	DBPath             string
 	Addr               string
+	UnixSocketPath     string
+	UDPAddr            string
 	CacheEntries       int
 	EnableMCP          bool
 	MCPPath            string
@@ -82,8 +88,9 @@ type serveConfig struct {
 }
 
 type mcpConfig struct {
-	CacheEntries int
-	DocsDir      string
+	CacheEntries    int
+	DocsDir         string
+	SearchIndexPath string
 }
 
 func runIngest(args []string) error {
@@ -137,6 +144,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	var termSvc *terminology.Service
 	handler := server.New(server.Options{
 		Store:              store,
 		Assets:             assets,
@@ -150,6 +158,7 @@ func runServe(args []string) error {
 		AppKeyPath:         cfg.AppKeyPath,
 		KVPath:             cfg.KVPath,
 		SearchIndexPath:    cfg.SearchIndexPath,
+		Terminology:        &termSvc,
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -160,8 +169,67 @@ func runServe(args []string) error {
 	if cfg.EnableMCP {
 		fmt.Printf("Serving LOINC MCP over HTTP at %s%s\n", url, cfg.MCPPath)
 	}
+
+	var unixListener net.Listener
+	if cfg.UnixSocketPath != "" {
+		unixListener, err = listenUnixSocket(cfg.UnixSocketPath)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(cfg.UnixSocketPath)
+		fmt.Printf("Serving LOINC browser over Unix socket at %s\n", cfg.UnixSocketPath)
+	}
+
+	var udpConn net.PacketConn
+	if cfg.UDPAddr != "" {
+		udpConn, err = net.ListenPacket("udp", cfg.UDPAddr)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Serving LOINC browser over UDP at %s\n", udpConn.LocalAddr())
+	}
+
 	go promptLaunchURL(url, os.Stdin, os.Stdout)
-	return http.Serve(listener, handler)
+	return serveUntilShutdown(handler, listener, unixListener, udpConn, termSvc)
+}
+
+// serveUntilShutdown runs the same handler on the TCP listener and, when non-nil, the Unix
+// socket listener concurrently, plus the Mode E UDP listener when udpConn is non-nil. It returns
+// when any server fails, or shuts all of them down gracefully on SIGINT/SIGTERM.
+func serveUntilShutdown(handler http.Handler, tcpListener, unixListener net.Listener, udpConn net.PacketConn, termSvc *terminology.Service) error {
+	tcpServer := &http.Server{Handler: handler}
+	servers := []*http.Server{tcpServer}
+	errCh := make(chan error, 3)
+	go func() { errCh <- tcpServer.Serve(tcpListener) }()
+
+	if unixListener != nil {
+		unixServer := &http.Server{Handler: handler}
+		servers = append(servers, unixServer)
+		go func() { errCh <- unixServer.Serve(unixListener) }()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if udpConn != nil {
+		go func() { errCh <- udp.Serve(ctx, udpConn, termSvc) }()
+	}
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, srv := range servers {
+			srv.Shutdown(shutdownCtx)
+		}
+		// udp.Serve watches this same ctx and closes udpConn itself on cancellation.
+		return nil
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -181,6 +249,8 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	appKeyPath := flags.String("app-key-path", defaultAppKeyPath(), "path to local app key for encrypted app settings")
 	kvPath := flags.String("kv-path", defaultKVPath(), "path to local file-backed app settings KV")
 	searchIndexPath := flags.String("search-index-path", defaultSearchIndexPath(), "path to generated local Lucene-style search index")
+	unixSocketPath := flags.String("unix-socket", defaultUnixSocketPath(), "path to a Unix domain socket to also serve on (Mode D), off by default")
+	udpAddr := flags.String("udp-addr", defaultUDPAddr(), "UDP address for the compact Mode E micro-protocol, off by default")
 	if err := flags.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -209,6 +279,8 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	return serveConfig{
 		DBPath:             defaultDBPath,
 		Addr:               listenAddr,
+		UnixSocketPath:     strings.TrimSpace(*unixSocketPath),
+		UDPAddr:            strings.TrimSpace(*udpAddr),
 		CacheEntries:       *cacheEntries,
 		EnableMCP:          *enableMCP && !*disableMCP,
 		MCPPath:            normalizePathFlag(*mcpPath),
@@ -376,10 +448,15 @@ func runMCP(args []string) error {
 		return err
 	}
 	defer store.Close()
+	// The stdio command opens one store for the process lifetime (no upload-triggered hot swap
+	// like the HTTP server), so a fixed-store getter is enough here.
+	getStore := func() (*loinc.Store, error) { return store, nil }
 	mcpServer := loincmcp.New(loincmcp.Options{
-		Store:       store,
-		DocsDir:     cfg.DocsDir,
-		OpenAPIJSON: server.OpenAPIJSON,
+		StoreGetter:  getStore,
+		DocsDir:      cfg.DocsDir,
+		OpenAPIJSON:  server.OpenAPIJSON,
+		Terminology:  terminology.NewService(getStore),
+		LuceneSearch: server.NewLuceneSearchFunc(cfg.SearchIndexPath, getStore),
 	})
 	return mcpServer.Run(context.Background(), &mcp.StdioTransport{})
 }
@@ -388,10 +465,11 @@ func parseMCPConfig(args []string) (mcpConfig, error) {
 	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	cacheEntries := flags.Int("cache-entries", 2048, "maximum in-memory term cache entries")
 	docsDir := flags.String("docs-dir", defaultAgentDocsDir(), "path to editable agent Markdown docs")
+	searchIndexPath := flags.String("search-index-path", defaultSearchIndexPath(), "path to generated local Lucene-style search index")
 	if err := flags.Parse(args); err != nil {
 		return mcpConfig{}, err
 	}
-	return mcpConfig{CacheEntries: *cacheEntries, DocsDir: *docsDir}, nil
+	return mcpConfig{CacheEntries: *cacheEntries, DocsDir: *docsDir, SearchIndexPath: *searchIndexPath}, nil
 }
 
 func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) error {
@@ -544,6 +622,63 @@ func defaultServeAddr() string {
 	return ":9005"
 }
 
+func defaultUnixSocketPath() string {
+	return strings.TrimSpace(os.Getenv("LOINC_BROWSER_UNIX_SOCKET"))
+}
+
+func defaultUDPAddr() string {
+	return strings.TrimSpace(os.Getenv("LOINC_BROWSER_UDP_ADDR"))
+}
+
+// listenUnixSocket binds a Unix domain socket at path, clearing a stale
+// socket left behind by a crashed process and refusing to touch a path that
+// exists but is not a socket. The socket is chmod'd 0660 after listening so
+// file permissions gate access.
+// maxUnixSocketPathBytes is the conservative macOS sockaddr_un limit (Linux allows a few bytes
+// more, at 108); using the smaller bound on every OS keeps the error consistent and avoids a
+// path that works in dev on Linux but fails once deployed to macOS.
+const maxUnixSocketPathBytes = 103
+
+func listenUnixSocket(path string) (net.Listener, error) {
+	if len(path) > maxUnixSocketPathBytes {
+		return nil, fmt.Errorf("unix socket path is %d bytes; the OS limit is ~104 — use a shorter path such as /run/loinc/loinc.sock or a relative path", len(path))
+	}
+	if err := prepareUnixSocketPath(path); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o660); err != nil {
+		listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+func prepareUnixSocketPath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("unix socket path %q exists and is not a socket", path)
+	}
+	conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if dialErr == nil {
+		conn.Close()
+		return nil // a live server is already listening; let net.Listen report it in use
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("removing stale unix socket %q: %w", path, err)
+	}
+	return nil
+}
+
 func defaultAgentDocsDir() string {
 	if dir := strings.TrimSpace(os.Getenv("LOINC_AGENT_DOCS_DIR")); dir != "" {
 		return dir
@@ -647,11 +782,16 @@ func usageText() string {
   loinc-browser ingest --release ./Loinc_2.82
   loinc-browser serve --addr :9005
   loinc-browser serve --addr :9005 --no-mcp
-  loinc-browser mcp --docs-dir ./docs/agent
+  loinc-browser serve --unix-socket ./data/loinc-browser.sock
+  loinc-browser serve --udp-addr :8081
+  loinc-browser mcp --docs-dir ./docs/agent --search-index-path ./data/loinc-search.bleve
 
 Environment:
   LOINC_BROWSER_ADDR=:9005
   PORT=9005
+  LOINC_BROWSER_UNIX_SOCKET= (off by default; Mode D local Unix socket transport)
+  LOINC_BROWSER_UDP_ADDR= (off by default; Mode E compact UDP micro-protocol, e.g. :8081)
   LOINC_AGENT_DOCS_DIR=./docs/agent
+  LOINC_SEARCH_INDEX_PATH=./data/loinc-search.bleve
 `
 }

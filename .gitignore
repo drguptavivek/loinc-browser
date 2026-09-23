@@ -21,3 +21,8 @@ web/node_modules/
 web/dist/
 web/.svelte-kit/
 .superpowers/
+
+# Captured upstream API responses and vendored third-party docs (Regenstrief/HL7/MCP content).
+# Regenerate with scripts/capture-exemplars.sh (needs a LOINC account in loinc.env).
+docs/exemplars/
+docs/vendor/

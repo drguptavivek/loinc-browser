@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
 	"loinc-browser/internal/loinc"
+	"loinc-browser/pkg/terminology"
 )
 
 const (
@@ -13,9 +15,32 @@ const (
 	maxLimit     = 50
 )
 
+// LuceneSearchFunc runs one page of a Bleve local-search query (the same index /searchapi and
+// /api/v1/local-search/query use) for loinc_lucene_search. It is nil when the caller (the stdio
+// mcp command, when no index path is available) has nothing to wire it to; the tool then reports
+// "not available" rather than a transport error.
+type LuceneSearchFunc func(ctx context.Context, scope, query string, rows, offset int) ([]loinc.LocalSearchResult, uint64, error)
+
+// Service backs every MCP tool. getStore is resolved fresh on every call (never a captured
+// *loinc.Store) so the HTTP server's store hot-swap after an upload import is picked up per
+// request, matching pkg/terminology.Service's own convention.
 type Service struct {
-	store *loinc.Store
-	docs  *Docs
+	getStore     func() (*loinc.Store, error)
+	docs         *Docs
+	terminology  *terminology.Service
+	luceneSearch LuceneSearchFunc
+}
+
+// store resolves the current store, or a plain error suitable for an MCP tool error result.
+func (s *Service) store() (*loinc.Store, error) {
+	store, err := s.getStore()
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, errors.New("LOINC database is not loaded")
+	}
+	return store, nil
 }
 
 type SearchTermsRequest struct {
@@ -114,15 +139,23 @@ type TermFitResponse struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
-func NewService(store *loinc.Store, docs *Docs) *Service {
-	return &Service{store: store, docs: docs}
+// NewService builds a Service around a store getter (e.g. the server's currentStore, or a stdio
+// command's fixed store), the editable-docs reader, and optionally a terminology.Service and a
+// LuceneSearchFunc for the FHIR/Search API-backed tools (both may be nil; those tools then report
+// a clear "not available" error instead of panicking).
+func NewService(getStore func() (*loinc.Store, error), docs *Docs, terminologySvc *terminology.Service, luceneSearch LuceneSearchFunc) *Service {
+	return &Service{getStore: getStore, docs: docs, terminology: terminologySvc, luceneSearch: luceneSearch}
 }
 
 func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (PageResponse[TermCandidate], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[TermCandidate]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
 	params := req.searchParams(limit, offset)
-	response, err := s.store.Search(ctx, params)
+	response, err := store.Search(ctx, params)
 	if err != nil {
 		return PageResponse[TermCandidate]{}, err
 	}
@@ -139,11 +172,19 @@ func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (Page
 }
 
 func (s *Service) GetTerm(ctx context.Context, req LOINCRequest) (loinc.Term, error) {
-	return s.store.Term(ctx, req.LOINCNum)
+	store, err := s.store()
+	if err != nil {
+		return loinc.Term{}, err
+	}
+	return store.Term(ctx, req.LOINCNum)
 }
 
 func (s *Service) GetTermFit(ctx context.Context, req LOINCRequest) (TermFitResponse, error) {
-	fit, err := s.store.TermFit(ctx, req.LOINCNum)
+	store, err := s.store()
+	if err != nil {
+		return TermFitResponse{}, err
+	}
+	fit, err := store.TermFit(ctx, req.LOINCNum)
 	if err != nil {
 		return TermFitResponse{}, err
 	}
@@ -151,14 +192,22 @@ func (s *Service) GetTermFit(ctx context.Context, req LOINCRequest) (TermFitResp
 }
 
 func (s *Service) GetTermRelationships(ctx context.Context, req LOINCRequest) (loinc.TermRelationshipGroups, error) {
-	return s.store.TermRelationshipGroups(ctx, req.LOINCNum)
+	store, err := s.store()
+	if err != nil {
+		return loinc.TermRelationshipGroups{}, err
+	}
+	return store.TermRelationshipGroups(ctx, req.LOINCNum)
 }
 
 func (s *Service) SearchPanels(ctx context.Context, req SearchTermsRequest) (PageResponse[TermCandidate], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[TermCandidate]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
 	params := req.searchParams(limit, offset)
-	response, err := s.store.SearchPanels(ctx, params)
+	response, err := store.SearchPanels(ctx, params)
 	if err != nil {
 		return PageResponse[TermCandidate]{}, err
 	}
@@ -174,9 +223,13 @@ func (s *Service) SearchPanels(ctx context.Context, req SearchTermsRequest) (Pag
 }
 
 func (s *Service) GetPanelItems(ctx context.Context, req LOINCRequest) (PageResponse[loinc.PanelItem], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.PanelItem]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	page, err := s.store.PanelItems(ctx, req.LOINCNum, limit, offset)
+	page, err := store.PanelItems(ctx, req.LOINCNum, limit, offset)
 	if err != nil {
 		return PageResponse[loinc.PanelItem]{}, err
 	}
@@ -192,9 +245,13 @@ func (s *Service) GetPanelItems(ctx context.Context, req LOINCRequest) (PageResp
 }
 
 func (s *Service) SearchAnswerLists(ctx context.Context, req QueryPageRequest) (PageResponse[loinc.AnswerList], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.AnswerList]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	page, err := s.store.SearchAnswerLists(ctx, req.Query, limit, offset)
+	page, err := store.SearchAnswerLists(ctx, req.Query, limit, offset)
 	if err != nil {
 		return PageResponse[loinc.AnswerList]{}, err
 	}
@@ -202,9 +259,13 @@ func (s *Service) SearchAnswerLists(ctx context.Context, req QueryPageRequest) (
 }
 
 func (s *Service) GetAnswerListAnswers(ctx context.Context, req AnswerListRequest) (PageResponse[loinc.AnswerListAnswer], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.AnswerListAnswer]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	page, err := s.store.AnswerListAnswers(ctx, req.AnswerListID, limit, offset)
+	page, err := store.AnswerListAnswers(ctx, req.AnswerListID, limit, offset)
 	if err != nil {
 		return PageResponse[loinc.AnswerListAnswer]{}, err
 	}
@@ -212,9 +273,13 @@ func (s *Service) GetAnswerListAnswers(ctx context.Context, req AnswerListReques
 }
 
 func (s *Service) BrowseHierarchy(ctx context.Context, req HierarchyRequest) (PageResponse[loinc.HierarchyNode], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.HierarchyNode]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	response, err := s.store.HierarchyChildren(ctx, req.NodeID, req.Query, false)
+	response, err := store.HierarchyChildren(ctx, req.NodeID, req.Query, false)
 	if err != nil {
 		return PageResponse[loinc.HierarchyNode]{}, err
 	}
@@ -254,9 +319,13 @@ func (s *Service) GetHierarchyTerms(ctx context.Context, req HierarchyTermsReque
 }
 
 func (s *Service) SearchParts(ctx context.Context, req QueryPageRequest) (PageResponse[loinc.Part], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.Part]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	page, err := s.store.SearchParts(ctx, req.Query, limit, offset)
+	page, err := store.SearchParts(ctx, req.Query, limit, offset)
 	if err != nil {
 		return PageResponse[loinc.Part]{}, err
 	}
@@ -264,9 +333,13 @@ func (s *Service) SearchParts(ctx context.Context, req QueryPageRequest) (PageRe
 }
 
 func (s *Service) SearchGroups(ctx context.Context, req QueryPageRequest) (PageResponse[loinc.LOINCGroup], error) {
+	store, err := s.store()
+	if err != nil {
+		return PageResponse[loinc.LOINCGroup]{}, err
+	}
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
-	page, err := s.store.SearchGroups(ctx, req.Query, limit, offset)
+	page, err := store.SearchGroups(ctx, req.Query, limit, offset)
 	if err != nil {
 		return PageResponse[loinc.LOINCGroup]{}, err
 	}

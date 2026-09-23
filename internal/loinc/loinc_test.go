@@ -271,6 +271,174 @@ func TestNormalizedRelationshipQueries(t *testing.T) {
 	}
 }
 
+// TestCachedTermSourceQueries guards item 6's $expand performance fix: CachedCountTermSource,
+// CachedEmbedTermSource, and CachedExpandMembers must (a) return the correct, unchanged result
+// and (b) actually populate this Store's cache (so a second call is a cache hit, not a rerun of
+// the query), for both a plain (NoDuplicates) source and a joined one.
+func TestCachedTermSourceQueries(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := Ingest(ctx, IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	store, err := OpenStore(dbPath, StoreOptions{CacheEntries: 8})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	// writeTestRelease's fixture has 5 loinc_terms rows (1000-1, 1001-9, 1002-7, 1003-5, 1999-9).
+	plain := FHIRTermValueSetSource{From: "loinc_terms t", Where: "1=1", NoDuplicates: true}
+	joined := FHIRTermValueSetSource{
+		From:  "loinc_terms t join loinc_part_links pl on pl.loinc_num = t.loinc_num",
+		Where: "pl.part_number = ?", Args: []any{"LP1"},
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  string
+		src  FHIRTermValueSetSource
+		want int
+	}{
+		{"plain/uncached", "plain", plain, 5},
+		{"joined/uncached", "joined", joined, 2}, // LP1 links 1000-1 and 1002-7
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total, err := store.CachedCountTermSource(ctx, tc.key, tc.src)
+			if err != nil {
+				t.Fatalf("CachedCountTermSource: %v", err)
+			}
+			if total != tc.want {
+				t.Fatalf("total = %d, want %d", total, tc.want)
+			}
+			if _, ok := store.termSourceCounts.get(tc.key); !ok {
+				t.Fatalf("expected %q to populate termSourceCounts", tc.key)
+			}
+
+			members, err := store.CachedExpandMembers(ctx, tc.key, tc.src)
+			if err != nil {
+				t.Fatalf("CachedExpandMembers: %v", err)
+			}
+			if len(members) != tc.want {
+				t.Fatalf("members = %d, want %d", len(members), tc.want)
+			}
+			if _, ok := store.termSourceExpandList.get(tc.key); !ok {
+				t.Fatalf("expected %q to populate termSourceExpandList", tc.key)
+			}
+			// A second call must be a cache hit returning the identical slice header, not a
+			// fresh query result.
+			again, err := store.CachedExpandMembers(ctx, tc.key, tc.src)
+			if err != nil {
+				t.Fatalf("CachedExpandMembers (again): %v", err)
+			}
+			if len(again) != len(members) {
+				t.Fatalf("cached members length changed: %d vs %d", len(again), len(members))
+			}
+		})
+	}
+
+	// An empty cache key (the "inline compose" case) must never be cached.
+	total, err := store.CachedCountTermSource(ctx, "", plain)
+	if err != nil || total != 5 {
+		t.Fatalf("uncached CachedCountTermSource: total=%d err=%v", total, err)
+	}
+	if _, ok := store.termSourceCounts.get(""); ok {
+		t.Fatal("an empty cache key must not be stored")
+	}
+}
+
+// TestTermSourceCacheEviction guards item 2 of the LOINC review: the term-source caches must be
+// bounded LRUs, not unbounded maps. Filling termSourceCounts past its entry ceiling must evict the
+// least-recently-used key, and filling termSourceExpandList past its total-member ceiling must
+// evict whole lists (oldest first) even though every entry is under the per-cache entry ceiling.
+func TestTermSourceCacheEviction(t *testing.T) {
+	counts := newTermSourceCache[int](3, 0, nil)
+	counts.set("a", 1)
+	counts.set("b", 2)
+	counts.set("c", 3)
+	counts.get("a") // touch "a" so "b" becomes least-recently-used
+	counts.set("d", 4)
+	if _, ok := counts.get("b"); ok {
+		t.Fatal("expected least-recently-used key \"b\" to be evicted")
+	}
+	if v, ok := counts.get("a"); !ok || v != 1 {
+		t.Fatalf("expected \"a\" to survive with its original value, got %d, %v", v, ok)
+	}
+	if v, ok := counts.get("d"); !ok || v != 4 {
+		t.Fatalf("expected \"d\" to be present, got %d, %v", v, ok)
+	}
+	if len(counts.entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(counts.entries))
+	}
+
+	lists := newTermSourceCache(10, 25, func(v []int) int { return len(v) })
+	lists.set("small1", make([]int, 10))
+	lists.set("small2", make([]int, 10))
+	lists.set("small3", make([]int, 10)) // total 30 > 25: evicts "small1"
+	if _, ok := lists.get("small1"); ok {
+		t.Fatal("expected oldest list to be evicted once total members exceeded the ceiling")
+	}
+	if _, ok := lists.get("small2"); !ok {
+		t.Fatal("expected small2 to survive")
+	}
+	if _, ok := lists.get("small3"); !ok {
+		t.Fatal("expected small3 to survive")
+	}
+	if lists.totalSize > 25 {
+		t.Fatalf("totalSize = %d, want <= 25", lists.totalSize)
+	}
+}
+
+// TestPartClassNamesUsesPartLinksIndex guards against partClassNames' "collate nocase" predicate
+// silently falling back to a full loinc_terms scan instead of seeking
+// idx_loinc_part_links_part(part_number, ...): confirms both the result and the query plan.
+func TestPartClassNamesUsesPartLinksIndex(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := Ingest(ctx, IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	store, err := OpenStore(dbPath, StoreOptions{CacheEntries: 8})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	classes, err := store.partClassNames(ctx, "LP1")
+	if err != nil {
+		t.Fatalf("partClassNames: %v", err)
+	}
+	if len(classes) != 1 || classes[0] != "CHEM" {
+		t.Fatalf("partClassNames(LP1) = %#v, want [CHEM]", classes)
+	}
+
+	rows, err := store.db.QueryContext(ctx, `explain query plan select distinct t.class
+		from loinc_part_links l join loinc_terms t on t.loinc_num = l.loinc_num
+		where l.part_number = ? and t.class <> ''
+		order by t.class`, "LP1")
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if !strings.Contains(plan.String(), "idx_loinc_part_links_part") {
+		t.Fatalf("expected plan to seek idx_loinc_part_links_part, got:\n%s", plan.String())
+	}
+	if strings.Contains(plan.String(), "SCAN t") {
+		t.Fatalf("expected no full scan of loinc_terms, got:\n%s", plan.String())
+	}
+}
+
 func TestIngestCreatesNormalizedRelationshipModel(t *testing.T) {
 	ctx := context.Background()
 	releaseDir := writeTestRelease(t)

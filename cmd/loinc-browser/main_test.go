@@ -7,10 +7,12 @@ import (
 	"encoding/csv"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"loinc-browser/internal/loinc"
 )
@@ -194,6 +196,185 @@ func TestParseServeConfigEnablesMCPByDefaultAndCanDisable(t *testing.T) {
 	}
 	if disabled.EnableMCP {
 		t.Fatalf("expected --no-mcp to disable MCP, got %#v", disabled)
+	}
+}
+
+func TestParseServeConfigUnixSocketFlagOverridesEnv(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+	t.Setenv("LOINC_BROWSER_UNIX_SOCKET", "/tmp/from-env.sock")
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+	if cfg.UnixSocketPath != "/tmp/from-env.sock" {
+		t.Fatalf("expected env unix socket path, got %q", cfg.UnixSocketPath)
+	}
+
+	cfg, err = parseServeConfig([]string{"--unix-socket", "/tmp/from-flag.sock"})
+	if err != nil {
+		t.Fatalf("parse serve config with flag: %v", err)
+	}
+	if cfg.UnixSocketPath != "/tmp/from-flag.sock" {
+		t.Fatalf("expected flag to override env, got %q", cfg.UnixSocketPath)
+	}
+}
+
+func TestParseServeConfigUnixSocketOffByDefault(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+	t.Setenv("LOINC_BROWSER_UNIX_SOCKET", "")
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+	if cfg.UnixSocketPath != "" {
+		t.Fatalf("expected unix socket off by default, got %q", cfg.UnixSocketPath)
+	}
+}
+
+func TestParseServeConfigUDPAddrFlagOverridesEnv(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+	t.Setenv("LOINC_BROWSER_UDP_ADDR", ":8081")
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+	if cfg.UDPAddr != ":8081" {
+		t.Fatalf("expected env UDP addr, got %q", cfg.UDPAddr)
+	}
+
+	cfg, err = parseServeConfig([]string{"--udp-addr", ":8082"})
+	if err != nil {
+		t.Fatalf("parse serve config with flag: %v", err)
+	}
+	if cfg.UDPAddr != ":8082" {
+		t.Fatalf("expected flag to override env, got %q", cfg.UDPAddr)
+	}
+}
+
+func TestParseServeConfigUDPAddrOffByDefault(t *testing.T) {
+	t.Setenv("LOINC_BROWSER_ADDR", "")
+	t.Setenv("PORT", "")
+	t.Setenv("LOINC_AGENT_DOCS_DIR", "")
+	t.Setenv("LOINC_BROWSER_UDP_ADDR", "")
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+	if cfg.UDPAddr != "" {
+		t.Fatalf("expected UDP off by default, got %q", cfg.UDPAddr)
+	}
+}
+
+// shortSocketDir returns a temp directory short enough for a Unix socket
+// path: sockaddr_un limits the whole path to about 104 bytes on macOS, well
+// under what t.TempDir() produces.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sock")
+	if err != nil {
+		t.Fatalf("make short temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func TestListenUnixSocketServesHandler(t *testing.T) {
+	socketPath := filepath.Join(shortSocketDir(t), "l.sock")
+	listener, err := listenUnixSocket(socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("expected a socket at %s, got mode %v", socketPath, info.Mode())
+	}
+	if perm := info.Mode().Perm(); perm != 0o660 {
+		t.Fatalf("expected socket permissions 0660, got %v", perm)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	go http.Serve(listener, mux)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get("http://unix/api/health")
+	if err != nil {
+		t.Fatalf("GET over unix socket: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestListenUnixSocketRemovesStaleSocket(t *testing.T) {
+	socketPath := filepath.Join(shortSocketDir(t), "st.sock")
+
+	// Create a socket and close it without unlinking, simulating a process
+	// that crashed and left its socket file behind.
+	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("create stale socket: %v", err)
+	}
+	stale.SetUnlinkOnClose(false)
+	stale.Close()
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("expected stale socket file to remain after close: %v", err)
+	}
+
+	listener, err := listenUnixSocket(socketPath)
+	if err != nil {
+		t.Fatalf("expected stale socket to be cleaned up, got: %v", err)
+	}
+	defer listener.Close()
+}
+
+func TestListenUnixSocketRefusesNonSocketPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-socket")
+	if err := os.WriteFile(path, []byte("regular file"), 0o600); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+
+	if _, err := listenUnixSocket(path); err == nil {
+		t.Fatal("expected non-socket path to be refused")
+	}
+}
+
+func TestListenUnixSocketRefusesOverlongPath(t *testing.T) {
+	dir := shortSocketDir(t)
+	path := filepath.Join(dir, strings.Repeat("x", maxUnixSocketPathBytes+1)+".sock")
+
+	_, err := listenUnixSocket(path)
+	if err == nil {
+		t.Fatal("expected an overlong socket path to be refused")
+	}
+	if !strings.Contains(err.Error(), "OS limit") {
+		t.Fatalf("expected a clear OS-limit error, got: %v", err)
 	}
 }
 

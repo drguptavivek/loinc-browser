@@ -406,9 +406,22 @@ func TestSwaggerUIDocs(t *testing.T) {
 		t.Fatalf("read swagger docs body: %v", err)
 	}
 	page := string(body)
-	for _, phrase := range []string{"SwaggerUIBundle", "/openapi.json", "LOINC Browser API"} {
+	for _, phrase := range []string{"SwaggerUIBundle", "/openapi.json", "LOINC Browser API", "/vendor/swagger-ui/swagger-ui-bundle.js", "/vendor/swagger-ui/swagger-ui.css"} {
 		if !strings.Contains(page, phrase) {
 			t.Fatalf("expected swagger docs page to contain %q", phrase)
+		}
+	}
+	// Swagger UI must load offline (DC without internet): no external script/style hosts.
+	if strings.Contains(page, "https://") {
+		t.Fatalf("swagger docs page must not reference external hosts:\n%s", page)
+	}
+}
+
+func TestRenderMarkdownDocRewritesRelativeDocLinks(t *testing.T) {
+	page := renderMarkdownDocHTML("X.md", "[a](../LOCAL_APIS.md) [b](API.md#routes) [c](agent/LOINC_CONCEPTS.md) [d](https://loinc.org/fhir/) [e](#top)")
+	for _, want := range []string{`href="/docs/LOCAL_APIS.md"`, `href="/docs/API.md#routes"`, `href="/docs/LOINC_CONCEPTS.md"`, `href="https://loinc.org/fhir/"`, `href="#top"`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("expected %s in rendered page:\n%s", want, page)
 		}
 	}
 }
@@ -431,6 +444,19 @@ func TestMarkdownDocsRoutes(t *testing.T) {
 
 	server := httptest.NewServer(New(Options{DocsDir: docsDir}))
 	defer server.Close()
+
+	// Relative cross-links between docs (e.g. [x](MCP.md)) resolve to /docs/{file}.md,
+	// including agent-dir docs (LOINC_CONCEPTS.md lives in docs/agent).
+	for path, want := range map[string]int{"/docs/MCP.md": 200, "/docs/LOINC_CONCEPTS.md": 200, "/docs/missing.md": 404, "/docs/MCP.txt": 404, "/docs/..%2Fsecret.md": 404} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("expected %s to return %d, got %d", path, want, resp.StatusCode)
+		}
+	}
 
 	for _, path := range []string{"/docs/mcp", "/docs/concepts", "/docs/agent-guide"} {
 		resp, err := http.Get(server.URL + path)
@@ -564,7 +590,9 @@ func TestFrontendOfficialAPIMode(t *testing.T) {
 	apiSource := string(apiBody)
 	for _, phrase := range []string{
 		"'official'",
-		"Official API",
+		"Search API",
+		"Regenstrief upstream (proxy)",
+		"Not affiliated with Regenstrief",
 		"runOfficialSearch",
 		"loadOfficialCredentialStatus",
 		"deleteOfficialCredentials",

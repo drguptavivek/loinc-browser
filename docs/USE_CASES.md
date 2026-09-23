@@ -1,0 +1,469 @@
+# LOINC Browser — Use Cases
+
+Who should reach for which interface, and how. Every example below was verified against the
+routes, MCP tool names, and CLI flags actually registered in this codebase (`internal/fhirhttp`,
+`internal/server/server.go`, `internal/server/searchapi.go`, `internal/mcpserver/server.go`,
+`internal/udp`, `cmd/loinc-browser/main.go`). See [`LOCAL_APIS.md`](LOCAL_APIS.md) for the full
+route list and divergences, [`FHIR_TERMINOLOGY_PLAN.md`](FHIR_TERMINOLOGY_PLAN.md) for the wire
+design, [`MCP.md`](MCP.md) for MCP details, and [`API.md`](API.md) for `/api/v1`.
+
+**Ground rules that apply to every use case below:**
+
+- This is **not** an official Regenstrief service. It is not affiliated with or endorsed by
+  Regenstrief. It serves one licensed LOINC release loaded into `./data/loinc-normalized.sqlite`
+  (whatever version you imported, e.g. 2.82) — not the multi-version window (2.69–2.83) that
+  `fhir.loinc.org` serves.
+- Everything is answered from the local SQLite database. Serving paths never call the network.
+  The only exception is the optional `/api/v1/official/search` proxy, which deliberately calls
+  the real Regenstrief Search API when you ask it to.
+- Basic-auth headers from existing clients are accepted and ignored; no credentials are needed
+  locally.
+
+## 1. Drop-in replacement for `fhir.loinc.org` in an existing FHIR client
+
+**Who / problem:** A team has a FHIR client, terminology service adapter, or CDS tool already
+coded against `https://fhir.loinc.org` and wants LOINC lookups to work air-gapped, or faster, in
+a data centre without re-touching client code.
+
+**Interface:** FHIR R4 under `/fhir` (CodeSystem, ValueSet, ConceptMap, Questionnaire).
+
+**Transport:** HTTP over LAN (Mode B/C) for most consumers — it's what the client already
+speaks. Nothing else changes.
+
+**Example:**
+
+```bash
+curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=718-7'
+```
+
+Just swap the base URL:
+
+| Upstream | Local |
+| --- | --- |
+| `https://fhir.loinc.org` | `http://<host>:<port>/fhir` |
+
+**Response:** the same `Parameters` resource shape upstream returns (`code`, `system`, `name`,
+`version`, `display`, `status`, `designation*`, `property*`), including quirks upstream clients
+already parse around, like `system` as `valueString`.
+
+**Caveats:** only one LOINC version is loaded, so `version=` requests for any other release
+404 as unknown (upstream serves 2.69–2.83). Resource ids are readable (`loinc-2.82`) rather than
+UUIDs, but canonical `url` still matches. See the divergence table in `LOCAL_APIS.md`.
+
+## 2. Drop-in for the LOINC Search API client (`/searchapi`)
+
+**Who / problem:** A team has a client built against
+`https://loinc.regenstrief.org/searchapi/{scope}` (the Lucene-style REST search API) and wants
+the same request/response shape served locally.
+
+**Interface:** `/searchapi/{loincs|parts|answerlists|groups}`.
+
+**Transport:** HTTP.
+
+**Example:**
+
+```bash
+curl 'http://localhost:9005/searchapi/loincs?query=glucose&rows=2'
+```
+
+**Response:** `{ResponseSummary: {RecordsFound, StartingOffset, RowsReturned, LoincVersion,
+QueryUrl, Next, ...}, Results: [...]}`, with `Results` keyed by release-CSV column names
+(`LOINC_NUM`, `COMPONENT`, …).
+
+**Caveats:** `includefiltercounts=true` only applies facet counts on the `loincs` scope.
+`language=` swaps in `LinguisticVariants` fields, matching upstream. A missing local search index
+returns 503 `{"Message": "local search index not built; POST /api/v1/local-search/rebuild"}`.
+
+## 3. Validating LOINC codes in inbound HL7v2/FHIR lab results at high volume
+
+**Who / problem:** An interface engine or lab-results pipeline needs to validate that inbound
+`OBX-3`/`Observation.code` LOINC codes are real and active, at high message volume, with tight
+per-message latency.
+
+**Interface:** FHIR `CodeSystem/$validate-code`, or the UDP micro-protocol's `validate` op for a
+same-host sidecar.
+
+**Transport:** pick by latency budget (measured p50, in-process, warm; §10.1 of the plan):
+
+| Transport | ~p50 | Notes |
+| --- | --- | --- |
+| TCP (default HTTP) | ~0.6–0.8ms round trip (Mode B/C) | simplest, works everywhere |
+| Unix domain socket | ~0.06ms faster than TCP for the same handler tree | same-host only; file permissions double as access control |
+| UDP micro-protocol | no faster than TCP/UDS for a single lookup; wins only by avoiding a TCP handshake per call under extreme fan-out, and is lossy by design | off by default, enable deliberately |
+
+For most pipelines, TCP or UDS is the right choice; UDP only pays off if you are opening a fresh
+TCP connection per validation instead of reusing a keep-alive connection.
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/fhir/CodeSystem/$validate-code?url=http://loinc.org&code=718-7'
+
+# same-host, lower latency
+curl --unix-socket ./data/loinc-browser.sock http://localhost/fhir/CodeSystem/\$validate-code?url=http://loinc.org&code=718-7
+
+# UDP sidecar (enable with --udp-addr :8081 / LOINC_BROWSER_UDP_ADDR)
+echo -n '{"id":"1","op":"validate","code":"718-7"}' | nc -u -w1 localhost 8081
+```
+
+**Response:** `result` is a **valueString** `"true"`/`"false"` (matches upstream, not a real
+boolean) via HTTP; the UDP `validate` op returns `{"ok":true,"result":true}`. HTTP status is
+always 200 even on `false`.
+
+**Caveats:** UDP responses over 1400 bytes return `{"ok":false,"truncated":true,"error":"use-http",...}`
+instead of a silent partial payload — validate is small enough this rarely triggers. UDP is
+off by default and has no delivery guarantee; use it only where the caller already tolerates
+loss and retries idempotently.
+
+## 4. Order-entry / form pick-lists from answer lists and groups
+
+**Who / problem:** An order-entry or results-entry form needs a coded pick-list — "Positive /
+Negative / Indeterminate" for a qualitative result field, or the member set of a LOINC group.
+
+**Interface:** FHIR `ValueSet/$expand` for LL (answer list) and LG (group) value sets, filtered
+and paged.
+
+**Transport:** HTTP.
+
+**Example:**
+
+```bash
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/LL1162-8&count=100'
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/LL1162-8&filter=pos'
+```
+
+**Response:** `expansion.total`, `expansion.offset`, and `expansion.contains[]` (`system`,
+`code`, `display`). `count` defaults to 100, max 1000. `activeOnly=true` drops DEPRECATED members.
+
+**Caveats:** unknown LL/LG codes 404 (`not-found`) here, where upstream returns an empty 200 —
+a documented, spec-correct divergence (§7 of the plan). `/api/v1/answer-lists/{id}/answers` is
+the equivalent non-FHIR route if your form layer prefers the normalized API (see `API.md`).
+
+## 5. Rendering LOINC panels as forms
+
+**Who / problem:** A form-builder needs to render a LOINC panel (e.g. a screening battery) as a
+structured questionnaire — item order, required flags, answer options.
+
+**Interface:** FHIR `Questionnaire/{LOINC}`.
+
+**Transport:** HTTP.
+
+**Example:**
+
+```bash
+curl 'http://localhost:9005/fhir/Questionnaire/89689-4'
+```
+
+**Response:** one Questionnaire per panel/form term; `item[]` mirrors the panel's child
+structure (`linkId`, `code`, `text`, `type`, `required`, `answerOption`).
+
+**Caveats:** a non-panel LOINC number 404s. Only one level of same-LOINC repeat-group nesting is
+reconstructed (see `FHIR_TERMINOLOGY_PLAN.md` §4.11); there is no `enableWhen` skip logic, since
+upstream's is hand-curated and not in the release data. `GET /api/v1/panels/{loincNum}/items` is
+the non-FHIR equivalent if you prefer authored-sequence rows instead of a Questionnaire tree.
+
+## 6. Migrating deprecated codes
+
+**Who / problem:** A system holding old LOINC codes needs to find current replacements before a
+release upgrade, or needs to exclude/include deprecated codes deliberately.
+
+**Interface:** FHIR `CodeSystem/$lookup` (the `MAP_TO` property), `ConceptMap/$translate` via the
+local `loinc-map-to` map, and the `deprecated-loinc-terms` ValueSet.
+
+**Transport:** HTTP.
+
+**Examples:**
+
+```bash
+# replacement via $lookup's MAP_TO property
+curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=6796-7&property=MAP_TO'
+
+# replacement via ConceptMap
+curl 'http://localhost:9005/fhir/ConceptMap/$translate?url=http://loinc.org/cm/loinc-map-to&code=6796-7'
+
+# enumerate everything deprecated
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/deprecated-loinc-terms&count=1000'
+
+# exclude deprecated from any other expansion
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs&activeOnly=true&count=100'
+```
+
+**Response:** `$lookup` returns `status: retired` for DEPRECATED terms; `$translate` returns
+`result: true` with the replacement `concept` and an optional `comment` part when
+`loinc_map_to.comment` is non-blank.
+
+**Caveats:** `activeOnly=true` treats DEPRECATED as the only inactive status (TRIAL/DISCOURAGED
+stay active), matching HL7's "Using LOINC with FHIR" guidance, not the UI's search-hide default.
+
+## 7. Mapping a local lab compendium to LOINC
+
+**Who / problem:** A lab or LIS team has a local test compendium (CSV of local test
+names/codes) and needs to bulk-map each row to a LOINC code by matching Component, Property,
+System, Scale, and Method.
+
+**Interface:** `/searchapi` Lucene-style queries for candidate search, FHIR `$lookup` to pull
+axis properties for a fit check, and the MCP tools for an AI agent doing this interactively.
+
+**Transport:** HTTP (searchapi/FHIR) or MCP.
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/searchapi/loincs?query=Component:glucose+AND+System:bld&rows=25'
+curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=2345-7'
+```
+
+MCP tool call for an agent working row-by-row:
+
+```json
+{"tool": "loinc_lucene_search", "arguments": {"scope": "loincs", "query": "Component:glucose System:bld"}}
+{"tool": "loinc_get_term_fit", "arguments": {"loincNum": "2345-7"}}
+```
+
+**Response:** ranked candidates plus per-candidate axis breakdown; `loinc_get_term_fit` gives a
+compact suitability summary (status/usage flags, rank) to check before committing a mapping.
+
+**Caveats:** compare against the Fully-Specified Name and its major axes, not display-name
+similarity alone (`docs/agent/LOINC_CONCEPTS.md`, Search Strategy). A guided, in-app mapping
+chat agent that records per-row decisions is a **future epic**, not implemented — see
+`docs/AGENT_CHAT_PLAN.md` for the design. Today, mapping is a manual or scripted workflow against
+the routes above.
+
+## 8. Cross-terminology mapping
+
+**Who / problem:** An integration needs LOINC parts mapped to SNOMED CT, RxNorm, ChEBI, or
+similar, or LOINC codes mapped to IEEE 11073 device codes or the RSNA RadLex playbook.
+
+**Interface:** FHIR `ConceptMap` catalogue + `$translate`.
+
+**Transport:** HTTP.
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/fhir/ConceptMap?url=http://loinc.org/cm/loinc-to-ieee-11073-10101'
+curl 'http://localhost:9005/fhir/ConceptMap/$translate?system=http://loinc.org&code=11556-8'
+curl 'http://localhost:9005/fhir/ConceptMap/$translate?system=http://loinc.org&code=30657-1'
+```
+
+**Response:** `11556-8` → an IEEE 11073 match (`urn:iso:std:iso:11073:10101`); `30657-1` → a
+RadLex match with `equivalence: relatedto` (RadLex playbook rows have no equivalence column, so
+`relatedto` is used, matching upstream).
+
+**Caveats:** only maps with release data are served — `loinc-to-phenx` and the CMS maps
+(`-cms-irf-pai`, `-lcds`, `-mds`, `-oasis`) are **not** served (no source data in the release).
+See the full map id table in `FHIR_TERMINOLOGY_PLAN.md` §4.9. `reverse=true` translates via a
+map's reverse direction, and reverse maps that upstream 404s (`…-to-loinc`) work here.
+
+## 9. Hierarchy-based queries and analytics roll-ups
+
+**Who / problem:** Analytics or a dashboard needs "all tests under this LOINC part hierarchy
+node" for roll-up reporting, or needs to check subsumption between two codes.
+
+**Interface:** FHIR `CodeSystem/$subsumes`, implicit `ValueSet/vs/{LP}` expansion, and
+`compose.include[].filter[]` with `ancestor`/`concept is-a`.
+
+**Transport:** HTTP, or `/api/v1/hierarchy/*` if you want non-FHIR occurrence-node browsing
+(see `API.md`).
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/fhir/CodeSystem/$subsumes?system=http://loinc.org&codeA=LP384441-4&codeB=30064-0'
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/LP384441-4&count=1000'
+```
+
+**Response:** `$subsumes` gives `outcome` (valueString: `equivalent`, `subsumes`,
+`subsumed-by`, `not-subsumed`). The implicit `vs/{LP}` expansion returns every term under that
+hierarchy node — the same set `$subsumes` reasons over pairwise.
+
+**Caveats:** `$closure` (stateful incremental closure) is **not implemented** by design —
+`$subsumes` (pairwise) plus `ancestor`/`is-a` filter expansion cover the same need without
+server-side session state (plan §10, decision 6). LG groups use plain text `loinc_num` order in
+`expansion.contains`, not numeric order, unlike every other served set — a captured upstream
+quirk, not a bug.
+
+## 10. Multilingual display
+
+**Who / problem:** A UI or report needs LOINC display text in a language other than English.
+
+**Interface:** FHIR `$lookup`/`$expand` `displayLanguage=`, or `/searchapi` `language=`.
+
+**Transport:** HTTP.
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=718-7&displayLanguage=es-AR'
+curl 'http://localhost:9005/searchapi/loincs?query=hemoglobin&language=15'
+```
+
+**Response:** `$lookup` adds a `designation` entry for the requested language (falling back to
+en-US if that language has no `LONG_COMMON_NAME` variant); `/searchapi` swaps
+`COMPONENT`…`LONG_COMMON_NAME` and `RELATEDNAMES2` for the LinguisticVariants row identified by
+the numeric `language` ID.
+
+**Caveats:** designations come from the local release's `LinguisticVariants` files — only
+languages present in your imported release are available; `language=` in `/searchapi` is a
+numeric LinguisticVariants `ID`, not a BCP-47 tag, matching upstream's own convention.
+
+## 11. AI agents via MCP
+
+**Who / problem:** An agent (Claude Code, Claude Desktop, or another MCP client) needs
+programmatic, context-capped access to LOINC lookups, search, and FHIR operations without
+parsing full FHIR resources by hand.
+
+**Interface:** MCP tools — normalized-database tools (`loinc_search_terms`, `loinc_get_term`,
+`loinc_get_term_fit`, …) and FHIR/Search-API-backed tools (`loinc_lookup_code`,
+`loinc_validate_code`, `loinc_subsumes`, `loinc_expand_value_set`, `loinc_search_value_sets`,
+`loinc_validate_value_set_membership`, `loinc_translate`, `loinc_list_concept_maps`,
+`loinc_get_questionnaire`, `loinc_lucene_search`). Full list in [`MCP.md`](MCP.md).
+
+**Transport:** HTTP (`/mcp`, on by default, negotiates protocol versions `2026-07-28`,
+`2025-11-25`, `2025-06-18`) for an agent already talking to the running all-in-one server, or
+stdio for an agent config that launches a dedicated process.
+
+**Examples:**
+
+```bash
+# HTTP MCP (default run)
+curl -X POST http://localhost:9005/mcp -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loinc_lookup_code","arguments":{"code":"718-7"}}}'
+```
+
+```bash
+# stdio MCP (dedicated process, e.g. an agent config launches this)
+loinc-browser mcp --docs-dir ./docs/agent --search-index-path ./data/loinc-search.bleve
+```
+
+**Response:** each tool returns a compact summary plus a `browserUrl` (`/?term={code}`) and/or
+`fhirUrl`; pass `rawFhir: true` on `loinc_lookup_code`/`loinc_get_questionnaire` for the full FHIR
+resource. Bad codes return a tool error (`isError: true`), not a transport error.
+
+**Caveats:** `loinc_lucene_search` needs the local Bleve index built first
+(`POST /api/v1/local-search/rebuild`, or `--search-index-path` for stdio). Keep `limit` small —
+MCP tools cap large limits, and the guidance in `MCP.md` explicitly says not to use MCP for bulk
+dumps of the release.
+
+## 12. Air-gapped / offline data-centre deployment
+
+**Who / problem:** A DC with no outbound internet access needs LOINC lookups, search, and
+Swagger docs entirely offline.
+
+**Interface:** any of the above — FHIR, `/searchapi`, `/api/v1`, MCP, UI — all served from the
+local SQLite database.
+
+**Transport:** whichever fits the consumer; none require network egress.
+
+**Example:**
+
+```bash
+./loinc-browser --addr :9005
+curl 'http://localhost:9005/api/docs'   # Swagger UI, bundled — no CDN fetch
+```
+
+**Response:** the app, Swagger UI at `/api/docs`, and `/openapi.json` all work fully offline;
+Swagger's assets are bundled, not loaded from a CDN.
+
+**Caveats:** the **only** feature that calls the network is the optional
+`POST /api/v1/official/search` proxy to the real Regenstrief Search API — do not use it in an
+air-gapped environment, or firewall it off deliberately. `make dev-refs` / `scripts/capture-exemplars.sh`
+(vendored docs and golden-response capture) also need network and are development-only, not
+required to run the app.
+
+## 13. Embedding in a Go service
+
+**Who / problem:** A Go program on a host that already has a copy of the release SQLite file
+wants LOINC lookups in-process — no HTTP hop, sub-millisecond latency.
+
+**Interface:** Mode A, the in-process `pkg/terminology` library:
+`terminology.Open(dbPath string, opts terminology.OpenOptions) (*terminology.Service, error)`,
+plus `(*Service).Close() error`. `Open` opens the database read-only (SQLite `mode=ro`), so it
+can safely share a WAL-mode file with a running `loinc-browser` server; it skips the lazy
+`CREATE INDEX IF NOT EXISTS` statements the FHIR queries otherwise use on a read-only connection
+(logged once), and still answers correctly, just without that speed-up on an old, never-reindexed
+database. See [`LOCAL_APIS.md`](LOCAL_APIS.md) Mode A for the full walkthrough.
+
+**Transport:** direct Go function call, no network at all.
+
+**Example:**
+
+```go
+import "loinc-browser/pkg/terminology"
+
+svc, err := terminology.Open("./data/loinc-normalized.sqlite", terminology.OpenOptions{})
+if err != nil {
+    log.Fatal(err)
+}
+defer svc.Close()
+
+term, _ := svc.Lookup(ctx, terminology.LookupParams{Code: "718-7"})
+vs, _ := svc.Expand(ctx, terminology.ExpandParams{URL: "http://loinc.org/vs/LL1162-8"})
+```
+
+**Response:** sub-millisecond; ~0.6ms term lookup, µs-level cached expansions (plan §10.1
+benchmarks: `BenchmarkLookupTerm` 610–765µs, `BenchmarkExpandAnswerList` ~34µs).
+
+**Caveats:** Mode A opens the DB read-only (`mode=ro`, WAL) so it can share the file with a
+running server, and needs the full release DB on that host — a trimmed lookup-only DB is
+deferred until a consumer asks for one (plan §10, decision 2).
+
+## 14. Browsing/exploring in the UI
+
+**Who / problem:** A clinical-informatics reviewer wants to explore terms, try FHIR/searchapi
+calls interactively, or browse the hierarchy/relationships without writing a client.
+
+**Interface:** the Svelte UI's Local APIs console, Advanced (local) Search view, and
+hierarchy/relationships browsing.
+
+**Transport:** browser, over HTTP.
+
+**Examples:**
+
+```text
+http://localhost:9005/?mode=apis        # Local APIs console: operation presets, editable params, copyable curl
+http://localhost:9005/?mode=advanced    # Advanced (local) Search view over /searchapi + /api/v1/local-search
+http://localhost:9005/?mode=hierarchy   # hierarchy browsing
+http://localhost:9005/?mode=relationships
+```
+
+**Response:** the Local APIs console shows the request URL, a copyable curl, and pretty JSON with
+status/timing for every FHIR/searchapi route in §1 of the plan. The Official API view
+(`?mode=official`) also has a "Local /searchapi" toggle for side-by-side comparison against the
+real upstream.
+
+**Caveats:** this is for interactive exploration, not automation — script against the HTTP
+routes or MCP tools directly for anything repeated.
+
+## Choosing an interface
+
+| Need | Interface | Transport |
+| --- | --- | --- |
+| Existing FHIR client, minimal change | `/fhir` | HTTP (Mode B/C) |
+| Existing Search API client, minimal change | `/searchapi` | HTTP |
+| Highest-volume single-code validation | `CodeSystem/$validate-code` | TCP or UDS; UDP only if avoiding per-call TCP handshakes |
+| Form pick-lists, panels | `ValueSet/$expand`, `Questionnaire` | HTTP |
+| Deprecated-code migration | `$lookup` MAP_TO, `$translate` (`loinc-map-to`) | HTTP |
+| Compendium mapping, AI-assisted | `/searchapi`, `$lookup`, MCP tools | HTTP or MCP |
+| Cross-terminology mapping | `ConceptMap` + `$translate` | HTTP |
+| Hierarchy roll-ups / subsumption | `$subsumes`, implicit `vs/{LP}` | HTTP |
+| AI agent integration | MCP tools | HTTP `/mcp` or stdio |
+| In-process Go embedding | `pkg/terminology` (Mode A) | direct call |
+| EMR form-builder scripting, non-FHIR shape | `/api/v1` | HTTP |
+| Interactive exploration | UI (`?mode=apis`, `?mode=advanced`) | browser/HTTP |
+
+## Not a fit
+
+Per the plan's explicit non-goals (`FHIR_TERMINOLOGY_PLAN.md` §1, §10):
+
+- **Write operations** — create/update/delete, `vread`/history. This server is read-only.
+- **SNOMED CT (or other terminologies) as first-class code systems** — they appear only as
+  `ConceptMap` targets from LOINC parts, never as a served `CodeSystem`/`ValueSet` of their own.
+- **Multiple loaded LOINC versions** — one release is loaded at a time; `version=` for any other
+  release 404s.
+- **`ConceptMap/$closure`** — stateful incremental closure maintenance is not implemented;
+  use `$subsumes` or an `ancestor`/`is-a` filter expansion instead.
+- **WebSocket transport** — not implemented; lookups are request/response, and HTTP keep-alive,
+  UDS, and UDP already cover the relevant latency tiers. The agent chat feature (future epic,
+  `docs/AGENT_CHAT_PLAN.md`) streams over SSE instead, when it lands.
+- **Batch validation, `$format=xml`** — not served; XML Accept/`_format` gets a 406
+  `OperationOutcome`.

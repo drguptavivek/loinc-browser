@@ -163,6 +163,49 @@ LOINC_KV_PATH=./data/loinc-browser-kv.json
 
 Local app-key encryption protects against casual inspection of the KV file. Anyone with both the app key file and KV file can decrypt saved credentials, so treat both files as secrets.
 
+## Local FHIR + LOINC Search API
+
+The app also serves local endpoints that are wire-compatible with two services published by
+Regenstrief: the LOINC FHIR Terminology Server and the LOINC Search API. They are **not**
+official Regenstrief services and are not affiliated with or endorsed by Regenstrief. Both are
+answered entirely from `./data/loinc-normalized.sqlite`; serving paths never call the network.
+
+An existing client only changes its base URL:
+
+| Upstream (Regenstrief) base URL | Local base URL |
+| --- | --- |
+| `https://fhir.loinc.org` | `http://localhost:9005/fhir` |
+| `https://loinc.regenstrief.org/searchapi` | `http://localhost:9005/searchapi` |
+
+Transports, one example each:
+
+```bash
+# TCP (default)
+curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=718-7'
+
+# Unix domain socket (--unix-socket / LOINC_BROWSER_UNIX_SOCKET)
+curl --unix-socket ./data/loinc-browser.sock http://localhost/fhir/metadata
+
+# UDP micro-protocol (--udp-addr / LOINC_BROWSER_UDP_ADDR), off by default
+echo -n '{"id":"1","op":"lookup","code":"718-7"}' | nc -u -w1 localhost 8081
+```
+
+Swagger UI at `http://localhost:9005/api/docs` lists and lets you try the FHIR and
+`/searchapi` routes; it works fully offline since it is bundled, not loaded from a CDN. The
+app's **Local APIs** console (`?mode=apis`) gives operation presets, editable params, and a
+copyable curl for every route. See [`docs/LOCAL_APIS.md`](docs/LOCAL_APIS.md) for the full
+route list and divergences from upstream, and [`docs/FHIR_TERMINOLOGY_PLAN.md`](docs/FHIR_TERMINOLOGY_PLAN.md)
+for the design. See [`docs/USE_CASES.md`](docs/USE_CASES.md) for worked, verified examples of
+who uses which interface and why.
+
+### Developer reference material
+
+`make dev-refs` fetches vendored upstream docs (`docs/vendor/`) and, when `loinc.env` holds a
+LOINC account, captures golden upstream responses (`docs/exemplars/`) used as the parity
+target. `make parity` diffs a running local server against those captures. Both `docs/vendor/`
+and `docs/exemplars/` are gitignored third-party content (see `AGENTS.md`) and are only needed
+for development, not for running the app.
+
 ## High-Level Relationship Model
 
 The browser treats `LoincTable/Loinc.csv` as the canonical term table. Everything else enriches those terms with normalized relationships or source metadata:

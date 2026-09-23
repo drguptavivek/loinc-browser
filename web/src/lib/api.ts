@@ -442,3 +442,48 @@ export async function uploadReleaseZip(file: File): Promise<UploadImportResponse
 	}
 	return response.json() as Promise<UploadImportResponse>;
 }
+
+export type LocalSearchAPIParams = {
+	query?: string;
+	rows?: number;
+	offset?: number;
+	sortorder?: string;
+	language?: number | string;
+	includefiltercounts?: boolean;
+};
+
+// localSearchAPI calls this app's own GET /searchapi/{scope} clone of the official
+// LOINC Search API (docs/LOCAL_APIS.md). Unlike officialSearch, it needs no
+// credentials and never leaves localhost.
+export function localSearchAPI(scope: string, params: LocalSearchAPIParams): Promise<unknown> {
+	const query = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value !== undefined && value !== '') query.set(key, String(value));
+	}
+	return requestJSON<unknown>(`/searchapi/${encodeURIComponent(scope)}?${query.toString()}`);
+}
+
+export type ApiConsoleResult = {
+	status: number;
+	statusText: string;
+	durationMs: number;
+	contentType: string;
+	bodyText: string;
+};
+
+// runApiConsoleRequest performs a raw fetch for the Local APIs console
+// (ApiConsole.svelte), which needs status/timing/content-type alongside the
+// body rather than a typed, already-parsed response.
+export async function runApiConsoleRequest(url: string, init: RequestInit): Promise<ApiConsoleResult> {
+	const start = performance.now();
+	const response = await fetch(url, init);
+	const durationMs = performance.now() - start;
+	const bodyText = await response.text();
+	return {
+		status: response.status,
+		statusText: response.statusText,
+		durationMs,
+		contentType: response.headers.get('content-type') || '',
+		bodyText,
+	};
+}

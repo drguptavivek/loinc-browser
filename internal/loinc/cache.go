@@ -7,25 +7,25 @@ import (
 )
 
 type objectCache struct {
-	mu          sync.Mutex
-	maxEntries  int
-	terms       map[string]*list.Element
-	termOrder   *list.List
-	graphs      map[string]*list.Element
-	graphOrder  *list.List
-	groups      map[string]*list.Element
-	groupOrder  *list.List
-	accessories map[string]*list.Element
-	accessoryOrder *list.List
-	facets      *Facets
-	termHits    atomic.Int64
-	termMisses  atomic.Int64
-	graphHits   atomic.Int64
-	graphMisses atomic.Int64
-	accessoryHits atomic.Int64
+	mu              sync.Mutex
+	maxEntries      int
+	terms           map[string]*list.Element
+	termOrder       *list.List
+	graphs          map[string]*list.Element
+	graphOrder      *list.List
+	groups          map[string]*list.Element
+	groupOrder      *list.List
+	accessories     map[string]*list.Element
+	accessoryOrder  *list.List
+	facets          *Facets
+	termHits        atomic.Int64
+	termMisses      atomic.Int64
+	graphHits       atomic.Int64
+	graphMisses     atomic.Int64
+	accessoryHits   atomic.Int64
 	accessoryMisses atomic.Int64
-	facetHits   atomic.Int64
-	facetMisses atomic.Int64
+	facetHits       atomic.Int64
+	facetMisses     atomic.Int64
 }
 
 type termEntry struct {
@@ -53,14 +53,14 @@ func newObjectCache(maxEntries int) *objectCache {
 		maxEntries = 512
 	}
 	return &objectCache{
-		maxEntries: maxEntries,
-		terms:      make(map[string]*list.Element),
-		termOrder:  list.New(),
-		graphs:     make(map[string]*list.Element),
-		graphOrder: list.New(),
-		groups:     make(map[string]*list.Element),
-		groupOrder: list.New(),
-		accessories: make(map[string]*list.Element),
+		maxEntries:     maxEntries,
+		terms:          make(map[string]*list.Element),
+		termOrder:      list.New(),
+		graphs:         make(map[string]*list.Element),
+		graphOrder:     list.New(),
+		groups:         make(map[string]*list.Element),
+		groupOrder:     list.New(),
+		accessories:    make(map[string]*list.Element),
 		accessoryOrder: list.New(),
 	}
 }

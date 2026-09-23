@@ -12,6 +12,27 @@ Local Lucene-style search for the same scopes is documented in `docs/LOCAL_LUCEN
 
 Source: [LOINC Search API](https://loinc.org/kb/api/search-api/).
 
+## Local Search API–compatible endpoint
+
+A second, local-only option exists alongside the upstream proxy above: `GET
+/searchapi/{scope}` (`scope` one of `loincs`, `parts`, `answerlists`, `groups`), a
+wire-compatible clone of `https://loinc.regenstrief.org/searchapi/{scope}`. It accepts the same
+parameters (`query`, `rows`, `offset`, `sortorder`, `language`, `includefiltercounts`) and
+returns the same `{ResponseSummary, Results[, FilterCounts]}` response shape, but is answered
+entirely from the local Bleve search index — no credentials, no network call, no
+`POST .../official/search` envelope wrapping.
+
+Prefer `GET /searchapi/{scope}` for fast repeatable local queries, testing, and any client
+already built against the official Search API wire format that just needs a credential-free
+local target. Prefer `POST /api/v1/official/search` when the user explicitly wants current
+upstream Regenstrief search behavior or is comparing local results against the live service.
+
+In the app UI, this is exposed as the **Search API** mode with a source toggle: **Local
+database** (`/searchapi/*`, no credentials) versus **Regenstrief upstream (proxy)** (the
+`POST /api/v1/official/search` proxy, LOINC account required). See
+[`../LOCAL_APIS.md`](../LOCAL_APIS.md) for the full local route reference and
+[`../FHIR_TERMINOLOGY_PLAN.md`](../FHIR_TERMINOLOGY_PLAN.md) §5 for the design.
+
 ## Official API Credentials
 
 Credentials are sent to the local app in a JSON `POST` body, never in URL query strings. The app can use direct credentials for one request or saved encrypted credentials with `useSavedCredentials=true`.

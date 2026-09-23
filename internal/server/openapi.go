@@ -9,8 +9,8 @@ var openAPISpec = map[string]any{
 	},
 	"servers": []map[string]any{
 		{
-			"url":         "http://localhost:9005",
-			"description": "Default local development server",
+			"url":         "/",
+			"description": "This server (relative to the host serving /openapi.json)",
 		},
 	},
 	"paths": map[string]any{
@@ -310,6 +310,165 @@ var openAPISpec = map[string]any{
 					"200": response("Local search results", ref("LocalSearchResponse")),
 					"400": response("Invalid local search query", ref("ErrorResponse")),
 					"503": response("Local search index unavailable", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/fhir/metadata": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "FHIR CapabilityStatement (or TerminologyCapabilities with ?mode=terminology)",
+				"description": "Local, wire-compatible clone of https://fhir.loinc.org/metadata (plan §4.1). Serving paths never call fhir.loinc.org.",
+				"parameters": append([]map[string]any{
+					queryParamEx("mode", "Set to \"terminology\" for the TerminologyCapabilities shape instead of CapabilityStatement", "terminology"),
+				}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("CapabilityStatement or TerminologyCapabilities, see docs/exemplars/fhir.loinc.org/metadata*.json"),
+					"406": fhirResponse("OperationOutcome: XML is not supported"),
+				},
+			},
+		},
+		"/fhir/CodeSystem": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Search the LOINC CodeSystem",
+				"description": "Local clone of https://fhir.loinc.org/CodeSystem?url=... (plan §4.2). The `http://loinc.org` CodeSystem covers terms, LP parts, LL answer lists, LA answers, and LG groups.",
+				"parameters": append([]map[string]any{
+					queryParamEx("url", "Canonical CodeSystem URL", "http://loinc.org"),
+					queryParam("version", "LOINC version, for example 2.82"),
+				}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("searchset Bundle containing the CodeSystem resource, see docs/exemplars/fhir.loinc.org/codesystem-search-url.json"),
+				},
+			},
+		},
+		"/fhir/CodeSystem/{id}": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Read the LOINC CodeSystem by id",
+				"description": "`loinc` and `loinc-2.82` both resolve (plan §4.2).",
+				"parameters":  append([]map[string]any{pathParamEx("id", "CodeSystem id", "loinc-2.82")}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("CodeSystem resource"),
+					"404": fhirResponse("OperationOutcome: not-found"),
+				},
+			},
+		},
+		"/fhir/CodeSystem/$lookup":             codeSystemOperationPath("$lookup", "CodeSystem $lookup", "Resolves a term, LP part, LL answer list, LA answer, or LG group (plan §4.3).", codeSystemLookupParams()),
+		"/fhir/CodeSystem/{id}/$lookup":        codeSystemOperationPathWithID("$lookup", "CodeSystem $lookup (instance form)", "Same as /fhir/CodeSystem/$lookup, scoped to a CodeSystem instance.", codeSystemLookupParams()),
+		"/fhir/CodeSystem/$validate-code":      codeSystemOperationPath("$validate-code", "CodeSystem $validate-code", "`result` is a valueString \"true\"/\"false\", matching upstream (plan §4.4).", codeSystemValidateCodeParams()),
+		"/fhir/CodeSystem/{id}/$validate-code": codeSystemOperationPathWithID("$validate-code", "CodeSystem $validate-code (instance form)", "Same as /fhir/CodeSystem/$validate-code, scoped to a CodeSystem instance.", codeSystemValidateCodeParams()),
+		"/fhir/CodeSystem/$subsumes":           codeSystemOperationPath("$subsumes", "CodeSystem $subsumes", "Walks the Component Hierarchy by System (plan §4.5). LP384441-4 subsumes 30064-0.", codeSystemSubsumesParams()),
+		"/fhir/CodeSystem/{id}/$subsumes":      codeSystemOperationPathWithID("$subsumes", "CodeSystem $subsumes (instance form)", "Same as /fhir/CodeSystem/$subsumes, scoped to a CodeSystem instance.", codeSystemSubsumesParams()),
+		"/fhir/ValueSet": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Search the ValueSet catalogue",
+				"description": "Answer lists, groups, and named/implicit value sets (plan §4.6). Not all upstream sets are served; unserved ones 404 (plan §4.6.2).",
+				"parameters": append([]map[string]any{
+					queryParamEx("url", "Canonical ValueSet URL", "http://loinc.org/vs/LL1162-8"),
+					queryParam("name", "Name prefix match"),
+					queryParam("name:in", "Name substring match (upstream alias for contains)"),
+					queryParam("name:contains", "Name substring match"),
+					queryParam("_id", "ValueSet id"),
+					intQueryParam("_count", "Page size (default 20, max 100)", 20),
+					intQueryParam("_offset", "Result offset", 0),
+				}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("searchset Bundle of ValueSet resources"),
+					"400": fhirResponse("OperationOutcome: invalid, for a bad _summary value or _summary combined with _elements"),
+				},
+			},
+		},
+		"/fhir/ValueSet/{id}": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Read a ValueSet definition",
+				"description": "Embeds compose.include.concept when the member count is <= 10,000, otherwise the intensional filter form (plan §4.6.3).",
+				"parameters":  append([]map[string]any{pathParamEx("id", "ValueSet id, e.g. an LL/LG code or named slug", "LL1162-8")}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("ValueSet resource"),
+					"404": fhirResponse("OperationOutcome: not-found"),
+				},
+			},
+		},
+		"/fhir/ValueSet/$expand":             valueSetOperationPath("$expand", "ValueSet $expand", "Flattens a ValueSet to its member concepts, incl. POSTed inline compose (plan §4.7).", valueSetExpandParams()),
+		"/fhir/ValueSet/{id}/$expand":        valueSetOperationPathWithID("$expand", "ValueSet $expand (instance form)", "Same as /fhir/ValueSet/$expand, scoped to a ValueSet instance.", valueSetExpandParams()),
+		"/fhir/ValueSet/$validate-code":      valueSetOperationPath("$validate-code", "ValueSet $validate-code", "`result` is a valueBoolean here, unlike CodeSystem $validate-code (plan §4.8).", valueSetValidateCodeParams()),
+		"/fhir/ValueSet/{id}/$validate-code": valueSetOperationPathWithID("$validate-code", "ValueSet $validate-code (instance form)", "Same as /fhir/ValueSet/$validate-code, scoped to a ValueSet instance.", valueSetValidateCodeParams()),
+		"/fhir/ConceptMap": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Search the ConceptMap catalogue",
+				"description": "LOINC-to-external-system maps such as IEEE, RadLex, RxNorm, SNOMED CT, and the local loinc-map-to replacement map (plan §4.9). Search results never embed group.",
+				"parameters": append([]map[string]any{
+					queryParamEx("url", "Canonical ConceptMap URL", "http://loinc.org/cm/loinc-to-ieee-11073-10101"),
+					queryParam("source-system", "Source system URI filter"),
+					queryParam("target-system", "Target system URI filter"),
+					intQueryParam("_count", "Page size", 20),
+					intQueryParam("_offset", "Result offset", 0),
+				}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("searchset Bundle of ConceptMap resources (without group)"),
+				},
+			},
+		},
+		"/fhir/ConceptMap/{id}": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Read a ConceptMap definition",
+				"description": "Embeds group[source,target,element[...]], capped at 1000 elements; beyond the cap, use $translate (plan §4.9).",
+				"parameters":  append([]map[string]any{pathParamEx("id", "ConceptMap id", "loinc-to-ieee-11073-10101")}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("ConceptMap resource"),
+					"404": fhirResponse("OperationOutcome: not-found"),
+				},
+			},
+		},
+		"/fhir/ConceptMap/$translate":      conceptMapOperationPath("$translate", "ConceptMap $translate"),
+		"/fhir/ConceptMap/{id}/$translate": conceptMapOperationPathWithID("$translate", "ConceptMap $translate (instance form)"),
+		"/fhir/Questionnaire": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Search LOINC panel Questionnaires",
+				"description": "One Questionnaire per LOINC panel/form term (plan §4.11).",
+				"parameters": append([]map[string]any{
+					queryParamEx("url", "Canonical Questionnaire URL", "http://loinc.org/q/89689-4"),
+				}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("searchset Bundle of Questionnaire resources"),
+				},
+			},
+		},
+		"/fhir/Questionnaire/{id}": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"FHIR"},
+				"summary":     "Read a panel Questionnaire",
+				"description": "id is the panel's LOINC number. A non-panel LOINC 404s (plan §4.11).",
+				"parameters":  append([]map[string]any{pathParamEx("id", "Panel LOINC number", "89689-4")}, summaryResultParams()...),
+				"responses": map[string]any{
+					"200": fhirResponse("Questionnaire resource, see docs/exemplars/fhir.loinc.org/questionnaire-89689-4.json"),
+					"404": fhirResponse("OperationOutcome: not-found"),
+				},
+			},
+		},
+		"/searchapi/{scope}": map[string]any{
+			"get": map[string]any{
+				"tags":        []string{"LOINC Search API"},
+				"summary":     "Local LOINC Search API clone",
+				"description": "Wire-compatible local clone of the official https://loinc.regenstrief.org/searchapi/{scope} endpoint, answered entirely from the local database and search index. Basic-auth headers are accepted and ignored.",
+				"parameters": []map[string]any{
+					pathParam("scope", "Result scope: loincs, parts, answerlists, or groups"),
+					queryParam("query", "Search query text, using the same field syntax as the local Lucene search"),
+					intQueryParam("rows", "Rows to return (default 20, max 500)", 20),
+					intQueryParam("offset", "Zero-based row offset", 0),
+					queryParam("sortorder", "Field name plus optional \" asc\"/\" desc\" (for example \"loinc_num desc\")"),
+					queryParam("language", "LinguisticVariants ID; loincs rows swap in that language's translated fields"),
+					boolQueryParam("includefiltercounts", "Include a FilterCounts facet summary (loincs scope only)"),
+				},
+				"responses": map[string]any{
+					"200": response("Search API response envelope (ResponseSummary, Results, optional FilterCounts)", map[string]any{"type": "object"}),
+					"404": response("Unknown scope", object(map[string]any{"Message": map[string]any{"type": "string"}})),
+					"503": response("Local search index not built", object(map[string]any{"Message": map[string]any{"type": "string"}})),
 				},
 			},
 		},
@@ -964,5 +1123,188 @@ func pathParam(name string, description string) map[string]any {
 		"required":    true,
 		"description": description,
 		"schema":      map[string]any{"type": "string"},
+	}
+}
+
+// --- FHIR (/fhir/...) helpers ---
+//
+// The FHIR routes registered by internal/fhirhttp respond with
+// "application/fhir+json" bodies whose exact shape is pinned to the captured
+// golden responses in docs/exemplars/fhir.loinc.org/ (see
+// docs/FHIR_TERMINOLOGY_PLAN.md §4). Rather than duplicating ~80 CodeSystem
+// properties and every resource shape as OpenAPI schemas, responses here
+// document media type, status, and a pointer to the matching exemplar file;
+// Swagger UI's "Try it out" still works against the live routes.
+
+func fhirResponse(description string) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content": map[string]any{
+			"application/fhir+json": map[string]any{
+				"schema": map[string]any{"type": "object"},
+			},
+		},
+	}
+}
+
+// summaryResultParams documents the FHIR R4 `_summary`/`_elements` search result parameters
+// (plan §4.13), shared by every read/search/$expand operation this server filters.
+func summaryResultParams() []map[string]any {
+	return []map[string]any{
+		queryParam("_summary", "true | text | data | count | false. true keeps R4 summary elements, text keeps text+mandatory, data drops text, count (search only) returns an empty Bundle with just total, false is the default full resource. Combining with _elements is 400 invalid."),
+		queryParam("_elements", "Comma-separated top-level element names to keep, plus resourceType/id/meta/mandatory elements. Unknown names are ignored."),
+	}
+}
+
+func queryParamEx(name string, description string, example string) map[string]any {
+	p := queryParam(name, description)
+	p["example"] = example
+	return p
+}
+
+func pathParamEx(name string, description string, example string) map[string]any {
+	p := pathParam(name, description)
+	p["example"] = example
+	return p
+}
+
+func codeSystemLookupParams() []map[string]any {
+	return []map[string]any{
+		queryParamEx("system", "Must be http://loinc.org", "http://loinc.org"),
+		queryParamEx("code", "Term, LP part, LL answer list, LA answer, or LG group code", "718-7"),
+		queryParam("version", "LOINC version; absent or a prefix of the loaded version matches"),
+		queryParam("coding", "Coding-typed alternative to system+code, as system|code"),
+		queryParam("displayLanguage", "BCP-47 language tag; narrows designations to en-US plus this language"),
+		arrayQueryParam("property", "Repeatable; restrict the returned property list to these codes, in request order"),
+	}
+}
+
+func codeSystemValidateCodeParams() []map[string]any {
+	return []map[string]any{
+		queryParamEx("url", "CodeSystem canonical URL (or use system)", "http://loinc.org"),
+		queryParam("system", "Alternative to url"),
+		queryParamEx("code", "Code to validate", "718-7"),
+		queryParam("version", "LOINC version"),
+		queryParam("display", "Expected display text; mismatch returns result=false"),
+		queryParam("coding", "Coding-typed alternative to system+code, as system|code"),
+		queryParam("codeableConcept", "CodeableConcept-typed alternative; first LOINC coding wins"),
+		queryParam("displayLanguage", "BCP-47 language tag used when checking display"),
+	}
+}
+
+func codeSystemSubsumesParams() []map[string]any {
+	return []map[string]any{
+		queryParamEx("codeA", "First code (LOINC term or LP part)", "LP384441-4"),
+		queryParamEx("codeB", "Second code", "30064-0"),
+		queryParamEx("system", "Must be http://loinc.org", "http://loinc.org"),
+		queryParam("version", "LOINC version"),
+		queryParam("codingA", "Coding-typed alternative to codeA, as system|code"),
+		queryParam("codingB", "Coding-typed alternative to codeB, as system|code"),
+	}
+}
+
+func codeSystemOperationPath(op string, summary string, description string, params []map[string]any) map[string]any {
+	return fhirOperationPath(op, summary, description, params)
+}
+
+func codeSystemOperationPathWithID(op string, summary string, description string, params []map[string]any) map[string]any {
+	return fhirOperationPath(op, summary, description, append([]map[string]any{pathParamEx("id", "CodeSystem id", "loinc-2.82")}, params...))
+}
+
+func valueSetExpandParams() []map[string]any {
+	return []map[string]any{
+		queryParamEx("url", "ValueSet canonical URL", "http://loinc.org/vs/LL1162-8"),
+		queryParam("valueSet", "POST only: an inline ValueSet resource to expand, e.g. compose.include[].filter[]"),
+		queryParam("valueSetVersion", "ValueSet version"),
+		queryParam("filter", "Case-insensitive word-prefix match on display, all tokens required"),
+		intQueryParam("offset", "Result offset", 0),
+		intQueryParam("count", "Page size (default 100, max 1000; count=0 returns no contains but a real total)", 100),
+		boolQueryParam("activeOnly", "Exclude DEPRECATED members when true (default false)"),
+		boolQueryParam("includeDesignations", "Include contains[].designation[]"),
+		queryParam("displayLanguage", "BCP-47 language tag for designations"),
+		queryParam("_summary", "true | text | data | false (not count: $expand returns one ValueSet, not a searchset). See plan §4.13."),
+		queryParam("_elements", "Comma-separated top-level element names to keep, plus resourceType/id/meta/mandatory. Unknown names are ignored."),
+	}
+}
+
+func valueSetValidateCodeParams() []map[string]any {
+	return []map[string]any{
+		queryParam("url", "ValueSet canonical URL (or use the instance id form)"),
+		queryParam("valueSet", "POST only: inline ValueSet resource"),
+		queryParamEx("code", "Code to validate against the value set", "LA15679-6"),
+		queryParamEx("system", "Code system, normally http://loinc.org", "http://loinc.org"),
+		queryParam("display", "Expected display text"),
+		queryParam("coding", "Coding-typed alternative to system+code, as system|code"),
+		queryParam("codeableConcept", "CodeableConcept-typed alternative"),
+		boolQueryParam("activeOnly", "Reject DEPRECATED codes when true"),
+	}
+}
+
+func valueSetOperationPath(op string, summary string, description string, params []map[string]any) map[string]any {
+	return fhirOperationPath(op, summary, description, params)
+}
+
+func valueSetOperationPathWithID(op string, summary string, description string, params []map[string]any) map[string]any {
+	return fhirOperationPath(op, summary, description, append([]map[string]any{pathParamEx("id", "ValueSet id", "LL1162-8")}, params...))
+}
+
+func conceptMapTranslateParams() []map[string]any {
+	return []map[string]any{
+		queryParam("url", "ConceptMap canonical URL (or use the instance id form); omit to search every map matching system"),
+		queryParam("conceptMap", "POST only: inline ConceptMap resource"),
+		queryParamEx("code", "Source code to translate", "11556-8"),
+		queryParamEx("system", "Source system, normally http://loinc.org", "http://loinc.org"),
+		queryParam("version", "Source system version"),
+		queryParam("source", "Source value set URI"),
+		queryParam("coding", "Coding-typed alternative to system+code, as system|code"),
+		queryParam("codeableConcept", "CodeableConcept-typed alternative"),
+		queryParam("target", "Target value set URI"),
+		queryParam("targetsystem", "Target system URI filter"),
+		boolQueryParam("reverse", "Translate via the map's reverse direction"),
+	}
+}
+
+func conceptMapOperationPath(op string, summary string) map[string]any {
+	return fhirOperationPath(op, summary, "`result` is a valueBoolean; each match's equivalence, concept, and source map url follow (plan §4.10). 11556-8 -> IEEE 160116; 30657-1 -> RadLex relatedto.", conceptMapTranslateParams())
+}
+
+func conceptMapOperationPathWithID(op string, summary string) map[string]any {
+	return fhirOperationPath(op, summary, "Same as /fhir/ConceptMap/$translate, scoped to a ConceptMap instance.", append([]map[string]any{pathParamEx("id", "ConceptMap id", "loinc-to-ieee-11073-10101")}, conceptMapTranslateParams()...))
+}
+
+// fhirOperationPath documents one FHIR "$operation" path with both GET (query
+// parameters) and POST (a FHIR Parameters body, application/fhir+json or
+// application/json) forms, per plan §1's "every operation accepts GET query
+// parameters and POST Parameters bodies" convention. Note the literal "$" in
+// the path segment.
+func fhirOperationPath(op string, summary string, description string, params []map[string]any) map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"tags":        []string{"FHIR"},
+			"summary":     summary,
+			"description": description,
+			"parameters":  params,
+			"responses": map[string]any{
+				"200": fhirResponse("Parameters resource with the " + op + " result"),
+				"400": fhirResponse("OperationOutcome: invalid or required"),
+				"404": fhirResponse("OperationOutcome: not-found"),
+			},
+		},
+		"post": map[string]any{
+			"tags":        []string{"FHIR"},
+			"summary":     summary + " (POST Parameters body)",
+			"description": description + " Accepts a FHIR Parameters resource body instead of query parameters.",
+			"requestBody": map[string]any{
+				"content": map[string]any{
+					"application/fhir+json": map[string]any{"schema": map[string]any{"type": "object", "description": "FHIR Parameters resource"}},
+					"application/json":      map[string]any{"schema": map[string]any{"type": "object", "description": "FHIR Parameters resource"}},
+				},
+			},
+			"responses": map[string]any{
+				"200": fhirResponse("Parameters resource with the " + op + " result"),
+				"400": fhirResponse("OperationOutcome: invalid or required"),
+				"404": fhirResponse("OperationOutcome: not-found"),
+			},
+		},
 	}
 }

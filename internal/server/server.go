@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,9 +19,11 @@ import (
 	"github.com/yuin/goldmark/extension"
 	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
 
+	"loinc-browser/internal/fhirhttp"
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/version"
+	"loinc-browser/pkg/terminology"
 )
 
 type Options struct {
@@ -37,6 +40,11 @@ type Options struct {
 	KVPath             string
 	SearchIndexPath    string
 	HTTPClient         *http.Client
+	// Terminology, when non-nil, receives the pkg/terminology Service New builds for the FHIR
+	// routes, so a caller (e.g. cmd/loinc-browser's UDP transport, Mode E) can share the exact
+	// same store-getter-backed Service the HTTP handlers use, rather than building a second one
+	// that would miss store hot-swaps after an upload import.
+	Terminology **terminology.Service
 }
 
 func New(options Options) http.Handler {
@@ -107,16 +115,30 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
 	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
 	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
+	mux.HandleFunc("GET /searchapi/{scope}", app.searchAPI)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
 	mux.HandleFunc("GET /docs/mcp", app.markdownDoc("MCP.md", "docs"))
+	mux.HandleFunc("GET /docs/api", app.markdownDoc("API.md", "docs"))
+	mux.HandleFunc("GET /docs/local-apis", app.markdownDoc("LOCAL_APIS.md", "docs"))
 	mux.HandleFunc("GET /docs/concepts", app.markdownDoc("LOINC_CONCEPTS.md", "agent"))
 	mux.HandleFunc("GET /docs/agent-guide", app.markdownDoc("LOINC_AGENT_GUIDE.md", "agent"))
+	mux.HandleFunc("GET /docs/{file}", app.markdownDocFile)
+	// Built before the MCP server (below) so both fhirhttp and the MCP FHIR-backed tools share the
+	// one store-getter-backed Service, rather than the MCP server building a second one that would
+	// miss store hot-swaps after an upload import.
+	terminologySvc := terminology.NewService(app.currentStore)
+	fhirhttp.Register(mux, terminologySvc)
+	if options.Terminology != nil {
+		*options.Terminology = terminologySvc
+	}
 	if options.EnableMCP {
 		mcpServer := loincmcp.New(loincmcp.Options{
-			Store:       options.Store,
-			DocsDir:     options.DocsDir,
-			OpenAPIJSON: OpenAPIJSON,
+			StoreGetter:  app.currentStore,
+			DocsDir:      options.DocsDir,
+			OpenAPIJSON:  OpenAPIJSON,
+			Terminology:  terminologySvc,
+			LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
 		})
 		mux.Handle(normalizeMCPPath(options.MCPPath), loincmcp.StreamableHTTPHandler(mcpServer))
 	}
@@ -781,7 +803,7 @@ func (a *app) swaggerDocs(w http.ResponseWriter, r *http.Request) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LOINC Browser API</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="/vendor/swagger-ui/swagger-ui.css">
   <style>
     body { margin: 0; background: #f8fafc; }
     .swagger-ui .topbar { display: none; }
@@ -791,7 +813,7 @@ func (a *app) swaggerDocs(w http.ResponseWriter, r *http.Request) {
 <body>
   <div class="api-title">LOINC Browser API</div>
   <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="/vendor/swagger-ui/swagger-ui-bundle.js"></script>
   <script>
     window.ui = SwaggerUIBundle({
       url: "/openapi.json",
@@ -824,6 +846,26 @@ func (a *app) markdownDoc(name string, scope string) http.HandlerFunc {
 	}
 }
 
+// markdownDocFile serves relative cross-links between docs (e.g. API.md -> /docs/API.md).
+// Only top-level *.md files in the docs directory; the pattern {file} cannot contain "/".
+func (a *app) markdownDocFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("file")
+	if !strings.HasSuffix(name, ".md") || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+		writeError(w, http.StatusNotFound, fmt.Errorf("documentation file not found: %s", name))
+		return
+	}
+	scope := "docs"
+	if _, err := os.Stat(filepath.Join(filepath.Dir(a.agentDocsDir()), name)); err != nil {
+		scope = "agent" // e.g. LOINC_CONCEPTS.md lives in docs/agent
+	}
+	a.markdownDoc(name, scope)(w, r)
+}
+
+// relativeDocLink matches rendered hrefs to sibling or parent-directory Markdown files
+// (e.g. "LOCAL_APIS.md", "../FHIR_TERMINOLOGY_PLAN.md#x"); they work on GitHub but not under
+// /docs/{route}, so the in-app renderer points them at /docs/{file}.md.
+var relativeDocLink = regexp.MustCompile(`href="(?:\.\./|\./)*(?:agent/)?([A-Za-z0-9_-]+\.md)(#[^"]*)?"`)
+
 func renderMarkdownDocHTML(name string, markdown string) string {
 	title := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
 	lines := strings.Split(markdown, "\n")
@@ -843,6 +885,9 @@ func renderMarkdownDocHTML(name string, markdown string) string {
 		rendered.WriteString(stdhtml.EscapeString(markdown))
 		rendered.WriteString("</pre>")
 	}
+	body := relativeDocLink.ReplaceAll(rendered.Bytes(), []byte(`href="/docs/$1$2"`))
+	rendered.Reset()
+	rendered.Write(body)
 	return fmt.Sprintf(`<!doctype html>
 <html lang="en">
 <head>

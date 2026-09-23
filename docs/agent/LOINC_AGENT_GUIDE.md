@@ -60,6 +60,10 @@ Use `loinc_search_panels` to find panels or forms. Then call `loinc_get_panel_it
 
 Use `loinc_browse_hierarchy` with no node ID for roots, then follow child `nodeId` values. Use `loinc_get_hierarchy_terms` to retrieve terms under a specific occurrence subtree.
 
+## Use FHIR Terminology Tools For Validation, Mapping, And Forms
+
+The MCP server also exposes the local FHIR terminology service as compact tools: `loinc_lookup_code` (any code kind, axes, key properties, related codes), `loinc_validate_code`, `loinc_subsumes`, `loinc_expand_value_set` / `loinc_search_value_sets` / `loinc_validate_value_set_membership` (named sets, LL answer lists, LG groups, implicit LP part-hierarchy sets), `loinc_translate` / `loinc_list_concept_maps` (deprecated-LOINC replacement mapping and third-party code mapping), `loinc_get_questionnaire` (a panel as a FHIR Questionnaire item tree), and `loinc_lucene_search` (Lucene-style queries over the local search index, HTTP transport only). Prefer `loinc_get_term`/`loinc_get_term_fit` for everyday term inspection; reach for `loinc_lookup_code` when axis Coding parts, MAP_TO, or FHIR-shaped properties are needed. Before recommending a code for an integration, validate it with `loinc_validate_code`; if it is `DEPRECATED`, translate it via `loinc_translate` (`id: "loinc-map-to"`) to find its replacement.
+
 ## Compare Candidates
 
 Keep comparison calls compact. Request only summaries until a short candidate list is available. Then fetch fit metadata and focused details for the few candidates that matter.

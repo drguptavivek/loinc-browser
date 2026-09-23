@@ -16,6 +16,12 @@ type IngestSummary struct {
 
 type StoreOptions struct {
 	CacheEntries int
+	// ReadOnly opens the database read-only (SQLite URI `mode=ro`), for a second process reading
+	// a WAL-mode database file a running server already has open (pkg/terminology.Open, plan §2
+	// Mode A). All lazy `CREATE INDEX IF NOT EXISTS` paths are skipped on a read-only Store since
+	// a read-only connection cannot write; queries still run, just without the speed-up an index
+	// gives, and a fresh DB (already indexed at ingest) is unaffected.
+	ReadOnly bool
 }
 
 type SearchParams struct {

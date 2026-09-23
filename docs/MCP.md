@@ -25,8 +25,12 @@ http://localhost:9005/mcp
 Use stdio when an agent should launch a dedicated MCP process instead of connecting to the all-in-one HTTP server:
 
 ```bash
-loinc-browser mcp --docs-dir ./docs/agent
+loinc-browser mcp --docs-dir ./docs/agent --search-index-path ./data/loinc-search.bleve
 ```
+
+`--search-index-path` (default `./data/loinc-search.bleve`, env `LOINC_SEARCH_INDEX_PATH`) points
+`loinc_lucene_search` at the same local Bleve index the `serve` command builds via
+`POST /api/v1/local-search/rebuild`.
 
 ## Editable Agent Docs
 
@@ -47,9 +51,23 @@ Override with:
 LOINC_AGENT_DOCS_DIR=./docs/agent
 ```
 
+## Protocol versions
+
+The server negotiates every MCP protocol version the SDK (`github.com/modelcontextprotocol/go-sdk`
+v1.8.0) supports: `2026-07-28` (stateless — no `initialize` handshake; every request carries its
+protocol version and client capabilities in `_meta`; the HTTP transport requires `Mcp-Method` and
+`Mcp-Name` headers and answers `server/discover`), `2025-11-25`, and `2025-06-18` (classic
+`initialize` → `notifications/initialized` → `tools/list`/`tools/call` handshake). Claude Code and
+most current clients negotiate `2025-11-25`. The HTTP handler runs `Stateless: true,
+JSONResponse: true`, which `2026-07-28` requires; stdio serves both lifecycle models
+transparently. Tool output includes typed `outputSchema` (`tools/list`) and `structuredContent`
+(`tools/call`) alongside the text-content fallback older clients read.
+
 ## Tools
 
 Context is capped by default. Use small limits and follow-up calls by stable ID.
+
+### Local normalized-database tools
 
 | Tool | Purpose |
 | --- | --- |
@@ -66,6 +84,35 @@ Context is capped by default. Use small limits and follow-up calls by stable ID.
 | `loinc_get_hierarchy_terms` | List terms under a hierarchy node. |
 | `loinc_search_parts` | Search LOINC parts. |
 | `loinc_search_groups` | Search LOINC groups. |
+
+### FHIR terminology + Search API tools
+
+These wrap the local `/fhir/...` terminology service (`pkg/terminology`, see `docs/LOCAL_APIS.md`)
+and the local Bleve search index (`/searchapi`, `/api/v1/local-search/query`). Each returns a
+compact summary plus a `browserUrl` (`/?term={code}`) and/or `fhirUrl` an agent can hand to a
+user; pass `rawFhir: true` on `loinc_lookup_code`/`loinc_get_questionnaire` for the full FHIR
+resource. A bad code or unknown ValueSet/ConceptMap/panel returns a tool error (`isError: true`
+with the message), not a transport error.
+
+| Tool | Purpose | Example |
+| --- | --- | --- |
+| `loinc_lookup_code` | Look up any code kind (term/LP/LL/LA/LG): display, status, axes, key properties, related codes. | `{"code":"718-7"}` |
+| `loinc_validate_code` | Check whether a code (optionally with a display) is valid and active. | `{"code":"718-7"}` |
+| `loinc_subsumes` | Check subsumption between two codes via the Component Hierarchy by System. | `{"codeA":"LP14559-6","codeB":"718-7"}` |
+| `loinc_expand_value_set` | Expand a named/LL/LG/implicit-LP ValueSet into paginated member codes. | `{"url":"http://loinc.org/vs/LL1162-8"}` |
+| `loinc_search_value_sets` | Search served ValueSets by name. | `{"nameContains":"positive"}` |
+| `loinc_validate_value_set_membership` | Check whether a code is a member of a ValueSet. | `{"url":"http://loinc.org/vs/LL1162-8","code":"LA6576-8"}` |
+| `loinc_translate` | Translate a code through a ConceptMap (deprecated-LOINC replacement, or a third-party mapping). | `{"code":"11556-8"}` |
+| `loinc_list_concept_maps` | List the ConceptMaps this server serves. | `{}` |
+| `loinc_get_questionnaire` | Get a LOINC panel as a compact FHIR Questionnaire item tree. | `{"loincNum":"24357-6"}` |
+| `loinc_lucene_search` | Run a Lucene-style query against the local Bleve index (loincs/parts/answerlists/groups). | `{"scope":"loincs","query":"Component:glucose System:bld"}` |
+
+`loinc_translate` defaults `system` to `http://loinc.org` when neither `url`/`conceptMapId` nor
+`system` is given, so a bare `{"code":"..."}` searches every served map from LOINC — unlike FHIR's
+own `ConceptMap/$translate` route, which still requires an explicit `system` or `url`/`id`.
+`loinc_lucene_search` requires the local search index to be built
+(`POST /api/v1/local-search/rebuild`, or the `mcp` subcommand's `--search-index-path`); when the
+index has not been built at that path, it reports a clear error instead of guessing.
 
 ## Resources
 

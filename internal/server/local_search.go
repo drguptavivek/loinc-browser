@@ -19,6 +19,7 @@ import (
 	"github.com/blevesearch/bleve/v2/search/query"
 
 	"loinc-browser/internal/loinc"
+	loincmcp "loinc-browser/internal/mcpserver"
 )
 
 const defaultLocalSearchIndexPath = "./data/loinc-search.bleve"
@@ -43,6 +44,13 @@ type LocalSearchRequest struct {
 	Query  string `json:"query"`
 	Limit  int    `json:"limit,omitempty"`
 	Offset int    `json:"offset,omitempty"`
+	// MaxLimit overrides the default 100-row cap (0 keeps the default). The
+	// Search API clone (searchapi.go) sets this to 500 per plan §5.
+	MaxLimit int `json:"maxLimit,omitempty"`
+	// SortBy is a bleve sort spec ("Field" or "-Field" for descending),
+	// resolved by the caller via localSearchFieldAliases. Empty keeps the
+	// default relevance order.
+	SortBy string `json:"sortBy,omitempty"`
 }
 
 type LocalSearchResponse struct {
@@ -62,6 +70,31 @@ func newLocalSearchService(path string) *localSearchService {
 		path = defaultLocalSearchIndexPath
 	}
 	return &localSearchService{path: path}
+}
+
+// NewLuceneSearchFunc builds the mcpserver.LuceneSearchFunc that backs the loinc_lucene_search MCP
+// tool, querying the local Bleve index at indexPath through getStore's current *loinc.Store. Both
+// the HTTP server (server.New) and the stdio command (cmd/loinc-browser's `mcp` subcommand) share
+// this one implementation so a missing/unbuilt index reports the same clear error on either
+// transport.
+func NewLuceneSearchFunc(indexPath string, getStore func() (*loinc.Store, error)) loincmcp.LuceneSearchFunc {
+	localSearch := newLocalSearchService(indexPath)
+	return func(ctx context.Context, scope, queryText string, rows, offset int) ([]loinc.LocalSearchResult, uint64, error) {
+		store, err := getStore()
+		if err != nil {
+			return nil, 0, err
+		}
+		response, status, err := localSearch.query(ctx, store, LocalSearchRequest{
+			Scope: scope, Query: queryText, Limit: rows, Offset: offset,
+		})
+		if err != nil {
+			if status == http.StatusServiceUnavailable {
+				return nil, 0, errors.New(searchAPIMissingIndex)
+			}
+			return nil, 0, err
+		}
+		return response.Results, response.Total, nil
+	}
 }
 
 func (s *localSearchService) status(ctx context.Context, store *loinc.Store) LocalSearchStatus {
@@ -179,8 +212,12 @@ func (s *localSearchService) query(ctx context.Context, store *loinc.Store, requ
 	if limit <= 0 {
 		limit = 25
 	}
-	if limit > 100 {
-		limit = 100
+	maxLimit := request.MaxLimit
+	if maxLimit <= 0 {
+		maxLimit = 100
+	}
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 	offset := request.Offset
 	if offset < 0 {
@@ -210,6 +247,9 @@ func (s *localSearchService) query(ctx context.Context, store *loinc.Store, requ
 	booleanQuery.AddMust(userQuery)
 	searchRequest := bleve.NewSearchRequestOptions(booleanQuery, limit, offset, false)
 	searchRequest.Fields = []string{"scope", "key"}
+	if request.SortBy != "" {
+		searchRequest.SortBy([]string{request.SortBy})
+	}
 	searchResult, err := index.SearchInContext(ctx, searchRequest)
 	if err != nil {
 		return LocalSearchResponse{}, http.StatusBadRequest, fmt.Errorf("local Lucene query failed: %w", err)
@@ -236,6 +276,71 @@ func (s *localSearchService) query(ctx context.Context, store *loinc.Store, requ
 		Warnings:    warnings,
 		IndexStatus: "ready",
 	}, http.StatusOK, nil
+}
+
+// matchingKeys returns every key matching scope+queryText (up to limit), plus
+// the true total hit count, so a caller can facet over the whole result set
+// rather than just one page.
+// ponytail: capped at limit docs scanned into Go; if the local catalogue's
+// matched sets routinely exceed it, move faceting into bleve's native facet
+// API instead of pulling every key.
+func (s *localSearchService) matchingKeys(ctx context.Context, scope string, queryText string, limit int) ([]string, uint64, error) {
+	index, err := bleve.Open(s.path)
+	if err != nil {
+		return nil, 0, errors.New("local Lucene index is not ready; rebuild it")
+	}
+	defer index.Close()
+	rewritten, _ := rewriteLocalSearchQuery(scope, queryText)
+	var userQuery query.Query
+	if strings.TrimSpace(rewritten) == "" {
+		userQuery = bleve.NewMatchAllQuery()
+	} else {
+		parsed, err := parseLocalLuceneQuery(rewritten)
+		if err != nil {
+			return nil, 0, fmt.Errorf("local advanced search query failed: %w", err)
+		}
+		userQuery = parsed
+	}
+	scopeQuery := bleve.NewTermQuery(scope)
+	scopeQuery.SetField("scope")
+	booleanQuery := bleve.NewBooleanQuery()
+	booleanQuery.AddMust(scopeQuery)
+	booleanQuery.AddMust(userQuery)
+	searchRequest := bleve.NewSearchRequestOptions(booleanQuery, limit, 0, false)
+	searchRequest.Fields = []string{"key"}
+	result, err := index.SearchInContext(ctx, searchRequest)
+	if err != nil {
+		return nil, 0, fmt.Errorf("local Lucene query failed: %w", err)
+	}
+	keys := make([]string, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		_, key := loinc.ParseLocalSearchDocID(hit.ID)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys, result.Total, nil
+}
+
+// searchAPISortField resolves a Search API `sortorder` value ("loinc_num" or
+// "loinc_num desc") to a bleve sort spec ("-Field" for descending) via the
+// same field aliases the query parser uses. ok is false for an unrecognized
+// or blank sortorder, meaning "keep relevance order".
+func searchAPISortField(scope string, sortorder string) (string, bool) {
+	sortorder = strings.TrimSpace(sortorder)
+	if sortorder == "" {
+		return "", false
+	}
+	tokens := strings.Fields(sortorder)
+	desc := len(tokens) > 1 && strings.EqualFold(tokens[1], "desc")
+	canonical, ok := localSearchFieldAliases(scope)[strings.ToLower(tokens[0])]
+	if !ok {
+		return "", false
+	}
+	if desc {
+		return "-" + canonical, true
+	}
+	return canonical, true
 }
 
 func (a *app) localSearchStatus(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +402,7 @@ func normalizeLocalSearchScope(scope string) (string, bool) {
 
 var localSearchFieldPattern = regexp.MustCompile(`(^|[\s(+-])([A-Za-z][A-Za-z0-9.]*):`)
 var localSearchLOINCCodePattern = regexp.MustCompile(`(?i)(^|[\s(])([+-]?)(LOINC|LOINC_NUM|LOINCNUM):(\d+)(?:-(\d|\?))?(\*)?`)
+var localSearchBareLOINCNumberPattern = regexp.MustCompile(`^\d{1,7}-\d$`)
 
 func rewriteLocalSearchQuery(scope string, raw string) (string, []string) {
 	raw = strings.TrimSpace(raw)
@@ -307,6 +413,14 @@ func rewriteLocalSearchQuery(scope string, raw string) (string, []string) {
 	indexed := localSearchIndexedFields(scope)
 	warnings := []string{}
 	seenWarnings := map[string]bool{}
+	if scope == "loincs" && localSearchBareLOINCNumberPattern.MatchString(raw) {
+		// A bare "718-7" (no field prefix, no boolean operators) is a whole
+		// LOINC number, not "718 AND NOT 7": the lexer below treats "-" as
+		// the NOT operator, which would otherwise silently exclude the very
+		// term being searched for (its own tokenized key contains "7").
+		// Match it as a phrase against the LOINC-number key field instead.
+		return `key:"` + raw + `"`, nil
+	}
 	if scope == "loincs" {
 		raw = localSearchLOINCCodePattern.ReplaceAllStringFunc(raw, func(match string) string {
 			matches := localSearchLOINCCodePattern.FindStringSubmatch(match)
