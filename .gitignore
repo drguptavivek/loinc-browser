@@ -26,3 +26,6 @@ web/.svelte-kit/
 # Regenerate with scripts/capture-exemplars.sh (needs a LOINC account in loinc.env).
 docs/exemplars/
 docs/vendor/
+
+# Local code-index cache from the trace-mcp tool.
+.trace-mcp/
