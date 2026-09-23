@@ -53,6 +53,8 @@ type SearchTermsRequest struct {
 	Sort            string   `json:"sort,omitempty" jsonschema:"relevance, usage, or alpha"`
 	RankedOnly      bool     `json:"rankedOnly,omitempty" jsonschema:"Require positive common rank"`
 	Class           string   `json:"class,omitempty" jsonschema:"LOINC class filter"`
+	Classes         []string `json:"classes,omitempty" jsonschema:"Several LOINC classes, any of which may match (e.g. CHEM, SERO)"`
+	ClassType       string   `json:"classType,omitempty" jsonschema:"LOINC CLASSTYPE: lab, clinical, attachment, or survey. Use lab when mapping lab tests to drop survey and attachment noise."`
 	System          string   `json:"system,omitempty" jsonschema:"System axis filter"`
 	TimeAspect      string   `json:"timeAspect,omitempty" jsonschema:"Time aspect filter"`
 	Scale           string   `json:"scale,omitempty" jsonschema:"Scale filter"`
@@ -372,6 +374,8 @@ func (r SearchTermsRequest) searchParams(limit int, offset int) loinc.SearchPara
 		Sort:            r.Sort,
 		RankedOnly:      r.RankedOnly,
 		Class:           r.Class,
+		Classes:         r.Classes,
+		ClassType:       r.ClassType,
 		System:          r.System,
 		TimeAspect:      r.TimeAspect,
 		Scale:           r.Scale,

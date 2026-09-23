@@ -100,6 +100,8 @@
 	let methods: string[] = [];
 	let orderObsValues: string[] = [];
 	let rankedOnly = false;
+	// LOINC CLASSTYPE filter: '' (any), lab, clinical, attachment, or survey.
+	let classType = '';
 	let searchSort: 'relevance' | 'usage' = 'relevance';
 	let hierarchyNodeId = '';
 	let hierarchyLabel = '';
@@ -490,6 +492,7 @@
 		system = params.get('system') ?? '';
 		property = params.get('property') ?? '';
 		statuses = params.getAll('status');
+		classType = params.get('classType') ?? '';
 		timeAspects = params.getAll('timeAspect');
 		scales = params.getAll('scale');
 		methods = params.getAll('method');
@@ -566,6 +569,7 @@
 		if (system) params.set('system', system);
 		if (property) params.set('property', property);
 		for (const value of statuses) params.append('status', value);
+		if (classType) params.set('classType', classType);
 		for (const value of timeAspects) params.append('timeAspect', value);
 		for (const value of scales) params.append('scale', value);
 		for (const value of methods) params.append('method', value);
@@ -778,6 +782,7 @@
 				system,
 				property,
 				status: statuses,
+				classType,
 				timeAspect: timeAspects,
 				scale: scales,
 				method: methods,
@@ -904,6 +909,7 @@
 
 	function clearFilters() {
 		selectedClass = '';
+		classType = '';
 		system = '';
 		property = '';
 		statuses = [];
@@ -1033,7 +1039,7 @@
 	}
 
 	function activeFilterCount() {
-		return [selectedClass, system, property, rankedOnly ? 'rankedOnly' : '', hierarchyNodeId, ...statuses, ...timeAspects, ...scales, ...methods, ...orderObsValues].filter(Boolean).length;
+		return [selectedClass, classType, system, property, rankedOnly ? 'rankedOnly' : '', hierarchyNodeId, ...statuses, ...timeAspects, ...scales, ...methods, ...orderObsValues].filter(Boolean).length;
 	}
 
 	function cachedEntryCount() {
@@ -2713,6 +2719,16 @@
 					<div class="flex flex-wrap items-center gap-1.5">
 						<span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Filters</span>
 						{#if hasFacetChoices(facets.statuses, statuses)}
+							<label class="flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-600">
+								<span class="font-semibold uppercase tracking-wide text-zinc-500">Type</span>
+								<select class="h-8 bg-transparent text-sm text-zinc-800 focus:outline-none" bind:value={classType} on:change={() => runSearch(0)} data-testid="class-type-filter">
+									<option value="">Any</option>
+									<option value="lab">Lab</option>
+									<option value="clinical">Clinical (incl. radiology)</option>
+									<option value="attachment">Attachment</option>
+									<option value="survey">Survey</option>
+								</select>
+							</label>
 							<MultiSelectDropdown label="Status" emptyLabel="Not deprecated" options={facetEntries(facets.statuses)} selected={statuses} onToggle={(value) => toggleMulti('status', value)} onClear={() => clearFacet('status')} />
 						{/if}
 						{#if hasFacetChoices(facets.timeAspects, timeAspects)}

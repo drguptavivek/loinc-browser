@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.93-rc4 - 2026-09-23
+
+- Added a `classType` filter (LOINC CLASSTYPE: `lab`, `clinical`, `attachment`, `survey`) to term search in the UI (new Type filter), `/api/v1`, `/api/search`, and MCP `loinc_search_terms`; `class` can now repeat to match several classes (previously the second value was silently ignored). Invalid `classType` returns 400.
+- Relevance ranking now blends the text match with common test/order rank and demotes TRIAL, DISCOURAGED, and panel terms (unless the query asks for a panel). Checked by `TestRankingAgainstMappingProbe` against 20 real mapping queries (run with `LOINC_TEST_DB`); all put the common LOINC term in the top 3 except where LOINC lacks the synonym (ESR, Widal).
+- The relaxed retry now drops the most common words first, so the analyte is kept ("hba1c fasting" drops "fasting"), and returns nothing instead of a generic list when only common words would remain ("widal test").
+- Documented lab-compendium mapping patterns (`docs/USE_CASES.md` §7) and lab/radiology narrowing (§15).
+
 ## 0.93-rc3 - 2026-09-23
 
 - HTTP servers (TCP and Unix socket) now time out header reads after 10 s and idle keep-alive connections after 120 s; `docs/USE_CASES.md` §3 documents client connection pooling.

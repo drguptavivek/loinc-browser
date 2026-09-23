@@ -310,6 +310,7 @@ export type LocalSearchResponse = {
 export type SearchParams = {
 	q?: string;
 	class?: string;
+	classType?: string;
 	status?: string | string[];
 	system?: string;
 	timeAspect?: string | string[];

@@ -153,7 +153,7 @@ Context is capped by default. Use small limits and follow-up calls by stable ID.
 | Tool | Purpose |
 | --- | --- |
 | `loinc_explain_concepts` | Return a compact explanation for one LOINC topic from editable Markdown. |
-| `loinc_search_terms` | Search compact LOINC term candidates. Hides deprecated terms unless `status` asks for them. Each result has `relevance` (text-match strength, higher is better; compare within one call, and use `sort: "relevance"` to order by it). When no term matches every word, returns `relaxed: true` with `droppedWords`. |
+| `loinc_search_terms` | Search compact LOINC term candidates. Hides deprecated terms unless `status` asks for them. Filter with `classType` (`lab`, `clinical`, `attachment`, `survey`; use `lab` when mapping lab tests) and `class` or `classes`. Each result has `relevance` (text-match strength, higher is better; compare within one call, and use `sort: "relevance"` to order by it). When no term matches every word, returns `relaxed: true` with `droppedWords`. |
 | `loinc_get_term` | Get one selected LOINC term. |
 | `loinc_get_term_fit` | Get compact form-builder suitability metadata. |
 | `loinc_get_term_relationships` | Get grouped lightweight relationships. |

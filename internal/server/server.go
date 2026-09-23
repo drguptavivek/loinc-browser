@@ -206,6 +206,8 @@ func (a *app) search(w http.ResponseWriter, r *http.Request) {
 	params := loinc.SearchParams{
 		Query:          query.Get("q"),
 		Class:          query.Get("class"),
+		Classes:        queryValues(query, "class"),
+		ClassType:      query.Get("classType"),
 		Statuses:       queryValues(query, "status"),
 		System:         query.Get("system"),
 		TimeAspects:    queryValues(query, "timeAspect"),
@@ -220,7 +222,7 @@ func (a *app) search(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := store.Search(r.Context(), params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, searchErrorStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -440,6 +442,14 @@ func (a *app) hierarchy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// searchErrorStatus is 400 for a bad search parameter (e.g. an unknown classType), else 500.
+func searchErrorStatus(err error) int {
+	if errors.Is(err, loinc.ErrInvalidParam) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
 func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
 	store, err := a.currentStore()
 	if err != nil {
@@ -448,7 +458,7 @@ func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := store.Search(r.Context(), termListParamsFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, searchErrorStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -1041,6 +1051,8 @@ func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 	return loinc.SearchParams{
 		Query:           query.Get("q"),
 		Class:           query.Get("class"),
+		Classes:         queryValues(query, "class"),
+		ClassType:       query.Get("classType"),
 		Statuses:        queryValues(query, "status"),
 		UsageType:       query.Get("usageType"),
 		RankMode:        query.Get("rankMode"),

@@ -121,17 +121,23 @@ How `q` matches:
   for example an abbreviation such as `CRP` or `HBsAg` in LOINC's related names, ranks above a
   prefix-only match.
 - Common English words (`for`, `of`, `the`, `in`, …) are ignored unless nothing else is left.
-- Relevance weights where a word appears: LOINC number, component, name, and display name count
-  most; related names count less; the long definition counts least.
-- When no term matches every word, the search drops as few words as possible, keeping the version
-  that finds the most terms, and returns `"relaxed": true`, `"droppedWords": [...]`, and a
-  `notice`. Queries of more than six words are not relaxed.
+- Relevance (the default order when `q` is present) blends three things: the text match, weighted
+  by field (LOINC number, component, name, and display name most; related names less; the long
+  definition least); how commonly the term is used (its common test or order rank, per
+  `rankMode`); and demotions for TRIAL and DISCOURAGED terms and for panels, unless the query says
+  "panel", "pnl", "battery", or "profile".
+- When no term matches every word, the search drops as few words as possible, dropping the most
+  common words first so the specific one (usually the analyte) is kept, and returns
+  `"relaxed": true`, `"droppedWords": [...]`, and a `notice`. If only generic words would remain
+  (more than 1,000 matches), it returns no results with a `notice` instead. Queries of more than
+  six words are not relaxed.
 
 Additional term filters:
 
 | Parameter | Meaning |
 | --- | --- |
-| `class` | LOINC class filter. |
+| `class` | LOINC class filter; repeat for several (`class=CHEM&class=SERO`). |
+| `classType` | LOINC CLASSTYPE: `lab`, `clinical` (includes radiology), `attachment`, or `survey` (or `1`-`4`). Unknown values return 400. |
 | `system` | System axis filter. |
 | `timeAspect` | Repeatable time aspect filter. |
 | `scale` | Repeatable scale filter. |

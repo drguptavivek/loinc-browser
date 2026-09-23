@@ -25,8 +25,11 @@ type StoreOptions struct {
 }
 
 type SearchParams struct {
-	Query           string
-	Class           string
+	Query   string
+	Class   string
+	Classes []string
+	// ClassType is LOINC CLASSTYPE: lab, clinical, attachment, survey (or 1-4).
+	ClassType       string
 	Status          string
 	Statuses        []string
 	UsageType       string

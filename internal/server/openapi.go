@@ -1035,7 +1035,8 @@ func pageSchema(itemSchema map[string]any) map[string]any {
 func commonTermListParameters() []map[string]any {
 	return []map[string]any{
 		queryParam("q", "Full-text query or exact LOINC number"),
-		queryParam("class", "LOINC class filter"),
+		arrayQueryParam("class", "LOINC class filter; repeat to allow several classes (e.g. class=CHEM&class=SERO)"),
+		queryParam("classType", "LOINC CLASSTYPE filter: lab, clinical (includes radiology), attachment, or survey"),
 		arrayQueryParam("status", "LOINC status filter. Defaults to all statuses except DEPRECATED. Use status=DEPRECATED to browse deprecated terms, or status=* for all statuses."),
 		queryParam("usageType", "Term usage filter: any, observation, or order"),
 		queryParam("rankMode", "Ranking mode: observation or order"),

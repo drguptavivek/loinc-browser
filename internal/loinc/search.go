@@ -136,9 +136,11 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 	if err != nil || response.Total > 0 {
 		return response, err
 	}
-	// Every word is required, so one generic word ("routine") can empty the result. Drop as few
-	// words as possible, preferring the drop that finds the most terms (the dropped word was the
-	// noise), and say which words were dropped.
+	// Every word is required, so one extra word can empty the result. Drop as few words as
+	// possible, dropping the most common words first: a rare word is usually the analyte ("hba1c
+	// fasting" keeps hba1c, drops fasting). A word LOINC never uses (widal, a typo) can't be kept
+	// by any matching subset, so it is always dropped, and maxRelaxedTotal rejects the result
+	// when only generic words remain.
 	terms := ftsTerms(query)
 	words := DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1))
 	if len(terms) < 2 || len(terms) > maxRelaxedWords {
@@ -146,19 +148,37 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 	}
 	countParams := params
 	countParams.Limit, countParams.Offset = 1, 0
+	frequency := make([]int, len(terms))
+	for i := range terms {
+		probe, err := s.search(ctx, countParams, terms[i])
+		if err != nil {
+			return response, err
+		}
+		frequency[i] = probe.Total
+	}
 	for keep := len(terms) - 1; keep >= 1; keep-- {
-		best, bestTotal := []int(nil), 0
+		best, bestTotal, bestDropped := []int(nil), 0, -1
 		for _, subset := range combinations(len(terms), keep) {
 			probe, err := s.search(ctx, countParams, joinFTSTerms(terms, subset))
 			if err != nil {
 				return response, err
 			}
-			if probe.Total > bestTotal {
-				best, bestTotal = subset, probe.Total
+			if probe.Total == 0 {
+				continue
+			}
+			dropped := droppedFrequency(frequency, subset)
+			if dropped > bestDropped || (dropped == bestDropped && probe.Total > bestTotal) {
+				best, bestTotal, bestDropped = subset, probe.Total, dropped
 			}
 		}
 		if best == nil {
 			continue
+		}
+		if bestTotal > maxRelaxedTotal {
+			// What is left is too generic ("widal test" -> "test"): an empty answer beats
+			// thousands of unrelated terms.
+			response.Notice = "No term matched every word, and dropping words left only common ones; try another word for the missing one."
+			return response, nil
 		}
 		relaxed, err := s.search(ctx, params, joinFTSTerms(terms, best))
 		if err != nil {
@@ -172,8 +192,27 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 	return response, nil
 }
 
+// maxRelaxedTotal rejects a relaxed query that matches more terms than this: the dropped word was
+// the specific one and only generic words remain.
+const maxRelaxedTotal = 1000
+
 // maxRelaxedWords caps the drop-a-word retry: n words cost at most 2^n small count queries.
 const maxRelaxedWords = 6
+
+// droppedFrequency sums how many terms each word left out of kept matches on its own.
+func droppedFrequency(frequency []int, kept []int) int {
+	keep := map[int]bool{}
+	for _, i := range kept {
+		keep[i] = true
+	}
+	total := 0
+	for i, count := range frequency {
+		if !keep[i] {
+			total += count
+		}
+	}
+	return total
+}
 
 func joinFTSTerms(terms []string, indexes []int) string {
 	kept := make([]string, 0, len(indexes))
@@ -219,6 +258,21 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 	offset := params.Offset
 
 	where, args := filterClauses(params, "t")
+	if classType := strings.ToLower(strings.TrimSpace(params.ClassType)); classType != "" {
+		code, ok := classTypeCodes[classType]
+		if !ok {
+			return SearchResponse{}, fmt.Errorf("%w: classType %q (use lab, clinical, attachment, or survey)", ErrInvalidParam, params.ClassType)
+		}
+		table, ok := s.RawTable(ctx, loincCSVRelPath)
+		if !ok {
+			return SearchResponse{}, fmt.Errorf("%w: classType needs the raw Loinc.csv table; re-import the release", ErrInvalidParam)
+		}
+		if err := s.ensureRawIndex(ctx, table, "LOINC_NUM"); err != nil {
+			return SearchResponse{}, err
+		}
+		where = append(where, `exists (select 1 from `+quoteIdentifier(table)+` ct where ct."LOINC_NUM" = t.loinc_num and ct."CLASSTYPE" = ?)`)
+		args = append(args, code)
+	}
 	query := strings.TrimSpace(params.Query)
 	exactLOINC := loincNumberRegexp.MatchString(query)
 	if exactLOINC {
@@ -280,7 +334,7 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 	order := termOrderClause(params.Sort, rankColumn, ftsQuery != "")
 	selectRank := `0.0 as rank`
 	if ftsQuery != "" {
-		selectRank = `bm25(loinc_terms_fts, ` + ftsColumnWeights + `) as rank`
+		selectRank = relevanceRankExpr(rankColumn, queryWantsPanel(query)) + ` as rank`
 	}
 
 	searchQuery := `select distinct
@@ -813,6 +867,21 @@ func (s *Store) loadConceptNeighbors(ctx context.Context, loincNum string, conce
 
 var ErrNotFound = errors.New("not found")
 
+// ErrInvalidParam marks a caller error in search parameters (HTTP 400, not 500).
+var ErrInvalidParam = errors.New("invalid parameter")
+
+// classTypeCodes maps LOINC CLASSTYPE names to the release's numeric codes.
+var classTypeCodes = map[string]string{
+	"1": "1", "lab": "1", "laboratory": "1",
+	"2": "2", "clinical": "2",
+	"3": "3", "attachment": "3", "attachments": "3", "claims": "3",
+	"4": "4", "survey": "4", "surveys": "4",
+}
+
+// loincCSVRelPath is the release file whose raw copy keeps CLASSTYPE, which the normalized
+// loinc_terms table does not store.
+const loincCSVRelPath = "LoincTable/Loinc.csv"
+
 func (s *Store) Facets(ctx context.Context) (Facets, error) {
 	if facets, ok := s.cache.getFacets(); ok {
 		return facets, nil
@@ -1229,7 +1298,7 @@ func filterClauses(params SearchParams, alias string) ([]string, []any) {
 			args = append(args, value)
 		}
 	}
-	add("class", params.Class)
+	addMany("class", params.Class, params.Classes)
 	add("system", params.System)
 	add("property", params.Property)
 	statusValues, explicitStatus := normalizedStatusValues(params.Status, params.Statuses)
@@ -1527,6 +1596,48 @@ func DropStopWords(tokens []string) []string {
 
 func makeFTSQuery(query string) string {
 	return strings.Join(ftsTerms(query), " AND ")
+}
+
+// Relevance blends the text match with how the term is used, so a query finds the common test
+// rather than any term sharing its words. Lower is better, like bm25. Each prior is subtracted or
+// added in bm25 units:
+//   - popularity: up to relevancePopularityWeight for the most-used terms, decaying with the
+//     common rank (rank 7 ~ 7.7, rank 22 ~ 7.2, rank 201 ~ 4.0, rank 617 ~ 1.9, unranked 0);
+//   - status: DISCOURAGED and TRIAL terms are pushed down (deprecated ones are hidden by default);
+//   - panels: a panel ranks below single tests unless the query asks for a panel.
+//
+// ponytail: weights tuned by hand against the mapper probe queries in ranking_eval_test.go; retune
+// there if a labelled query set grows.
+const (
+	relevancePopularityWeight = 8.0
+	relevancePopularityScale  = 200.0
+	relevanceDiscouraged      = 6.0
+	relevanceTrial            = 4.0
+	relevancePanel            = 5.0
+)
+
+func relevanceRankExpr(rankColumn string, wantsPanel bool) string {
+	expr := fmt.Sprintf(`bm25(loinc_terms_fts, %s)
+		- %g * (case when t.%s > 0 then 1.0 / (1.0 + t.%s / %g) else 0 end)
+		+ (case t.status when 'DISCOURAGED' then %g when 'TRIAL' then %g else 0 end)`,
+		ftsColumnWeights, relevancePopularityWeight, rankColumn, rankColumn, relevancePopularityScale,
+		relevanceDiscouraged, relevanceTrial)
+	if !wantsPanel {
+		expr += fmt.Sprintf(`
+		+ (case when exists (select 1 from panel_items p where p.parent_loinc_num = t.loinc_num collate nocase) then %g else 0 end)`, relevancePanel)
+	}
+	return expr
+}
+
+// queryWantsPanel reports whether the query asks for a panel, so panels are not demoted.
+func queryWantsPanel(query string) bool {
+	for _, word := range ftsTokenRegexp.FindAllString(strings.ToLower(query), -1) {
+		switch word {
+		case "panel", "pnl", "panels", "battery", "profile":
+			return true
+		}
+	}
+	return false
 }
 
 // ftsColumnWeights weights bm25 per loinc_terms_fts column (loinc_num, long_common_name,

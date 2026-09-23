@@ -34,7 +34,8 @@ search index (`POST /api/v1/local-search/rebuild`).
 | Highest-volume single-code validation | `CodeSystem/$validate-code` | keep-alive HTTP (TCP or UDS); UDP for fire-and-forget fan-out |
 | Form pick-lists, panels | `ValueSet/$expand`, `Questionnaire` | HTTP |
 | Deprecated-code migration | `$lookup` MAP_TO, `$translate` (`loinc-map-to`) | HTTP |
-| Compendium mapping, AI-assisted | `/searchapi`, `$lookup`, MCP tools | HTTP or MCP |
+| Compendium mapping, AI-assisted | term search with `classType=lab`, `$lookup`, MCP tools | HTTP or MCP |
+| Lab-only or radiology-only results | `classType=lab`, `class=RAD` | HTTP or MCP |
 | Cross-terminology mapping | `ConceptMap` + `$translate` | HTTP |
 | Hierarchy roll-ups / subsumption | `$subsumes`, implicit `vs/{LP}` | HTTP |
 | AI agent integration | MCP tools | HTTP `/mcp` or stdio |
@@ -233,35 +234,59 @@ stay active), matching HL7's "Using LOINC with FHIR" guidance, not the UI's sear
 names/codes) and needs to bulk-map each row to a LOINC code by matching Component, Property,
 System, Scale, and Method.
 
-**Interface:** `/searchapi` Lucene-style queries for candidate search, FHIR `$lookup` to pull
-axis properties for a fit check, and the MCP tools for an AI agent doing this interactively.
+**Interface:** term search (`/api/v1/terms/search`, or MCP `loinc_search_terms` for an agent) for
+candidates, `/searchapi` Lucene-style queries when you need fielded axis matching, and FHIR
+`$lookup` or `loinc_get_term_fit` to check a candidate before committing it.
 
-**Transport:** HTTP (searchapi/FHIR) or MCP.
+**Transport:** HTTP, reusing one connection (see §3), or MCP over HTTP.
 
 **Examples:**
 
 ```bash
+curl 'http://localhost:9005/api/v1/terms/search?q=potassium%20serum&classType=lab&limit=5'
 curl 'http://localhost:9005/searchapi/loincs?query=Component:glucose+AND+System:bld&rows=25'
 curl 'http://localhost:9005/fhir/CodeSystem/$lookup?system=http://loinc.org&code=2345-7'
 ```
 
-MCP tool call for an agent working row-by-row:
+MCP tool calls for an agent working row by row:
 
 ```json
-{"tool": "loinc_lucene_search", "arguments": {"scope": "loincs", "query": "Component:glucose System:bld"}}
-{"tool": "loinc_get_term_fit", "arguments": {"loincNum": "2345-7"}}
+{"tool": "loinc_search_terms", "arguments": {"q": "hba1c fasting", "classType": "lab", "limit": 5}}
+{"tool": "loinc_get_term_fit", "arguments": {"loincNum": "4548-4"}}
 ```
 
-**Response:** ranked candidates plus per-candidate axis breakdown; `loinc_get_term_fit` gives a
-compact suitability summary (status/usage flags, rank) to check before committing a mapping.
+**Response:** ranked candidates. For text queries the order blends the text match with how
+commonly the term is used, pushes TRIAL and DISCOURAGED terms down, and ranks panels below single
+tests unless the query says "panel". Each MCP candidate carries `relevance`.
+
+**Patterns that work** (from mapping a 15,099-row hospital compendium):
+
+- **Scope the search.** Pass `classType=lab` for lab tests; survey (PhenX) and attachment terms
+  otherwise compete ("vitamin d" ranks a PhenX protocol #2 without it). For radiology use
+  `class=RAD`. Several classes can be combined: `class=CHEM&class=SERO`. See §15.
+- **Send plain words.** Common words (for, of, the, in, ...) are ignored, and a whole-word match,
+  such as an abbreviation in LOINC's synonyms (CRP, HBsAg, TSH), outranks a prefix match. Strip
+  local noise yourself: parenthesized codes ("BLOOD GROUP (BG)"), department prefixes.
+- **Handle `relaxed`.** When no term has every word, the search drops the most common words first
+  and returns `relaxed: true` with `droppedWords` ("hba1c fasting" drops "fasting", keeps the
+  analyte). Record the dropped words with the mapping and treat relaxed results as lower
+  confidence. When only generic words would be left (a word LOINC never uses, such as "widal"),
+  the search returns nothing rather than thousands of unrelated terms.
+- **Use `relevance` within one call only.** It depends on the query words, so compare candidates
+  from the same search, and keep your own cross-row confidence score.
+- **Deprecated terms are hidden** by default. Pass `status=DEPRECATED` or `status=*` only to map
+  legacy codes (§6).
+- **Bring your own synonyms** for local terms LOINC doesn't use: ESR (LOINC says "Sed Rat"), USG
+  (LOINC says "US"), Widal (LOINC names the S. Typhi antibodies). The server does not expand
+  synonyms beyond LOINC's related names.
 
 **Caveats:** compare against the Fully-Specified Name and its major axes, not display-name
-similarity alone (`docs/agent/LOINC_CONCEPTS.md`, Search Strategy). A guided, in-app mapping
-chat agent that records per-row decisions is a **future epic**, not implemented — see
-`docs/AGENT_CHAT_PLAN.md` for the design. Today, mapping is a manual or scripted workflow against
-the routes above. There is no batch endpoint, so a 5,000-row compendium means at least 5,000
-calls. Script them over one keep-alive HTTP connection, or use `pkg/terminology` in-process
-(§13). Don't loop them through MCP.
+similarity alone (`docs/agent/LOINC_CONCEPTS.md`, Search Strategy). There is no batch endpoint,
+so a 5,000-row compendium means at least 5,000 calls: script them over one reused HTTP session
+with four to eight in parallel, or use `pkg/terminology` in-process (§13). MCP over HTTP works for
+this too; send `Accept: application/json, text/event-stream` (both types, or the server answers
+400) and expect a plain JSON body. A guided, in-app mapping chat agent that records per-row
+decisions is a **future epic** (`docs/AGENT_CHAT_PLAN.md`).
 
 ## 8. Cross-terminology mapping
 
@@ -459,6 +484,41 @@ real upstream.
 
 **Caveats:** this is for interactive exploration, not automation — script against the HTTP
 routes or MCP tools directly for anything repeated.
+
+## 15. Narrowing searches to lab tests or radiology
+
+**Who / problem:** A user or integration wants lab results only, or radiology only, without
+survey, attachment, or clinical-document terms mixed in.
+
+**Interface:** the `classType` and `class` filters on term search (UI Type filter,
+`/api/v1/terms/search`, MCP `loinc_search_terms`), or `Class:` clauses in `/searchapi`.
+
+**Transport:** HTTP or MCP.
+
+**Examples:**
+
+```bash
+curl 'http://localhost:9005/api/v1/terms/search?q=ferritin&classType=lab'
+curl 'http://localhost:9005/api/v1/terms/search?q=chest&class=RAD'
+curl 'http://localhost:9005/api/v1/terms/search?q=glucose&class=CHEM&class=UA'
+curl 'http://localhost:9005/searchapi/loincs?query=(Class:CHEM%20OR%20Class:SERO)%20AND%20glucose'
+```
+
+**Response:** the usual term list, restricted to the chosen type or classes.
+
+| `classType` | LOINC CLASSTYPE | Terms in 2.82 |
+| --- | --- | --- |
+| `lab` | 1, Laboratory | 66,861 |
+| `clinical` | 2, Clinical (includes radiology, `class=RAD`) | 28,635 |
+| `attachment` | 3, Claims attachments | 1,161 |
+| `survey` | 4, Surveys (PhenX, MDS, ...) | 12,668 |
+
+Lab classes include `CHEM`, `HEM/BC`, `MICRO`, `SERO`, `UA`, `COAG`, `BLDBK`, `DRUG/TOX`,
+`ALLERGY`, `ABXBACT`, `CELLMARK`, `PATH`, and `SPEC`.
+
+**Caveats:** `classType` reads CLASSTYPE from the raw `Loinc.csv` table kept at import; a database
+imported by a very old version without raw tables returns 400 until re-imported. An unknown
+`classType` value returns 400. `/searchapi` has no class-type field; combine `Class:` clauses.
 
 ## Not a fit
 
