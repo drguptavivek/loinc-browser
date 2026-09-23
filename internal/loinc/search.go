@@ -138,7 +138,8 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 	}
 	// Every word is required, so one extra word can empty the result. Drop as few words as
 	// possible, dropping the most common words first: a rare word is usually the analyte ("hba1c
-	// fasting" keeps hba1c, drops fasting). A word LOINC never uses (widal, a typo) can't be kept
+	// fasting" keeps hba1c, drops fasting).
+	// Specimen words (blood, urine, serum, ...) are never dropped. A word LOINC never uses (widal, a typo) can't be kept
 	// by any matching subset, so it is always dropped, and maxRelaxedTotal rejects the result
 	// when only generic words remain.
 	terms := ftsTerms(query)
@@ -163,7 +164,7 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 			if err != nil {
 				return response, err
 			}
-			if probe.Total == 0 {
+			if probe.Total == 0 || dropsSpecimen(words, subset) {
 				continue
 			}
 			dropped := droppedFrequency(frequency, subset)
@@ -198,6 +199,32 @@ const maxRelaxedTotal = 1000
 
 // maxRelaxedWords caps the drop-a-word retry: n words cost at most 2^n small count queries.
 const maxRelaxedWords = 6
+
+// specimenWords name the sample; the relaxed retry never drops them, because a result for the
+// wrong specimen is worse than no result ("glucose urine xyz" must not become glucose in blood).
+var specimenWords = map[string]bool{
+	"blood": true, "bld": true, "urine": true, "ur": true, "serum": true, "ser": true,
+	"plasma": true, "plas": true, "serpl": true, "csf": true, "sputum": true, "spt": true,
+	"stool": true, "stl": true, "feces": true, "faeces": true, "fecal": true, "saliva": true,
+	"tissue": true, "swab": true, "fluid": true, "fld": true, "pleural": true, "peritoneal": true,
+	"ascitic": true, "synovial": true, "semen": true, "vitreous": true, "amniotic": true,
+	"marrow": true, "nasopharyngeal": true, "throat": true, "wound": true, "pus": true,
+	"bal": true, "breath": true, "hair": true, "nail": true, "tears": true, "cord": true,
+}
+
+// dropsSpecimen reports whether keeping only kept would leave out a specimen word.
+func dropsSpecimen(words []string, kept []int) bool {
+	keep := map[int]bool{}
+	for _, i := range kept {
+		keep[i] = true
+	}
+	for i, word := range words {
+		if !keep[i] && specimenWords[word] {
+			return true
+		}
+	}
+	return false
+}
 
 // droppedFrequency sums how many terms each word left out of kept matches on its own.
 func droppedFrequency(frequency []int, kept []int) int {
@@ -1566,13 +1593,18 @@ func containsValue(values []string, needle string) bool {
 var ftsTokenRegexp = regexp.MustCompile(`[[:alnum:]]+`)
 var loincNumberRegexp = regexp.MustCompile(`^\d+-\d+$`)
 
-// stopWords are English function words that never carry LOINC meaning. Every search term is
-// ANDed, so "glucose for blood" would otherwise require "for" too. Deliberately excludes "a"
-// (Hepatitis A), "no" (an answer value), and the Lucene operators "and"/"or"/"not".
+// stopWords never narrow a LOINC search. Every search term is ANDed, so "glucose for blood" would
+// otherwise require "for", and "potassium test" would match only the odd terms that say "test".
+// Two kinds: English function words, and generic request words that name no analyte, specimen,
+// or method ("routine", "examination", "test", "level"). Deliberately excludes "a" (Hepatitis
+// A), "no" (an answer value), and the Lucene operators "and"/"or"/"not".
 var stopWords = map[string]bool{
 	"an": true, "as": true, "at": true, "by": true, "for": true, "from": true, "in": true,
 	"into": true, "is": true, "of": true, "on": true, "per": true, "the": true, "to": true,
 	"via": true, "with": true,
+	"routine": true, "examination": true, "exam": true, "test": true, "tests": true,
+	"level": true, "levels": true, "estimation": true, "analysis": true, "study": true,
+	"assay": true, "investigation": true, "report": true,
 }
 
 // IsStopWord reports whether word is dropped from free-text searches.

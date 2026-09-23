@@ -68,6 +68,33 @@ func TestRankingAgainstMappingProbe(t *testing.T) {
 		}
 	}
 
+	// Generic request words go before the specimen: "urine routine examination" must keep urine.
+	urinalysis, err := store.Search(context.Background(), SearchParams{Query: "urine routine examination", ClassType: "lab", Limit: 3})
+	if err != nil {
+		t.Fatalf("search urine routine examination: %v", err)
+	}
+	for _, word := range urinalysis.DroppedWords {
+		if word == "urine" {
+			t.Errorf("urine routine examination: dropped the specimen, got %v", urinalysis.DroppedWords)
+		}
+	}
+	if urinalysis.Total == 0 {
+		t.Errorf("urine routine examination: want urine results, got none (dropped %v)", urinalysis.DroppedWords)
+	}
+
+	// Specimen words are never dropped, even when that means no results.
+	for _, query := range []string{"vitreous tap fungal culture", "glucose urine zzzz"} {
+		response, err := store.Search(context.Background(), SearchParams{Query: query, ClassType: "lab", Limit: 3})
+		if err != nil {
+			t.Fatalf("search %q: %v", query, err)
+		}
+		for _, word := range response.DroppedWords {
+			if specimenWords[word] {
+				t.Errorf("%q: dropped specimen word %q (dropped %v)", query, word, response.DroppedWords)
+			}
+		}
+	}
+
 	// "Widal" is not in LOINC; dropping it would leave only "test", matching thousands of terms.
 	widal, err := store.Search(context.Background(), SearchParams{Query: "widal test", Limit: 3})
 	if err != nil {

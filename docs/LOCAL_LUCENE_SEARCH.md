@@ -58,8 +58,10 @@ Every document includes:
 | field search | `Component:opiates System:hair` | searches a specific indexed field |
 
 Common English words (`an`, `as`, `at`, `by`, `for`, `from`, `in`, `into`, `is`, `of`, `on`,
-`per`, `the`, `to`, `via`, `with`) are dropped from plain words, so `glucose for blood` matches
-the same terms as `glucose blood` instead of requiring "for". They are kept inside quoted phrases,
+`per`, `the`, `to`, `via`, `with`) and generic request words (`routine`, `examination`, `exam`,
+`test`, `tests`, `level`, `levels`, `estimation`, `analysis`, `study`, `assay`, `investigation`,
+`report`) are dropped from plain words, so `glucose for blood` matches the same terms as
+`glucose blood` instead of requiring "for". They are kept inside quoted phrases,
 when used as a field name, and when nothing else is left to match. `a` (Hepatitis A), `no` (an
 answer value), and `and`/`or`/`not` are never dropped. The same list applies to the UI term
 search and `/api/v1/terms/search`.

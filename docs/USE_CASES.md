@@ -264,12 +264,14 @@ tests unless the query says "panel". Each MCP candidate carries `relevance`.
 - **Scope the search.** Pass `classType=lab` for lab tests; survey (PhenX) and attachment terms
   otherwise compete ("vitamin d" ranks a PhenX protocol #2 without it). For radiology use
   `class=RAD`. Several classes can be combined: `class=CHEM&class=SERO`. See §15.
-- **Send plain words.** Common words (for, of, the, in, ...) are ignored, and a whole-word match,
+- **Send plain words.** Common words (for, of, the, in, ...) and generic request words (routine,
+  examination, test, level, ...) are ignored, and a whole-word match,
   such as an abbreviation in LOINC's synonyms (CRP, HBsAg, TSH), outranks a prefix match. Strip
   local noise yourself: parenthesized codes ("BLOOD GROUP (BG)"), department prefixes.
 - **Handle `relaxed`.** When no term has every word, the search drops the most common words first
   and returns `relaxed: true` with `droppedWords` ("hba1c fasting" drops "fasting", keeps the
-  analyte). Record the dropped words with the mapping and treat relaxed results as lower
+  analyte). Specimen words (blood, urine, serum, CSF, fluid, ...) are never dropped: a result for
+  the wrong specimen is worse than none. Record the dropped words with the mapping and treat relaxed results as lower
   confidence. When only generic words would be left (a word LOINC never uses, such as "widal"),
   the search returns nothing rather than thousands of unrelated terms.
 - **Use `relevance` within one call only.** It depends on the query words, so compare candidates
@@ -277,7 +279,8 @@ tests unless the query says "panel". Each MCP candidate carries `relevance`.
 - **Deprecated terms are hidden** by default. Pass `status=DEPRECATED` or `status=*` only to map
   legacy codes (§6).
 - **Bring your own synonyms** for local terms LOINC doesn't use: ESR (LOINC says "Sed Rat"), USG
-  (LOINC says "US"), Widal (LOINC names the S. Typhi antibodies). The server does not expand
+  (LOINC says "US"), Widal (LOINC names the S. Typhi antibodies), "urine routine examination"
+  (urinalysis panel), "fungal" (LOINC says "Fungus"). The server does not expand
   synonyms beyond LOINC's related names.
 
 **Caveats:** compare against the Fully-Specified Name and its major axes, not display-name

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.93-rc5 - 2026-09-23
+
+- Generic request words (`routine`, `examination`, `exam`, `test`, `level`, `estimation`, `analysis`, `study`, `assay`, `investigation`, `report`) are now ignored like `for`/`the`: "potassium test" returns 2823-3 first instead of odd terms that happen to say "test", and "urine culture routine" returns 630-4.
+- The relaxed retry never drops specimen words (blood, urine, serum, plasma, CSF, sputum, stool, fluid, ...), so a query can't silently switch specimens; rc4 turned "urine routine examination" into "routine examination" junk.
+
 ## 0.93-rc4 - 2026-09-23
 
 - Added a `classType` filter (LOINC CLASSTYPE: `lab`, `clinical`, `attachment`, `survey`) to term search in the UI (new Type filter), `/api/v1`, `/api/search`, and MCP `loinc_search_terms`; `class` can now repeat to match several classes (previously the second value was silently ignored). Invalid `classType` returns 400.

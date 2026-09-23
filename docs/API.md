@@ -120,14 +120,18 @@ How `q` matches:
 - Every word must match, as a whole word or a prefix (`gluc` finds glucose). A whole-word match,
   for example an abbreviation such as `CRP` or `HBsAg` in LOINC's related names, ranks above a
   prefix-only match.
-- Common English words (`for`, `of`, `the`, `in`, …) are ignored unless nothing else is left.
+- Words that never narrow a LOINC search are ignored unless nothing else is left: English
+  function words (`for`, `of`, `the`, `in`, …) and generic request words (`routine`,
+  `examination`, `exam`, `test`, `level`, `estimation`, `analysis`, `study`, `assay`,
+  `investigation`, `report`). "potassium test" searches for potassium.
 - Relevance (the default order when `q` is present) blends three things: the text match, weighted
   by field (LOINC number, component, name, and display name most; related names less; the long
   definition least); how commonly the term is used (its common test or order rank, per
   `rankMode`); and demotions for TRIAL and DISCOURAGED terms and for panels, unless the query says
   "panel", "pnl", "battery", or "profile".
 - When no term matches every word, the search drops as few words as possible, dropping the most
-  common words first so the specific one (usually the analyte) is kept, and returns
+  common words first so the specific one (usually the analyte) is kept, and never dropping a
+  specimen word (blood, urine, serum, plasma, CSF, sputum, stool, fluid, …), and returns
   `"relaxed": true`, `"droppedWords": [...]`, and a `notice`. If only generic words would remain
   (more than 1,000 matches), it returns no results with a `notice` instead. Queries of more than
   six words are not relaxed.
