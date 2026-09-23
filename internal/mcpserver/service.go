@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -45,7 +46,7 @@ func (s *Service) store() (*loinc.Store, error) {
 
 type SearchTermsRequest struct {
 	Query           string   `json:"q,omitempty" jsonschema:"Search query or exact LOINC number"`
-	Status          string   `json:"status,omitempty" jsonschema:"Status filter. Defaults to active/non-inactive API behavior. Use INACTIVE or * only when needed."`
+	Status          string   `json:"status,omitempty" jsonschema:"Status filter. Defaults to every status except DEPRECATED. Use DEPRECATED or * only when needed."`
 	Statuses        []string `json:"statuses,omitempty" jsonschema:"Repeatable status filters"`
 	UsageType       string   `json:"usageType,omitempty" jsonschema:"any, observation, or order"`
 	RankMode        string   `json:"rankMode,omitempty" jsonschema:"observation or order"`
@@ -97,7 +98,7 @@ type HierarchyRequest struct {
 type HierarchyTermsRequest struct {
 	NodeID     string `json:"nodeId" jsonschema:"Hierarchy occurrence node ID"`
 	Query      string `json:"q,omitempty" jsonschema:"Optional term search query under the hierarchy node"`
-	Status     string `json:"status,omitempty" jsonschema:"Status filter. Use INACTIVE or * only when needed."`
+	Status     string `json:"status,omitempty" jsonschema:"Status filter. Use DEPRECATED or * only when needed."`
 	UsageType  string `json:"usageType,omitempty" jsonschema:"any, observation, or order"`
 	RankMode   string `json:"rankMode,omitempty" jsonschema:"observation or order"`
 	Sort       string `json:"sort,omitempty" jsonschema:"relevance, usage, or alpha"`
@@ -116,22 +117,28 @@ type PageResponse[T any] struct {
 	NextCallHint  string `json:"nextCallHint,omitempty"`
 	ContextHint   string `json:"contextHint,omitempty"`
 	RequestedFull bool   `json:"requestedFull,omitempty"`
+	// Relaxed is true when no result matched every query word; DroppedWords were left out.
+	Relaxed      bool     `json:"relaxed,omitempty"`
+	DroppedWords []string `json:"droppedWords,omitempty"`
 }
 
 type TermCandidate struct {
-	LOINCNum        string            `json:"loincNum"`
-	DisplayName     string            `json:"displayName"`
-	LongCommonName  string            `json:"longCommonName,omitempty"`
-	Status          string            `json:"status"`
-	UsageTypes      []string          `json:"usageTypes,omitempty"`
-	CommonTestRank  int               `json:"commonTestRank,omitempty"`
-	CommonOrderRank int               `json:"commonOrderRank,omitempty"`
-	System          string            `json:"system,omitempty"`
-	Class           string            `json:"class,omitempty"`
-	Scale           string            `json:"scale,omitempty"`
-	Property        string            `json:"property,omitempty"`
-	Notes           []string          `json:"notes,omitempty"`
-	Fields          map[string]string `json:"fields,omitempty"`
+	LOINCNum        string   `json:"loincNum"`
+	DisplayName     string   `json:"displayName"`
+	LongCommonName  string   `json:"longCommonName,omitempty"`
+	Status          string   `json:"status"`
+	UsageTypes      []string `json:"usageTypes,omitempty"`
+	CommonTestRank  int      `json:"commonTestRank,omitempty"`
+	CommonOrderRank int      `json:"commonOrderRank,omitempty"`
+	// Relevance is the text-match strength for the query (higher is better; 0 without query
+	// text). Compare it within one result set only; sort=relevance orders by it.
+	Relevance float64           `json:"relevance,omitempty"`
+	System    string            `json:"system,omitempty"`
+	Class     string            `json:"class,omitempty"`
+	Scale     string            `json:"scale,omitempty"`
+	Property  string            `json:"property,omitempty"`
+	Notes     []string          `json:"notes,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
 }
 
 type TermFitResponse struct {
@@ -165,8 +172,10 @@ func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (Page
 		Limit:         limit,
 		Offset:        offset,
 		HasMore:       response.HasMore,
+		Relaxed:       response.Relaxed,
+		DroppedWords:  response.DroppedWords,
 		NextCallHint:  nextCallHint("loinc_search_terms", response.HasMore, limit, offset),
-		ContextHint:   "Compact term candidates. Call loinc_get_term_fit before recommending a term.",
+		ContextHint:   firstNonEmpty(response.Notice, "Compact term candidates. Call loinc_get_term_fit before recommending a term."),
 		RequestedFull: req.Detail == "full",
 	}, nil
 }
@@ -385,6 +394,7 @@ func compactTerms(results []loinc.SearchResult, detail string) []TermCandidate {
 			UsageTypes:      result.UsageTypes,
 			CommonTestRank:  result.CommonTestRank,
 			CommonOrderRank: result.CommonOrderRank,
+			Relevance:       math.Round(-result.Rank*1000) / 1000,
 			System:          result.System,
 			Class:           result.Class,
 			Scale:           result.Scale,

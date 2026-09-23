@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.93-rc3 - 2026-09-23
+
+- HTTP servers (TCP and Unix socket) now time out header reads after 10 s and idle keep-alive connections after 120 s; `docs/USE_CASES.md` §3 documents client connection pooling.
+- Term search (UI, `/api/v1`, `/api/search`, MCP `loinc_search_terms`) now hides DEPRECATED terms by default, as documented; the old default excluded an `INACTIVE` status that LOINC releases don't use, so 4,991 deprecated terms appeared in every default search. `status=DEPRECATED` and `status=*` still browse them, and a typed LOINC number finds its term whatever its status.
+- When no term matches every word, term search drops as few words as possible (keeping the version that finds the most terms) and returns `relaxed`, `droppedWords`, and a `notice`; the UI shows the notice.
+- Term search ranks whole-word matches (e.g. an abbreviation like `CRP` in related names) above prefix-only matches, and weights relevance by field (name and component over related names over definition).
+- MCP `loinc_search_terms` results include a `relevance` score.
+
 ## 0.93-rc2 - 2026-09-23
 
 - Common English words (`for`, `of`, `the`, `in`, …) no longer become required search terms: "glucose for blood" now matches the same 114 terms as "glucose blood" in UI/`/api/v1` term search (previously 29) and `/searchapi`/Advanced search (previously 0). Quoted phrases, field names, and "a"/"no" are untouched.

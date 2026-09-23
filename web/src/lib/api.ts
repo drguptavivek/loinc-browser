@@ -24,6 +24,9 @@ export type SearchResponse = {
 	offset: number;
 	hasMore: boolean;
 	query: string;
+	relaxed?: boolean;
+	droppedWords?: string[];
+	notice?: string;
 	_links?: Links;
 };
 

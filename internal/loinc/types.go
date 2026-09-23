@@ -81,7 +81,11 @@ type SearchResponse struct {
 	Offset  int            `json:"offset"`
 	HasMore bool           `json:"hasMore"`
 	Query   string         `json:"query"`
-	Links   Links          `json:"_links,omitempty"`
+	// Relaxed is true when no term matched every word; DroppedWords are the words left out.
+	Relaxed      bool     `json:"relaxed,omitempty"`
+	DroppedWords []string `json:"droppedWords,omitempty"`
+	Notice       string   `json:"notice,omitempty"`
+	Links        Links    `json:"_links,omitempty"`
 }
 
 type SearchResult struct {

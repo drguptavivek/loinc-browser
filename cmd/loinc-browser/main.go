@@ -250,17 +250,24 @@ func runServe(args []string) error {
 	return serveUntilShutdown(handler, listener, unixListener, udpConn, termSvc)
 }
 
+// newHTTPServer bounds how long a client may take to send headers and how long an idle keep-alive
+// connection stays open, so pooled LAN clients can't pile up sockets forever. There is no write
+// timeout: an upload import or search-index rebuild runs inside one request.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+}
+
 // serveUntilShutdown runs the same handler on the TCP listener and, when non-nil, the Unix
 // socket listener concurrently, plus the Mode E UDP listener when udpConn is non-nil. It returns
 // when any server fails, or shuts all of them down gracefully on SIGINT/SIGTERM.
 func serveUntilShutdown(handler http.Handler, tcpListener, unixListener net.Listener, udpConn net.PacketConn, termSvc *terminology.Service) error {
-	tcpServer := &http.Server{Handler: handler}
+	tcpServer := newHTTPServer(handler)
 	servers := []*http.Server{tcpServer}
 	errCh := make(chan error, 3)
 	go func() { errCh <- tcpServer.Serve(tcpListener) }()
 
 	if unixListener != nil {
-		unixServer := &http.Server{Handler: handler}
+		unixServer := newHTTPServer(handler)
 		servers = append(servers, unixServer)
 		go func() { errCh <- unixServer.Serve(unixListener) }()
 	}

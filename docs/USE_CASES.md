@@ -116,6 +116,13 @@ of the plan (`$validate-code` reuses `$lookup` and runs ~0.1ms cheaper):
 | HTTP over Unix socket | not benchmarked separately; same handler, minus the TCP stack | same-host only; file permissions double as access control; opt in with `--unix-socket` / `LOINC_BROWSER_UNIX_SOCKET` |
 | UDP micro-protocol | ~0.86ms (`BenchmarkUDPLookup`) | skips HTTP framing; lossy by design; off by default (`--udp-addr` / `LOINC_BROWSER_UDP_ADDR`) |
 
+**Reuse connections.** The server keeps connections open between requests, but only a client
+that reuses one session benefits: `requests.Session()` or `httpx.Client()` in Python (not bare
+`requests.get`), one shared `http.Client` in Go (raise `Transport.MaxIdleConnsPerHost` above its
+default of 2 when running more than two requests in parallel), and `fetch` in Node 19+. Idle
+connections close after 120 s. Four to eight parallel requests suit SQLite's concurrent reads; the
+same applies to bulk MCP calls, which are plain JSON over HTTP here.
+
 For most pipelines, keep-alive HTTP over TCP or UDS is the right choice. UDP saves roughly 0.3–0.5ms
 per call, but only callers that already tolerate loss and retry idempotently should use it.
 

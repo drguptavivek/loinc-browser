@@ -49,7 +49,7 @@ var openAPISpec = map[string]any{
 		"/api/v1/terms/search": map[string]any{
 			"get": map[string]any{
 				"summary":     "Search ranked LOINC terms for EMR form fields",
-				"description": "Excludes inactive terms by default. Use status=INACTIVE to search inactive terms, or status=* to include every status.",
+				"description": "Excludes deprecated terms by default. Use status=DEPRECATED to browse them, or status=* to include every status. When no term matches every word, drops as few words as possible and returns relaxed=true with droppedWords.",
 				"parameters":  commonTermListParameters(),
 				"responses": map[string]any{
 					"200": response("Term search results", ref("SearchResponse")),
@@ -1036,7 +1036,7 @@ func commonTermListParameters() []map[string]any {
 	return []map[string]any{
 		queryParam("q", "Full-text query or exact LOINC number"),
 		queryParam("class", "LOINC class filter"),
-		arrayQueryParam("status", "LOINC status filter. Defaults to all statuses except INACTIVE. Use status=INACTIVE to search inactive terms, or status=* for all statuses."),
+		arrayQueryParam("status", "LOINC status filter. Defaults to all statuses except DEPRECATED. Use status=DEPRECATED to browse deprecated terms, or status=* for all statuses."),
 		queryParam("usageType", "Term usage filter: any, observation, or order"),
 		queryParam("rankMode", "Ranking mode: observation or order"),
 		queryParam("sort", "Sort mode: relevance, usage, or alpha"),

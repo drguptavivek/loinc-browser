@@ -93,6 +93,8 @@
 	let system = '';
 	let property = '';
 	let statuses: string[] = [];
+	// Set when no term matched every word and the server dropped some (e.g. "dropped: routine").
+	let searchNotice = '';
 	let timeAspects: string[] = [];
 	let scales: string[] = [];
 	let methods: string[] = [];
@@ -788,6 +790,7 @@
 			});
 			results = response.results;
 			total = response.total;
+			searchNotice = response.relaxed ? response.notice ?? '' : '';
 			updateURL(replaceURL);
 		} catch (err) {
 			error = errorMessage(err);
@@ -2710,7 +2713,7 @@
 					<div class="flex flex-wrap items-center gap-1.5">
 						<span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Filters</span>
 						{#if hasFacetChoices(facets.statuses, statuses)}
-							<MultiSelectDropdown label="Status" emptyLabel="Not inactive" options={facetEntries(facets.statuses)} selected={statuses} onToggle={(value) => toggleMulti('status', value)} onClear={() => clearFacet('status')} />
+							<MultiSelectDropdown label="Status" emptyLabel="Not deprecated" options={facetEntries(facets.statuses)} selected={statuses} onToggle={(value) => toggleMulti('status', value)} onClear={() => clearFacet('status')} />
 						{/if}
 						{#if hasFacetChoices(facets.timeAspects, timeAspects)}
 							<MultiSelectDropdown label="Time" options={facetEntries(facets.timeAspects)} selected={timeAspects} onToggle={(value) => toggleMulti('timeAspect', value)} onClear={() => clearFacet('timeAspect')} />
@@ -2769,6 +2772,7 @@
 				<div class="flex items-center justify-between border-b border-zinc-200 px-4 py-3 lg:shrink-0">
 					<p class="text-sm text-zinc-500">
 						{#if loading}Searching...{:else}Showing {results.length.toLocaleString()} of {total.toLocaleString()} terms{/if}
+						{#if searchNotice && !loading}<span class="ml-1 text-amber-700" data-testid="search_relaxed_notice">{searchNotice}</span>{/if}
 					</p>
 					<div class="flex items-center gap-2">
 						<Button variant="outline" size="sm" disabled={offset === 0 || loading} on:click={() => runSearch(Math.max(0, offset - limit))}>Previous</Button>

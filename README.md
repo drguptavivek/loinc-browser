@@ -152,7 +152,7 @@ The browser UI is served at:
 http://localhost:9005
 ```
 
-It supports ranked search, browse-by-hierarchy, facets, relationship exploration, panels/forms, answer lists, parts, groups, and source/copyright metadata. v1 term lists exclude `STATUS=INACTIVE` by default; pass `status=INACTIVE` to search inactive terms, or `status=*` to include every status.
+It supports ranked search, browse-by-hierarchy, facets, relationship exploration, panels/forms, answer lists, parts, groups, and source/copyright metadata. v1 term lists hide `STATUS=DEPRECATED` by default; pass `status=DEPRECATED` to browse deprecated terms, or `status=*` to include every status. When no term matches every word, the search drops as few words as possible and says which (`relaxed`, `droppedWords`).
 
 The browser also includes a local loader for uploading a licensed LOINC release ZIP. Uploaded releases are extracted under `data/uploads/`, ingested into the configured SQLite database, and remain outside git.
 

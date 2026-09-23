@@ -125,12 +125,101 @@ func (s *Store) Close() error {
 
 func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	params = NormalizeTermListParams(params)
+	query := strings.TrimSpace(params.Query)
+	if loincNumberRegexp.MatchString(query) {
+		// A typed LOINC number finds that term whatever its status, deprecated included.
+		if _, explicit := normalizedStatusValues(params.Status, params.Statuses); !explicit {
+			params.Status = "*"
+		}
+	}
+	response, err := s.search(ctx, params, makeFTSQuery(query))
+	if err != nil || response.Total > 0 {
+		return response, err
+	}
+	// Every word is required, so one generic word ("routine") can empty the result. Drop as few
+	// words as possible, preferring the drop that finds the most terms (the dropped word was the
+	// noise), and say which words were dropped.
+	terms := ftsTerms(query)
+	words := DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1))
+	if len(terms) < 2 || len(terms) > maxRelaxedWords {
+		return response, nil
+	}
+	countParams := params
+	countParams.Limit, countParams.Offset = 1, 0
+	for keep := len(terms) - 1; keep >= 1; keep-- {
+		best, bestTotal := []int(nil), 0
+		for _, subset := range combinations(len(terms), keep) {
+			probe, err := s.search(ctx, countParams, joinFTSTerms(terms, subset))
+			if err != nil {
+				return response, err
+			}
+			if probe.Total > bestTotal {
+				best, bestTotal = subset, probe.Total
+			}
+		}
+		if best == nil {
+			continue
+		}
+		relaxed, err := s.search(ctx, params, joinFTSTerms(terms, best))
+		if err != nil {
+			return response, err
+		}
+		relaxed.Relaxed = true
+		relaxed.DroppedWords = droppedWords(words, best)
+		relaxed.Notice = "No term matched every word; dropped: " + strings.Join(relaxed.DroppedWords, ", ") + "."
+		return relaxed, nil
+	}
+	return response, nil
+}
+
+// maxRelaxedWords caps the drop-a-word retry: n words cost at most 2^n small count queries.
+const maxRelaxedWords = 6
+
+func joinFTSTerms(terms []string, indexes []int) string {
+	kept := make([]string, 0, len(indexes))
+	for _, i := range indexes {
+		kept = append(kept, terms[i])
+	}
+	return strings.Join(kept, " AND ")
+}
+
+func droppedWords(words []string, kept []int) []string {
+	keep := map[int]bool{}
+	for _, i := range kept {
+		keep[i] = true
+	}
+	dropped := []string{}
+	for i, word := range words {
+		if !keep[i] {
+			dropped = append(dropped, word)
+		}
+	}
+	return dropped
+}
+
+// combinations returns every k-element subset of 0..n-1, in lexicographic order.
+func combinations(n, k int) [][]int {
+	var out [][]int
+	var walk func(start int, picked []int)
+	walk = func(start int, picked []int) {
+		if len(picked) == k {
+			out = append(out, append([]int(nil), picked...))
+			return
+		}
+		for i := start; i < n; i++ {
+			walk(i+1, append(picked, i))
+		}
+	}
+	walk(0, nil)
+	return out
+}
+
+func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string) (SearchResponse, error) {
 	limit := params.Limit
 	offset := params.Offset
 
 	where, args := filterClauses(params, "t")
 	query := strings.TrimSpace(params.Query)
-	ftsQuery := makeFTSQuery(query)
 	exactLOINC := loincNumberRegexp.MatchString(query)
 	if exactLOINC {
 		where = append(where, "t.loinc_num = ? collate nocase")
@@ -191,7 +280,7 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 	order := termOrderClause(params.Sort, rankColumn, ftsQuery != "")
 	selectRank := `0.0 as rank`
 	if ftsQuery != "" {
-		selectRank = `bm25(loinc_terms_fts) as rank`
+		selectRank = `bm25(loinc_terms_fts, ` + ftsColumnWeights + `) as rank`
 	}
 
 	searchQuery := `select distinct
@@ -1145,8 +1234,10 @@ func filterClauses(params SearchParams, alias string) ([]string, []any) {
 	add("property", params.Property)
 	statusValues, explicitStatus := normalizedStatusValues(params.Status, params.Statuses)
 	if !explicitStatus {
-		where = append(where, fmt.Sprintf("%s.status <> ?", alias))
-		args = append(args, "INACTIVE")
+		// Hide deprecated (and legacy INACTIVE) terms unless a status is asked for, e.g.
+		// status=DEPRECATED or status=*.
+		where = append(where, fmt.Sprintf("%s.status not in (?, ?)", alias))
+		args = append(args, "DEPRECATED", "INACTIVE")
 	} else if len(statusValues) == 1 {
 		where = append(where, fmt.Sprintf("%s.status = ?", alias))
 		args = append(args, statusValues[0])
@@ -1435,9 +1526,20 @@ func DropStopWords(tokens []string) []string {
 }
 
 func makeFTSQuery(query string) string {
+	return strings.Join(ftsTerms(query), " AND ")
+}
+
+// ftsColumnWeights weights bm25 per loinc_terms_fts column (loinc_num, long_common_name,
+// short_name, component, related_names, consumer_name, definition, display_name, system, property,
+// scale, method, class): a word in the name, component, or synonyms outranks one buried in a long
+// definition.
+// ponytail: hand-picked weights, not tuned against a labelled query set; tune if one appears.
+const ftsColumnWeights = `10.0, 5.0, 3.0, 6.0, 2.0, 2.0, 0.3, 4.0, 2.0, 1.0, 1.0, 1.0, 0.5`
+
+func ftsTerms(query string) []string {
 	tokens := DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1))
 	if len(tokens) == 0 {
-		return ""
+		return nil
 	}
 	parts := make([]string, 0, len(tokens))
 	for _, token := range tokens {
@@ -1445,7 +1547,9 @@ func makeFTSQuery(query string) string {
 			parts = append(parts, token)
 			continue
 		}
-		parts = append(parts, token+"*")
+		// The prefix finds longer words ("gluc" -> glucose); the exact token also matching makes a
+		// whole-word hit, such as an abbreviation like "crp" in the synonyms, score higher.
+		parts = append(parts, "("+token+" OR "+token+"*)")
 	}
-	return strings.Join(parts, " ")
+	return parts
 }

@@ -107,13 +107,25 @@ All shared term-list routes use the same defaults unless a route says otherwise:
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `q` | empty | Full-text search query or exact LOINC number. |
-| `status` | not `INACTIVE` | Repeatable status filter. Use `status=INACTIVE` to search inactive terms, or `status=*` to include all statuses. |
+| `status` | not `DEPRECATED` | Repeatable status filter. Use `status=DEPRECATED` to browse deprecated terms, or `status=*` to include all statuses. An exact LOINC number in `q` finds that term whatever its status. |
 | `usageType` | `any` | `any`, `observation`, or `order`. |
 | `rankMode` | `observation` | Which rank field drives usage sorting and `rankedOnly`. |
 | `sort` | `relevance` when `q` is present, otherwise `usage` | `relevance`, `usage`, or `alpha`. |
 | `rankedOnly` | `false` | When true, require a positive rank in the selected `rankMode`. |
 | `limit` | `25` | Maximum rows to return. Term-list maximum is `100`. |
 | `offset` | `0` | Result offset. |
+
+How `q` matches:
+
+- Every word must match, as a whole word or a prefix (`gluc` finds glucose). A whole-word match,
+  for example an abbreviation such as `CRP` or `HBsAg` in LOINC's related names, ranks above a
+  prefix-only match.
+- Common English words (`for`, `of`, `the`, `in`, …) are ignored unless nothing else is left.
+- Relevance weights where a word appears: LOINC number, component, name, and display name count
+  most; related names count less; the long definition counts least.
+- When no term matches every word, the search drops as few words as possible, keeping the version
+  that finds the most terms, and returns `"relaxed": true`, `"droppedWords": [...]`, and a
+  `notice`. Queries of more than six words are not relaxed.
 
 Additional term filters:
 
@@ -491,8 +503,9 @@ curl 'http://localhost:9005/api/v1/terms/search?q=glucose&usageType=observation&
 Recommended UI behavior:
 
 - Display `longCommonName`, `status`, `orderObs`, `usageTypes`, and rank values.
-- Default to all non-inactive terms.
-- Let users explicitly search inactive terms with `status=INACTIVE`, or include every status with `status=*`.
+- Default to all non-deprecated terms.
+- Let users explicitly browse deprecated terms with `status=DEPRECATED`, or include every status with `status=*`.
+- Show the `notice` when a response is `relaxed`, so users know some words were dropped.
 - Use `_links.self` for detail and `_links.relationships` for follow-up exploration.
 
 ### 2. Browse commonly used terms

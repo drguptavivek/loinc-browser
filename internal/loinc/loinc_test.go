@@ -52,13 +52,33 @@ func TestIngestSearchFacetsAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("browse search failed: %v", err)
 	}
-	if len(browse.Results) != 3 {
-		t.Fatalf("expected 3 non-inactive CHEM browse results, got %#v", browse.Results)
+	if len(browse.Results) != 2 {
+		t.Fatalf("expected 2 non-deprecated CHEM browse results, got %#v", browse.Results)
 	}
 	for _, term := range browse.Results {
-		if term.Status == "INACTIVE" {
-			t.Fatalf("default browse should exclude INACTIVE terms, got %#v", browse.Results)
+		if term.Status == "INACTIVE" || term.Status == "DEPRECATED" {
+			t.Fatalf("default browse should exclude DEPRECATED and INACTIVE terms, got %#v", browse.Results)
 		}
+	}
+
+	typedDeprecated, err := store.Search(ctx, SearchParams{Query: "1999-9", Limit: 10})
+	if err != nil {
+		t.Fatalf("typed deprecated LOINC search failed: %v", err)
+	}
+	if len(typedDeprecated.Results) != 1 || typedDeprecated.Results[0].Status != "DEPRECATED" {
+		t.Fatalf("a typed LOINC number should find its deprecated term, got %#v", typedDeprecated.Results)
+	}
+
+	relaxed, err := store.Search(ctx, SearchParams{Query: "glucose zebra", Limit: 10})
+	if err != nil {
+		t.Fatalf("relaxed search failed: %v", err)
+	}
+	if !relaxed.Relaxed || relaxed.Total == 0 || len(relaxed.DroppedWords) != 1 || relaxed.DroppedWords[0] != "zebra" {
+		t.Fatalf("expected a relaxed fallback when no term has every word, got %#v", relaxed)
+	}
+	strict, err := store.Search(ctx, SearchParams{Query: "glucose plasma", Limit: 10})
+	if err != nil || strict.Relaxed {
+		t.Fatalf("a query with full matches must not be relaxed, got %#v %v", strict, err)
 	}
 
 	deprecated, err := store.Search(ctx, SearchParams{Status: "DEPRECATED", Limit: 10})
