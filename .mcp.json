@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "loinc": {
+      "type": "http",
+      "url": "http://localhost:9005/mcp"
+    }
+  }
+}

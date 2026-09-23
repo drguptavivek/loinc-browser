@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.93-rc2 - 2026-09-23
+
+- Common English words (`for`, `of`, `the`, `in`, …) no longer become required search terms: "glucose for blood" now matches the same 114 terms as "glucose blood" in UI/`/api/v1` term search (previously 29) and `/searchapi`/Advanced search (previously 0). Quoted phrases, field names, and "a"/"no" are untouched.
+- Fixed the local search index reporting an interrupted build as ready: rebuilds now build beside the live index and swap it in when finished, so the old index keeps answering and a failed build never replaces it. Status reports `incomplete` (queries refused) for an index without the completion marker, `stale` (queries still answered) for one built before the current import, and `building` while a rebuild runs.
+- A release uploaded through the UI now rebuilds the local search index automatically in the background.
+- Advanced search shows a notice for building, stale, and incomplete indexes and polls status while a build runs.
+- Embedded `docs/*.md` and `docs/agent/*.md` in the binary; when the docs directory is missing (packaged installs), startup copies them to `<data dir>/docs/` so MCP concept tools and `/docs/*` pages work.
+- Added a project `.mcp.json` registering the running server with Claude Code, and MCP client setup docs (Claude Code scopes, stdio vs HTTP, Claude Desktop) in `docs/MCP.md`, `docs/DEPLOYMENT.md`, and the README.
+
 ## 0.93-rc1 - 2026-09-23
 
 - Added a per-user data directory: `LOINC_BROWSER_DATA_DIR`, else `./data` when present, else `~/Library/Application Support/loinc-browser` (macOS), `%AppData%\loinc-browser` (Windows), or `$XDG_DATA_HOME`/`~/.local/share/loinc-browser` (Linux). Database, uploads, search index, app key, and settings all live there; startup prints it, auto-import also looks for `Loinc*.zip` there, and a `.env` there is loaded. `ingest` now loads `.env` too.

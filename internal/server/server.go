@@ -76,6 +76,7 @@ func New(options Options) http.Handler {
 		officialPassphrase: options.OfficialPassphrase,
 		officialEnv:        options.OfficialEnvCredentials,
 		localSearch:        newLocalSearchService(options.SearchIndexPath),
+		autoRebuildSearch:  strings.TrimSpace(options.SearchIndexPath) != "",
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
@@ -182,6 +183,9 @@ type app struct {
 	officialPassphrase string
 	officialEnv        OfficialCredentials
 	localSearch        *localSearchService
+	// autoRebuildSearch is set when the caller configured an explicit index path, so tests that
+	// leave it empty never write an index into the working directory.
+	autoRebuildSearch bool
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {

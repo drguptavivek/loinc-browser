@@ -4,11 +4,13 @@ This document describes the local Lucene-style search index planned and exposed 
 
 ## Storage and lifecycle
 
-- Default index path: `./data/loinc-search.bleve/`
+- Default index path: `<data dir>/loinc-search.bleve/`
 - Environment override: `LOINC_SEARCH_INDEX_PATH`
 - Index engine: Bleve v2, an embedded Go search engine with Lucene-style query strings
-- Lifecycle: manual rebuild first, through `POST /api/v1/local-search/rebuild`
-- Status: `GET /api/v1/local-search/status`
+- Lifecycle: build with `POST /api/v1/local-search/rebuild` after a first-run or `ingest` import; a
+  release uploaded through the UI rebuilds it automatically
+- Status: `GET /api/v1/local-search/status` (`ready`, `stale`, `incomplete`, `missing`, plus
+  `building`; see [`DEPLOYMENT.md`](DEPLOYMENT.md#search-index))
 
 The index is generated local data and must not be committed. If the local SQLite database lacks future expanded search-source tables, status should report partial coverage or `requires_reingest` for fields that cannot be populated from the current normalized schema.
 
@@ -54,6 +56,13 @@ Every document includes:
 | wildcard `*` | `artemi*` | multi-character wildcard |
 | wildcard `?` | `80619-?` | single-character wildcard |
 | field search | `Component:opiates System:hair` | searches a specific indexed field |
+
+Common English words (`an`, `as`, `at`, `by`, `for`, `from`, `in`, `into`, `is`, `of`, `on`,
+`per`, `the`, `to`, `via`, `with`) are dropped from plain words, so `glucose for blood` matches
+the same terms as `glucose blood` instead of requiring "for". They are kept inside quoted phrases,
+when used as a field name, and when nothing else is left to match. `a` (Hepatitis A), `no` (an
+answer value), and `and`/`or`/`not` are never dropped. The same list applies to the UI term
+search and `/api/v1/terms/search`.
 
 ## Advanced query syntax
 

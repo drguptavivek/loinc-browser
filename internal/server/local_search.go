@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blevesearch/bleve/v2"
@@ -24,9 +25,14 @@ import (
 
 const defaultLocalSearchIndexPath = "./data/loinc-search.bleve"
 
+// localSearchBuiltAtKey is written as the last step of a successful build, so an index without it
+// was interrupted mid-build.
+const localSearchBuiltAtKey = "loinc-browser-local-search-built-at"
+
 type localSearchService struct {
-	path string
-	mu   sync.Mutex
+	path     string
+	mu       sync.Mutex
+	building atomic.Bool
 }
 
 type LocalSearchStatus struct {
@@ -37,6 +43,9 @@ type LocalSearchStatus struct {
 	FieldCoverage map[string]string `json:"fieldCoverage,omitempty"`
 	Warnings      []string          `json:"warnings,omitempty"`
 	Message       string            `json:"message,omitempty"`
+	// Building is true while a rebuild runs; the previous index (if any) keeps serving until the
+	// new one is swapped in.
+	Building bool `json:"building,omitempty"`
 }
 
 type LocalSearchRequest struct {
@@ -103,6 +112,7 @@ func (s *localSearchService) status(ctx context.Context, store *loinc.Store) Loc
 		IndexPath:     s.path,
 		FieldCoverage: localSearchFieldCoverage(),
 	}
+	status.Building = s.building.Load()
 	if store == nil {
 		status.State = "requires_reingest"
 		status.Message = "local LOINC database is not loaded"
@@ -138,11 +148,34 @@ func (s *localSearchService) status(ctx context.Context, store *loinc.Store) Loc
 		status.Message = "local Lucene index is empty; rebuild it"
 		return status
 	}
+	builtAt, ok := indexBuiltAt(index)
+	if !ok {
+		status.State = "incomplete"
+		status.Message = "local Lucene index build did not finish; rebuild it"
+		return status
+	}
+	status.UpdatedAt = builtAt.Format(time.RFC3339)
+	if importedAt, err := store.ImportedAt(ctx); err == nil && builtAt.Before(importedAt) {
+		status.State = "stale"
+		status.Message = "local Lucene index predates the current LOINC import; rebuild it"
+		return status
+	}
 	status.State = "ready"
 	status.Message = "local Lucene index is ready"
+	if status.Building {
+		status.Message = "local Lucene index is ready; a rebuild is in progress"
+	}
 	status.Warnings = localSearchCoverageWarnings()
-	_ = ctx
 	return status
+}
+
+func indexBuiltAt(index bleve.Index) (time.Time, bool) {
+	raw, err := index.GetInternal([]byte(localSearchBuiltAtKey))
+	if err != nil || len(raw) == 0 {
+		return time.Time{}, false
+	}
+	builtAt, err := time.Parse(time.RFC3339, string(raw))
+	return builtAt, err == nil
 }
 
 func (s *localSearchService) rebuild(ctx context.Context, store *loinc.Store) (LocalSearchStatus, error) {
@@ -151,15 +184,20 @@ func (s *localSearchService) rebuild(ctx context.Context, store *loinc.Store) (L
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.RemoveAll(s.path); err != nil {
-		return LocalSearchStatus{}, fmt.Errorf("remove local Lucene index: %w", err)
+	s.building.Store(true)
+	defer s.building.Store(false)
+	// Build beside the live index and swap it in at the end, so the old index keeps serving during
+	// the build and an interrupted build never replaces it.
+	buildPath := s.path + ".building"
+	if err := os.RemoveAll(buildPath); err != nil {
+		return LocalSearchStatus{}, fmt.Errorf("remove leftover local Lucene build: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return LocalSearchStatus{}, fmt.Errorf("create local Lucene index directory: %w", err)
 	}
 	mapping := bleve.NewIndexMapping()
 	mapping.DefaultField = "_all"
-	index, err := bleve.New(s.path, mapping)
+	index, err := bleve.New(buildPath, mapping)
 	if err != nil {
 		return LocalSearchStatus{}, fmt.Errorf("create local Lucene index: %w", err)
 	}
@@ -179,20 +217,32 @@ func (s *localSearchService) rebuild(ctx context.Context, store *loinc.Store) (L
 		}
 		return nil
 	}); err != nil {
+		_ = index.Close()
 		return LocalSearchStatus{}, fmt.Errorf("index local Lucene documents: %w", err)
 	}
 	if batch.Size() > 0 {
 		if err := index.Batch(batch); err != nil {
+			_ = index.Close()
 			return LocalSearchStatus{}, fmt.Errorf("commit local Lucene index batch: %w", err)
 		}
 	}
-	if err := index.SetInternal([]byte("loinc-browser-local-search-built-at"), []byte(time.Now().Format(time.RFC3339))); err != nil {
+	if err := index.SetInternal([]byte(localSearchBuiltAtKey), []byte(time.Now().Format(time.RFC3339))); err != nil {
 		_ = index.Close()
 		return LocalSearchStatus{}, fmt.Errorf("write local Lucene index metadata: %w", err)
 	}
 	if err := index.Close(); err != nil {
 		return LocalSearchStatus{}, fmt.Errorf("close local Lucene index: %w", err)
 	}
+	previousPath := s.path + ".previous"
+	_ = os.RemoveAll(previousPath)
+	if err := os.Rename(s.path, previousPath); err != nil && !os.IsNotExist(err) {
+		return LocalSearchStatus{}, fmt.Errorf("move previous local Lucene index aside: %w", err)
+	}
+	if err := os.Rename(buildPath, s.path); err != nil {
+		return LocalSearchStatus{}, fmt.Errorf("install rebuilt local Lucene index: %w", err)
+	}
+	_ = os.RemoveAll(previousPath)
+	s.building.Store(false)
 	status := s.status(ctx, store)
 	status.DocCount = uint64(count)
 	status.State = "ready"
@@ -228,6 +278,9 @@ func (s *localSearchService) query(ctx context.Context, store *loinc.Store, requ
 		return LocalSearchResponse{}, http.StatusServiceUnavailable, errors.New("local Lucene index is not ready; rebuild it")
 	}
 	defer index.Close()
+	if _, ok := indexBuiltAt(index); !ok {
+		return LocalSearchResponse{}, http.StatusServiceUnavailable, errors.New("local Lucene index build did not finish; rebuild it")
+	}
 
 	queryText, warnings := rewriteLocalSearchQuery(scope, request.Query)
 	var userQuery query.Query
@@ -290,6 +343,9 @@ func (s *localSearchService) matchingKeys(ctx context.Context, scope string, que
 		return nil, 0, errors.New("local Lucene index is not ready; rebuild it")
 	}
 	defer index.Close()
+	if _, ok := indexBuiltAt(index); !ok {
+		return nil, 0, errors.New("local Lucene index build did not finish; rebuild it")
+	}
 	rewritten, _ := rewriteLocalSearchQuery(scope, queryText)
 	var userQuery query.Query
 	if strings.TrimSpace(rewritten) == "" {
@@ -613,24 +669,39 @@ func (p *localLuceneParser) parseOr(field string) (query.Query, error) {
 
 func (p *localLuceneParser) parseAnd(field string) (query.Query, error) {
 	parts := []query.Query{}
-	first, err := p.parseUnary(field)
-	if err != nil {
-		return nil, err
-	}
-	parts = append(parts, first)
+	stops := []query.Query{}
 	for {
+		stop := p.atBareStopWord()
+		part, err := p.parseUnary(field)
+		if err != nil {
+			return nil, err
+		}
+		if stop {
+			stops = append(stops, part)
+		} else {
+			parts = append(parts, part)
+		}
 		switch p.peek().kind {
 		case localLuceneTokenEOF, localLuceneTokenRParen, localLuceneTokenOr:
+			// Stop words only count when nothing else is left to match.
+			if len(parts) == 0 {
+				parts = stops
+			}
 			return conjunctionForLocalLucene(parts), nil
 		case localLuceneTokenAnd:
 			p.next()
 		}
-		next, err := p.parseUnary(field)
-		if err != nil {
-			return nil, err
-		}
-		parts = append(parts, next)
 	}
+}
+
+// atBareStopWord reports whether the next token is a plain word (not a field name, phrase, or
+// wildcard/fuzzy term) that is a stop word.
+func (p *localLuceneParser) atBareStopWord() bool {
+	token := p.peek()
+	if token.kind != localLuceneTokenWord || !loinc.IsStopWord(token.value) {
+		return false
+	}
+	return p.pos+1 >= len(p.tokens) || p.tokens[p.pos+1].kind != localLuceneTokenColon
 }
 
 func (p *localLuceneParser) parseUnary(field string) (query.Query, error) {

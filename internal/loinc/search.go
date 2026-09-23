@@ -1406,8 +1406,36 @@ func containsValue(values []string, needle string) bool {
 var ftsTokenRegexp = regexp.MustCompile(`[[:alnum:]]+`)
 var loincNumberRegexp = regexp.MustCompile(`^\d+-\d+$`)
 
+// stopWords are English function words that never carry LOINC meaning. Every search term is
+// ANDed, so "glucose for blood" would otherwise require "for" too. Deliberately excludes "a"
+// (Hepatitis A), "no" (an answer value), and the Lucene operators "and"/"or"/"not".
+var stopWords = map[string]bool{
+	"an": true, "as": true, "at": true, "by": true, "for": true, "from": true, "in": true,
+	"into": true, "is": true, "of": true, "on": true, "per": true, "the": true, "to": true,
+	"via": true, "with": true,
+}
+
+// IsStopWord reports whether word is dropped from free-text searches.
+func IsStopWord(word string) bool {
+	return stopWords[strings.ToLower(word)]
+}
+
+// DropStopWords removes stop words from tokens unless that would leave none.
+func DropStopWords(tokens []string) []string {
+	kept := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if !IsStopWord(token) {
+			kept = append(kept, token)
+		}
+	}
+	if len(kept) == 0 {
+		return tokens
+	}
+	return kept
+}
+
 func makeFTSQuery(query string) string {
-	tokens := ftsTokenRegexp.FindAllString(strings.ToLower(query), -1)
+	tokens := DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1))
 	if len(tokens) == 0 {
 		return ""
 	}

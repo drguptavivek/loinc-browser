@@ -200,6 +200,9 @@
 	let localLuceneLoading = false;
 	let localLuceneRebuilding = false;
 	let localLuceneStatus: LocalSearchStatus | null = null;
+	// A stale index still answers (results may miss the latest import); an incomplete one does not.
+	$: localLuceneSearchable = localLuceneStatus?.state === 'ready' || localLuceneStatus?.state === 'stale';
+	$: localLuceneBuilding = localLuceneRebuilding || !!localLuceneStatus?.building;
 	let localLuceneResult: LocalSearchResponse | null = null;
 	let advancedSearchHelpOpen = false;
 	let advancedFiltersOpen = false;
@@ -689,9 +692,14 @@
 		}
 	}
 
+	let localLuceneStatusTimer: ReturnType<typeof setTimeout> | undefined;
+
 	async function loadLocalLuceneStatus() {
+		clearTimeout(localLuceneStatusTimer);
 		try {
 			localLuceneStatus = await getLocalSearchStatus();
+			// Another tab, or an upload import, may be rebuilding; poll until it finishes.
+			if (localLuceneStatus.building) localLuceneStatusTimer = setTimeout(loadLocalLuceneStatus, 3000);
 		} catch (err) {
 			localLuceneStatus = {
 				state: 'error',
@@ -2018,21 +2026,33 @@
 							<HelpCircle size={14} />
 							Help
 						</Button>
-						{#if localLuceneStatus?.state !== 'ready'}
-							<Button type="button" size="sm" on:click={rebuildLocalLuceneIndex} disabled={localLuceneRebuilding}>
+						{#if localLuceneStatus?.state !== 'ready' || localLuceneBuilding}
+							<Button type="button" size="sm" on:click={rebuildLocalLuceneIndex} disabled={localLuceneBuilding}>
 								<RefreshCcw size={14} />
-								{localLuceneRebuilding ? 'Building...' : 'Build index'}
+								{localLuceneBuilding ? 'Building...' : localLuceneStatus?.state === 'missing' ? 'Build index' : 'Rebuild index'}
 							</Button>
 						{/if}
 					</div>
 				</div>
 				<div class="lg:min-h-0 lg:flex-1 lg:overflow-auto">
 					<div class="flex flex-col gap-4 p-4">
+						{#if localLuceneBuilding || localLuceneStatus?.state === 'stale' || localLuceneStatus?.state === 'incomplete'}
+							<div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status" data-testid="local_lucene_index_notice">
+								{#if localLuceneBuilding}
+									Search index is building (about 25 seconds for a full release).
+									{localLuceneSearchable ? 'The previous index keeps answering until it finishes.' : 'Search is available when it finishes.'}
+								{:else if localLuceneStatus?.state === 'stale'}
+									The search index predates the current LOINC import, so results may be outdated. Rebuild it.
+								{:else}
+									The last index build did not finish, so it cannot be used. Rebuild it.
+								{/if}
+							</div>
+						{/if}
 						<section class="rounded-lg border border-zinc-200 bg-white p-4" data-testid="local_lucene_form_card">
 							<form class="flex flex-col gap-4" on:submit|preventDefault={runAdvancedSearchFromStart}>
 								<div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
 									<Input ariaLabel="Search query" className="h-11 text-base" bind:value={localLuceneQuery} placeholder="morphine AND cutoff" />
-									<Button type="submit" className="h-11" disabled={localLuceneLoading || localLuceneStatus?.state !== 'ready'}>
+									<Button type="submit" className="h-11" disabled={localLuceneLoading || !localLuceneSearchable}>
 										<Search size={16} />
 										{localLuceneLoading ? 'Searching...' : 'Search'}
 									</Button>
@@ -2097,7 +2117,7 @@
 											Searching...
 										{:else if localLuceneResult}
 											{localLuceneResult.total.toLocaleString()} matches; showing {localLuceneOffset + 1}-{Math.min(localLuceneOffset + localLuceneResult.results.length, localLuceneResult.total)}
-										{:else if localLuceneStatus?.state !== 'ready'}
+										{:else if !localLuceneSearchable}
 											Build the search index before running a query.
 										{:else}
 											Enter a query to search.

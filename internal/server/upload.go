@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,6 +103,15 @@ func (a *app) uploadImport(w http.ResponseWriter, r *http.Request) {
 	if err := a.swapStore(store); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("swap uploaded database: %w", err))
 		return
+	}
+	// The local search index now predates this import; rebuild it in the background. The previous
+	// index keeps answering (reported as stale) until the new one is swapped in.
+	if a.autoRebuildSearch {
+		go func() {
+			if _, err := a.localSearch.rebuild(context.Background(), store); err != nil {
+				log.Printf("rebuild local search index after upload import: %v", err)
+			}
+		}()
 	}
 
 	writeJSON(w, http.StatusOK, uploadResponse{

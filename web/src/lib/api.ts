@@ -275,6 +275,7 @@ export type LocalSearchStatus = {
 	fieldCoverage?: Record<string, string>;
 	warnings?: string[];
 	message?: string;
+	building?: boolean;
 };
 
 export type LocalSearchRequest = {

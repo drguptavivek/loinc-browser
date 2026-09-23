@@ -8,6 +8,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // skipLazyIndex reports whether s is read-only, logging the "lazy indexes disabled" notice once
@@ -110,6 +111,20 @@ func (s *Store) ReleaseVersion(ctx context.Context) (string, error) {
 		return "", ErrNotFound
 	}
 	return version, nil
+}
+
+// ImportedAt returns when the loaded release was imported (import_meta.imported_at). Returns
+// ErrNotFound when the row is absent or unparseable.
+func (s *Store) ImportedAt(ctx context.Context) (time.Time, error) {
+	var value string
+	if err := s.db.QueryRowContext(ctx, `select value from import_meta where key = 'imported_at'`).Scan(&value); err != nil {
+		return time.Time{}, ErrNotFound
+	}
+	importedAt, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, ErrNotFound
+	}
+	return importedAt, nil
 }
 
 // RawTable resolves relPath (a path relative to the release directory, e.g.

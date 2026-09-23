@@ -23,6 +23,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"loinc-browser/docs"
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
 	"loinc-browser/internal/server"
@@ -180,6 +181,7 @@ func runServe(args []string) error {
 		return err
 	}
 	fmt.Printf("Data directory: %s\n", dataDir())
+	cfg.DocsDir = resolveDocsDir(cfg.DocsDir)
 	if err := ensureDatabaseFromLocalZip(context.Background(), ".", cfg.DBPath); err != nil {
 		return err
 	}
@@ -495,6 +497,7 @@ func runMCP(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.DocsDir = resolveDocsDir(cfg.DocsDir)
 	dbPath := defaultDBPath()
 	if err := ensureDatabaseFromLocalZip(context.Background(), ".", dbPath); err != nil {
 		return err
@@ -737,6 +740,25 @@ func prepareUnixSocketPath(path string) error {
 		return fmt.Errorf("removing stale unix socket %q: %w", path, err)
 	}
 	return nil
+}
+
+// resolveDocsDir returns dir when it exists on disk. Otherwise (an installed binary with no docs/
+// beside it) it refreshes the embedded docs into <data dir>/docs and returns its agent/ folder,
+// keeping the docs/ + docs/agent/ layout the server and MCP readers expect.
+func resolveDocsDir(dir string) string {
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir
+	}
+	target := filepath.Join(dataDir(), "docs")
+	if err := os.RemoveAll(target); err != nil {
+		log.Printf("docs: %v; MCP docs and /docs pages unavailable", err)
+		return dir
+	}
+	if err := os.CopyFS(target, docs.FS); err != nil {
+		log.Printf("docs: extract embedded docs: %v; MCP docs and /docs pages unavailable", err)
+		return dir
+	}
+	return filepath.Join(target, "agent")
 }
 
 func defaultAgentDocsDir() string {

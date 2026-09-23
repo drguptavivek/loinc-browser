@@ -670,3 +670,27 @@ func writeRowsCSV(t *testing.T, file io.Writer, header []string, rows [][]string
 		t.Fatalf("flush csv: %v", err)
 	}
 }
+
+func TestResolveDocsDirFallsBackToEmbeddedDocs(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("LOINC_BROWSER_DATA_DIR", dataDir)
+
+	existing := t.TempDir()
+	if got := resolveDocsDir(existing); got != existing {
+		t.Fatalf("expected existing docs dir %q kept, got %q", existing, got)
+	}
+
+	got := resolveDocsDir(filepath.Join(t.TempDir(), "missing"))
+	if want := filepath.Join(dataDir, "docs", "agent"); got != want {
+		t.Fatalf("expected embedded docs at %q, got %q", want, got)
+	}
+	for _, path := range []string{filepath.Join(got, "LOINC_CONCEPTS.md"), filepath.Join(dataDir, "docs", "API.md")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected extracted %s: %v", path, err)
+		}
+	}
+	// A second start refreshes the copy instead of failing on existing files.
+	if again := resolveDocsDir(filepath.Join(t.TempDir(), "missing")); again != got {
+		t.Fatalf("expected re-extraction to %q, got %q", got, again)
+	}
+}

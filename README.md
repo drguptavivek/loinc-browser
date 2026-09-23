@@ -104,7 +104,13 @@ All-in-one local server:
 ./loinc-browser
 ```
 
-The default HTTP MCP route is `http://localhost:9005/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time.
+The default HTTP MCP route is `http://localhost:9005/mcp`. Editable agent docs live under `docs/agent/` and are read from disk at request time; a packaged binary falls back to its embedded copy.
+
+To use it from Claude Code, run the server and open Claude Code in this repository: the committed `.mcp.json` registers it as the `loinc` server (approve it once, then check with `/mcp`). Elsewhere, add it with:
+
+```bash
+claude mcp add --transport http --scope user loinc http://localhost:9005/mcp
+```
 
 Stdio MCP remains available for agent configs that launch a dedicated MCP process:
 
@@ -112,7 +118,7 @@ Stdio MCP remains available for agent configs that launch a dedicated MCP proces
 ./loinc-browser mcp --docs-dir ./docs/agent
 ```
 
-See `docs/MCP.md` for tool/resource names, connection examples, and context-optimization guidance.
+See [`docs/MCP.md`](docs/MCP.md#adding-the-server-to-an-mcp-client) for Claude Code scopes, stdio vs HTTP, Claude Desktop, tool/resource names, and context-optimization guidance.
 
 ## Agent Skill
 

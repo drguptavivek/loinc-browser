@@ -28,9 +28,85 @@ Use stdio when an agent should launch a dedicated MCP process instead of connect
 loinc-browser mcp --docs-dir ./docs/agent --search-index-path ./data/loinc-search.bleve
 ```
 
-`--search-index-path` (default `./data/loinc-search.bleve`, env `LOINC_SEARCH_INDEX_PATH`) points
+`--search-index-path` (default `<data dir>/loinc-search.bleve`, env `LOINC_SEARCH_INDEX_PATH`) points
 `loinc_lucene_search` at the same local Bleve index the `serve` command builds via
 `POST /api/v1/local-search/rebuild`.
+
+## Adding the server to an MCP client
+
+### Claude Code
+
+This repository ships a project-scoped [`.mcp.json`](../.mcp.json) that points Claude Code at the
+running all-in-one server:
+
+```json
+{
+  "mcpServers": {
+    "loinc": {
+      "type": "http",
+      "url": "http://localhost:9005/mcp"
+    }
+  }
+}
+```
+
+Start the server (`make serve` or `./loinc-browser`), then open Claude Code in the repository.
+Claude Code asks you to approve project servers the first time. Check the connection with `/mcp`
+in a session or `claude mcp list` in a shell. Tools appear as `mcp__loinc__<tool>`, for example
+`mcp__loinc__loinc_lookup_code`.
+
+The same entry can be added from the CLI. `--scope` picks where it is stored:
+
+```bash
+# project: writes .mcp.json, shared with everyone who clones the repo
+claude mcp add --transport http --scope project loinc http://localhost:9005/mcp
+
+# local (default): only you, only this project
+claude mcp add --transport http loinc http://localhost:9005/mcp
+
+# user: only you, every project (for example an installed binary serving on :9005)
+claude mcp add --transport http --scope user loinc http://localhost:9005/mcp
+```
+
+Use stdio instead when no server is running and Claude Code should launch its own process:
+
+```bash
+claude mcp add --scope user loinc -- loinc-browser mcp
+# from a source checkout, without a built binary (compiles on every start)
+claude mcp add --scope project loinc -- go run ./cmd/loinc-browser mcp
+```
+
+Which transport:
+
+| | HTTP (`/mcp`) | stdio (`loinc-browser mcp`) |
+| --- | --- | --- |
+| Needs a running server | yes | no |
+| Shares the server's live database, upload hot-swap, and search index | yes | same files, own process |
+| Startup | instant | process start; `go run` compiles first |
+| Works for teammates from `.mcp.json` | if they run the server | if `loinc-browser` is on their `PATH` |
+
+`.mcp.json` supports `${VAR}` and `${VAR:-default}` expansion, for example
+`"url": "http://localhost:${LOINC_PORT:-9005}/mcp"`.
+
+### Claude Desktop and other clients
+
+Clients that only speak stdio take a command entry. For Claude Desktop, add to
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "loinc": {
+      "command": "/usr/local/bin/loinc-browser",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Use an absolute path: desktop apps do not inherit your shell `PATH`. The stdio process uses the same
+[data directory](DEPLOYMENT.md#data-directory) as the server, so it finds the database the server
+imported. Clients that support streamable HTTP can use `http://localhost:9005/mcp` directly.
 
 ## Editable Agent Docs
 
@@ -43,6 +119,11 @@ Default docs directory:
 ```text
 ./docs/agent
 ```
+
+The binary also embeds these docs. When the docs directory does not exist (an installed binary
+with no `docs/` beside it), startup copies the embedded docs to `<data dir>/docs/` and serves them
+from there. That copy is refreshed on every start, so edit docs in a source checkout or in a
+directory set with `--docs-dir`, not in the data directory.
 
 Override with:
 

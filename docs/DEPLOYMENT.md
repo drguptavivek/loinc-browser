@@ -68,7 +68,8 @@ A server with no data still starts, so the UI upload works; lookups fail until a
 ## Search index
 
 `/searchapi`, the UI's Advanced (local) search, and the `loinc_lucene_search` MCP tool need the
-Bleve index. It is **not** built automatically. Build it once after each import:
+Bleve index. A release uploaded through the UI rebuilds it automatically in the background. After
+a first-run or `ingest` import, build it once:
 
 ```bash
 curl -X POST http://localhost:9005/api/v1/local-search/rebuild
@@ -78,6 +79,20 @@ or with **Build index** in the Advanced search view. On the full 2.82 release a 
 25 s (Apple M-series, 195,886 documents). Until it is built, `/searchapi` returns 503 with a
 rebuild hint. Every other interface (FHIR, `/api/v1`, MCP lookups, UI term search) reads SQLite
 directly and does not need it.
+
+A rebuild writes to a separate folder and swaps it in when finished, so the previous index keeps
+answering during the build and an interrupted build never replaces it.
+`GET /api/v1/local-search/status` reports one of:
+
+| `state` | Meaning | Queries |
+| --- | --- | --- |
+| `ready` | Built from the current import | answered |
+| `stale` | Built before the current import; results may be outdated | answered |
+| `incomplete` | A build left by an older version was interrupted | refused (503) |
+| `missing` | Never built | refused (503) |
+
+`building: true` is added while a rebuild runs. The Advanced search view shows a notice for
+building, stale, and incomplete indexes, and polls until a build finishes.
 
 The SQLite query indexes are different: import creates them, and startup adds any that are
 missing, before the server accepts requests. They never cause partial results.
@@ -218,8 +233,21 @@ its own, not against someone who can read the whole data directory.
   `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` from repository secrets. Never bake them
   into a build.
 
+## Docs in a packaged install
+
+The binary embeds `docs/*.md` and `docs/agent/*.md`. When `./docs/agent` (or `--docs-dir` /
+`LOINC_AGENT_DOCS_DIR`) does not exist, startup copies them to `<data dir>/docs/` for the MCP
+concept tools and `/docs/*` pages. That copy is refreshed on every start; to customize the docs,
+point `--docs-dir` at your own copy.
+
+## Adding it to Claude Code or other MCP clients
+
+See [`MCP.md`](MCP.md#adding-the-server-to-an-mcp-client). In short, with the server running:
+
+```bash
+claude mcp add --transport http --scope user loinc http://localhost:9005/mcp
+```
+
 ## Known gaps
 
-- Release archives do not include `docs/agent`, so the MCP concept-doc tools and the `/docs/*`
-  pages have nothing to serve in a packaged install. Copy `docs/agent` to the host and set `LOINC_AGENT_DOCS_DIR`.
 - macOS binaries are unsigned; Gatekeeper blocks them until the quarantine attribute is removed.
