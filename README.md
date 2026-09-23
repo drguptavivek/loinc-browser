@@ -39,7 +39,7 @@ Licensed LOINC release files and generated SQLite databases must stay out of git
 
 1. Download the `v0.92` binary for your platform from GitHub Releases.
 2. Download the licensed LOINC 2.82 release ZIP from LOINC after accepting the LOINC license.
-3. Place the release ZIP beside the executable, for example `Loinc_2.82.zip`.
+3. Place the release ZIP (for example `Loinc_2.82.zip`) in the directory you run the executable from, or in the data directory described below.
 4. Run one command.
 
 macOS arm64 or Linux amd64:
@@ -56,7 +56,13 @@ Windows amd64 PowerShell:
 
 Open `http://localhost:9005`. The executable serves the UI, `/api/v1`, Swagger UI, `/openapi.json`, and HTTP MCP at `/mcp`.
 
-The app uses `./data/loinc-normalized.sqlite`. If that database is missing or empty, startup looks for a local `Loinc*.zip` and imports it automatically. To use a different port:
+The app keeps its database, uploads, search index, app key, and settings in one data directory:
+`LOINC_BROWSER_DATA_DIR` if set, else `./data` when it exists (source checkouts), else the per-user
+data directory (`~/Library/Application Support/loinc-browser` on macOS, `%AppData%\loinc-browser`
+on Windows, `$XDG_DATA_HOME` or `~/.local/share/loinc-browser` on Linux). Startup prints which one
+it uses. If the database is missing or empty, startup looks for a `Loinc*.zip` in the working
+directory, then in the data directory, and imports it automatically. A `.env` in the data directory
+is loaded after the working-directory `.env`/`loinc.env`. To use a different port:
 
 ```bash
 ./loinc-browser 9090
@@ -65,6 +71,28 @@ The app uses `./data/loinc-normalized.sqlite`. If that database is missing or em
 ```
 
 Use `./loinc-browser --addr 127.0.0.1:9090` only when you need a full listen address.
+
+## Deployment
+
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) covers every install option. In short:
+
+| Situation | Choice |
+| --- | --- |
+| Laptop, occasional use | Run the binary; `nohup ./loinc-browser &` to background it |
+| Always on, macOS | launchd agent in `~/Library/LaunchAgents` |
+| Shared team/DC service | systemd unit with `LOINC_BROWSER_DATA_DIR=/var/lib/loinc-browser` |
+| Windows | `loinc-browser.exe`; Task Scheduler or NSSM for background |
+| Go program, no server | embed `pkg/terminology` ([`docs/USE_CASES.md`](docs/USE_CASES.md) §13) |
+
+Things to decide per install:
+
+- **Data directory:** `LOINC_BROWSER_DATA_DIR`, else `./data`, else the per-user folder (above).
+- **Search index:** `/searchapi` and Advanced search need `POST /api/v1/local-search/rebuild`
+  once after each import (~25 s for 2.82). Nothing else needs it.
+- **Exposure:** `:9005` listens on all interfaces; use `--addr 127.0.0.1:9005` for local-only.
+- **Online search proxy:** `--no-official` turns it off; `LOINC_OFFICIAL_PASSPHRASE` guards it;
+  `LOINC_OFFICIAL_USERNAME`/`LOINC_OFFICIAL_PASSWORD` supply the account from the environment.
+- **Extra transports:** `--unix-socket` and `--udp-addr` are off by default.
 
 ## MCP Server
 
@@ -147,7 +175,7 @@ Swagger UI is served at `http://localhost:9005/api/docs`. The underlying OpenAPI
 
 The browser includes a dedicated **Official API** mode for querying Regenstrief's official LOINC Search API. The mode is opened from the Modes menu next to hierarchy, facets, rank, and relationships.
 
-The local server proxies official API requests so credentials are not sent in browser URL query strings. You can enter credentials per search or save them locally. Saved credentials are encrypted into `./data/loinc-browser-kv.json` using a random app key in `./data/loinc-browser-app.key`. Both files are local generated data and must stay out of git.
+The local server proxies official API requests so credentials are not sent in browser URL query strings. You can enter credentials per search or save them locally. Saved credentials are encrypted into `loinc-browser-kv.json` in the data directory using a random app key in `loinc-browser-app.key` beside it. Both files are local generated data and must stay out of git.
 
 Official search results are also checked against the local offline SQLite database when LOINC codes are present in the upstream payload. The results window marks local matches and can open matched terms in the local detail pane while keeping the official raw JSON available.
 
@@ -160,6 +188,17 @@ LOINC_OFFICIAL_API_BASE_URL=https://loinc.regenstrief.org/searchapi
 LOINC_APP_KEY_PATH=./data/loinc-browser-app.key
 LOINC_KV_PATH=./data/loinc-browser-kv.json
 ```
+
+Controls for shared or headless servers:
+
+- `--no-official` or `LOINC_OFFICIAL_DISABLED=true` turns the online proxy off entirely; the
+  `/api/v1/official/*` search and delete routes return 403.
+- `LOINC_OFFICIAL_PASSPHRASE=...` requires callers to send that value as the `X-Loinc-Passphrase`
+  header on official searches and credential deletes. The UI shows a passphrase field when it is set.
+- `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` supply credentials from the environment. They
+  take precedence over the encrypted vault for "use saved credentials" requests and cannot be
+  deleted from the UI. In GitHub Actions, pass them from repository secrets; never bake them into a
+  build.
 
 Local app-key encryption protects against casual inspection of the KV file. Anyone with both the app key file and KV file can decrypt saved credentials, so treat both files as secrets.
 
@@ -315,6 +354,8 @@ npm --prefix web run build
 ```
 
 ## GitHub Releases
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml` (`go vet`, `go test`, web check and build). Tests that need licensed LOINC data skip in CI; run `make parity` and `make use-cases` locally against a loaded server before tagging.
 
 GitHub releases are created automatically by GitHub Actions. The release workflow is configured in `.github/workflows/release.yml`.
 

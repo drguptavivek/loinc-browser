@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,13 @@ type Options struct {
 	KVPath             string
 	SearchIndexPath    string
 	HTTPClient         *http.Client
+	// OfficialDisabled turns off the /api/v1/official/* proxy entirely. OfficialPassphrase, when
+	// non-empty, must accompany every official search or credential delete as the
+	// X-Loinc-Passphrase header. OfficialEnvCredentials, when complete, take precedence over the
+	// saved vault for "use saved credentials" requests.
+	OfficialDisabled       bool
+	OfficialPassphrase     string
+	OfficialEnvCredentials OfficialCredentials
 	// Terminology, when non-nil, receives the pkg/terminology Service New builds for the FHIR
 	// routes, so a caller (e.g. cmd/loinc-browser's UDP transport, Mode E) can share the exact
 	// same store-getter-backed Service the HTTP handlers use, rather than building a second one
@@ -56,15 +64,18 @@ func New(options Options) http.Handler {
 		}
 	}
 	app := &app{
-		store:          options.Store,
-		assets:         options.Assets,
-		dbPath:         options.DBPath,
-		uploadDir:      options.UploadDir,
-		cacheEntries:   options.CacheEntries,
-		docsDir:        options.DocsDir,
-		officialClient: newOfficialSearchClient(options.OfficialAPIBaseURL, options.HTTPClient),
-		officialVault:  officialVault,
-		localSearch:    newLocalSearchService(options.SearchIndexPath),
+		store:              options.Store,
+		assets:             options.Assets,
+		dbPath:             options.DBPath,
+		uploadDir:          options.UploadDir,
+		cacheEntries:       options.CacheEntries,
+		docsDir:            options.DocsDir,
+		officialClient:     newOfficialSearchClient(options.OfficialAPIBaseURL, options.HTTPClient),
+		officialVault:      officialVault,
+		officialDisabled:   options.OfficialDisabled,
+		officialPassphrase: options.OfficialPassphrase,
+		officialEnv:        options.OfficialEnvCredentials,
+		localSearch:        newLocalSearchService(options.SearchIndexPath),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
@@ -110,8 +121,8 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/source-organizations/{id}", app.v1SourceOrganization)
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
 	mux.HandleFunc("GET /api/v1/official/credentials/status", app.officialCredentialStatus)
-	mux.HandleFunc("DELETE /api/v1/official/credentials", app.deleteOfficialCredentials)
-	mux.HandleFunc("POST /api/v1/official/search", app.officialSearch)
+	mux.HandleFunc("DELETE /api/v1/official/credentials", app.officialGuard(app.deleteOfficialCredentials))
+	mux.HandleFunc("POST /api/v1/official/search", app.officialGuard(app.officialSearch))
 	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
 	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
 	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
@@ -158,16 +169,19 @@ func normalizeMCPPath(path string) string {
 }
 
 type app struct {
-	mu             sync.RWMutex
-	store          *loinc.Store
-	assets         http.FileSystem
-	dbPath         string
-	uploadDir      string
-	cacheEntries   int
-	docsDir        string
-	officialClient *officialSearchClient
-	officialVault  *OfficialCredentialVault
-	localSearch    *localSearchService
+	mu                 sync.RWMutex
+	store              *loinc.Store
+	assets             http.FileSystem
+	dbPath             string
+	uploadDir          string
+	cacheEntries       int
+	docsDir            string
+	officialClient     *officialSearchClient
+	officialVault      *OfficialCredentialVault
+	officialDisabled   bool
+	officialPassphrase string
+	officialEnv        OfficialCredentials
+	localSearch        *localSearchService
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -282,16 +296,42 @@ func (a *app) sourceOrganizations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+const officialPassphraseHeader = "X-Loinc-Passphrase"
+
+// officialGuard rejects official-API requests when the proxy is disabled, or when a passphrase is
+// configured and the request doesn't carry it.
+func (a *app) officialGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.officialDisabled {
+			writeError(w, http.StatusForbidden, errors.New("official LOINC Search API access is disabled on this server"))
+			return
+		}
+		if a.officialPassphrase != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(officialPassphraseHeader)), []byte(a.officialPassphrase)) != 1 {
+			writeError(w, http.StatusUnauthorized, errors.New("official API passphrase is missing or incorrect"))
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (a *app) officialEnvComplete() bool {
+	return a.officialEnv.Username != "" && a.officialEnv.Password != ""
+}
+
 func (a *app) officialCredentialStatus(w http.ResponseWriter, r *http.Request) {
-	if a.officialVault == nil {
-		writeJSON(w, http.StatusOK, OfficialCredentialStatus{Saved: false, Usable: false, Message: "official API credential storage is not configured"})
-		return
+	var status OfficialCredentialStatus
+	switch {
+	case a.officialDisabled:
+		status = OfficialCredentialStatus{Message: "official LOINC Search API access is disabled on this server"}
+	case a.officialEnvComplete():
+		status = OfficialCredentialStatus{Saved: true, Usable: true, MaskedUsername: maskUsername(a.officialEnv.Username), Source: "env", Message: "using LOINC_OFFICIAL_USERNAME/LOINC_OFFICIAL_PASSWORD from the environment"}
+	case a.officialVault == nil:
+		status = OfficialCredentialStatus{Message: "official API credential storage is not configured"}
+	default:
+		status, _ = a.officialVault.Status(r.Context())
 	}
-	status, err := a.officialVault.Status(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusOK, status)
-		return
-	}
+	status.Disabled = a.officialDisabled
+	status.PassphraseRequired = a.officialPassphrase != "" && !a.officialDisabled
 	writeJSON(w, http.StatusOK, status)
 }
 
@@ -339,6 +379,9 @@ func (a *app) officialSearch(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) officialCredentialsForRequest(ctx context.Context, request OfficialSearchRequest) (OfficialCredentials, int, error) {
 	if request.UseSavedCredentials {
+		if a.officialEnvComplete() {
+			return a.officialEnv, http.StatusOK, nil
+		}
 		if a.officialVault == nil {
 			return OfficialCredentials{}, http.StatusServiceUnavailable, errors.New("official API credential storage is not configured")
 		}

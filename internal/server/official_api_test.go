@@ -315,3 +315,68 @@ func TestOfficialSearchRequestDoesNotAcceptCredentialQueryParams(t *testing.T) {
 		t.Fatalf("expected GET official search to be unavailable, got %d: %s", resp.StatusCode, buf.String())
 	}
 }
+
+func TestOfficialGuardPassphraseDisableAndEnvCredentials(t *testing.T) {
+	var seenAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	send := func(base, method, path, passphrase, body string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("content-type", "application/json")
+		if passphrase != "" {
+			req.Header.Set(officialPassphraseHeader, passphrase)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	search := `{"scope":"parts","query":"Part:glucose","useSavedCredentials":true}`
+
+	guarded := httptest.NewServer(New(Options{
+		OfficialAPIBaseURL:     upstream.URL,
+		OfficialPassphrase:     "open-sesame",
+		OfficialEnvCredentials: OfficialCredentials{Username: "env-user", Password: "env-pass"},
+	}))
+	defer guarded.Close()
+
+	var status OfficialCredentialStatus
+	getJSON(t, guarded.URL+"/api/v1/official/credentials/status", &status)
+	if !status.PassphraseRequired || status.Source != "env" || !status.Usable {
+		t.Fatalf("expected passphrase-required env status, got %#v", status)
+	}
+	for _, passphrase := range []string{"", "wrong"} {
+		if got := send(guarded.URL, http.MethodPost, "/api/v1/official/search", passphrase, search); got != http.StatusUnauthorized {
+			t.Fatalf("passphrase %q: expected 401, got %d", passphrase, got)
+		}
+		if got := send(guarded.URL, http.MethodDelete, "/api/v1/official/credentials", passphrase, ""); got != http.StatusUnauthorized {
+			t.Fatalf("delete with passphrase %q: expected 401, got %d", passphrase, got)
+		}
+	}
+	if got := send(guarded.URL, http.MethodPost, "/api/v1/official/search", "open-sesame", search); got != http.StatusOK {
+		t.Fatalf("expected 200 with passphrase, got %d", got)
+	}
+	if want := "Basic " + base64.StdEncoding.EncodeToString([]byte("env-user:env-pass")); seenAuth != want {
+		t.Fatalf("expected env credentials upstream, got %q", seenAuth)
+	}
+
+	disabled := httptest.NewServer(New(Options{OfficialAPIBaseURL: upstream.URL, OfficialDisabled: true}))
+	defer disabled.Close()
+	getJSON(t, disabled.URL+"/api/v1/official/credentials/status", &status)
+	if !status.Disabled {
+		t.Fatalf("expected disabled status, got %#v", status)
+	}
+	if got := send(disabled.URL, http.MethodPost, "/api/v1/official/search", "", `{"scope":"parts","query":"x","username":"u","password":"p"}`); got != http.StatusForbidden {
+		t.Fatalf("expected 403 when disabled, got %d", got)
+	}
+}

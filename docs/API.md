@@ -371,8 +371,13 @@ Official API configuration:
 | Environment key | Default | Meaning |
 | --- | --- | --- |
 | `LOINC_OFFICIAL_API_BASE_URL` | `https://loinc.regenstrief.org/searchapi` | Upstream official Search API base URL. |
-| `LOINC_APP_KEY_PATH` | `./data/loinc-browser-app.key` | Random 32-byte app key generated on first run. |
-| `LOINC_KV_PATH` | `./data/loinc-browser-kv.json` | File-backed JSON KV store for encrypted settings. |
+| `LOINC_APP_KEY_PATH` | `<data dir>/loinc-browser-app.key` | Random 32-byte app key generated on first run. |
+| `LOINC_KV_PATH` | `<data dir>/loinc-browser-kv.json` | File-backed JSON KV store for encrypted settings. |
+| `LOINC_OFFICIAL_DISABLED` | `false` | `true` (or `--no-official`) makes official search and credential delete return 403. |
+| `LOINC_OFFICIAL_PASSPHRASE` | empty | When set, official search and credential delete require it as the `X-Loinc-Passphrase` header (401 otherwise). |
+| `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` | empty | Environment credentials, used ahead of the vault when `useSavedCredentials` is true. Status reports `source: "env"`. |
+
+`GET /api/v1/official/credentials/status` stays open and reports `disabled` and `passphraseRequired` so clients know what to send.
 
 The app loads `.env` and then `loinc.env` when either file exists. Keep `loinc.env` local for test credentials.
 

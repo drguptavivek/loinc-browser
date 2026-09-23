@@ -1,0 +1,225 @@
+# Deployment
+
+How to install, run, and operate `loinc-browser` outside a source checkout. For which interface to
+call once it is running, see [`USE_CASES.md`](USE_CASES.md); for transports and latency, see
+[`LOCAL_APIS.md`](LOCAL_APIS.md).
+
+`loinc-browser` is a single static Go binary (pure-Go SQLite and Bleve, `CGO_ENABLED=0`) with the
+web UI embedded. It needs no runtime, database server, or web server. What it cannot carry is the
+licensed LOINC release: every install supplies its own `Loinc_2.xx.zip`.
+
+## Choosing a deployment
+
+| Situation | Choice | Section |
+| --- | --- | --- |
+| One person, laptop | Run the binary from a terminal | [Run once](#run-once) |
+| One person, always on | macOS launchd agent | [macOS](#macos) |
+| Shared team/DC service | Linux systemd service | [Linux](#linux-systemd) |
+| Windows desktop | Run `loinc-browser.exe` | [Windows](#windows) |
+| Go program on the same host | Embed `pkg/terminology`, no server | [`USE_CASES.md` §13](USE_CASES.md#13-embedding-in-a-go-service) |
+| Developing the app | `make dev` from source | [README](../README.md#development-mode) |
+
+## Getting the binary
+
+- **Release build (recommended):** download the archive for your platform from GitHub Releases
+  (`darwin_arm64`, `darwin_amd64`, `linux_amd64`, `windows_amd64`).
+- **From source:** `make build` (needs Go and Node; it builds the web assets first, then
+  `./loinc-browser`).
+
+There is no `linux_arm64` build yet; add `"linux/arm64"` to `targets` in
+`scripts/build-release.sh` if you need one.
+
+## Data directory
+
+The database, uploads, local search index, app key, and settings live in one directory, resolved
+in this order:
+
+1. `LOINC_BROWSER_DATA_DIR`
+2. `./data`, when it exists in the working directory (source checkouts)
+3. The per-user data directory:
+   - macOS: `~/Library/Application Support/loinc-browser`
+   - Windows: `%AppData%\loinc-browser`
+   - Linux: `$XDG_DATA_HOME/loinc-browser`, or `~/.local/share/loinc-browser`
+
+Startup prints the directory it chose. Configuration is read from `.env` and `loinc.env` in the
+working directory, then `.env` in the data directory; earlier values win.
+
+| File in the data directory | What it is | Regenerable? |
+| --- | --- | --- |
+| `loinc-normalized.sqlite` (+ `-wal`, `-shm`) | Imported release | Yes, re-import the zip |
+| `loinc-search.bleve/` | Local Lucene-style search index (~480 MB for 2.82) | Yes, rebuild |
+| `uploads/` | Release zips uploaded through the UI | Yes |
+| `loinc-browser-app.key`, `loinc-browser-kv.json` | Encrypted saved online-search credentials | No, treat as secrets |
+
+Back up the key and KV files only if you want saved credentials to survive a reinstall.
+
+## First run: loading the release
+
+Pick one:
+
+- Put `Loinc_2.82.zip` in the working directory **or** the data directory and start the server.
+  It imports automatically when the database is missing or empty, and never overwrites a
+  populated one.
+- Start the server with no data and upload the zip in the UI.
+- Import explicitly: `loinc-browser ingest --release ./Loinc_2.82` (an unpacked release folder).
+
+A server with no data still starts, so the UI upload works; lookups fail until a release is loaded.
+
+## Search index
+
+`/searchapi`, the UI's Advanced (local) search, and the `loinc_lucene_search` MCP tool need the
+Bleve index. It is **not** built automatically. Build it once after each import:
+
+```bash
+curl -X POST http://localhost:9005/api/v1/local-search/rebuild
+```
+
+or with **Build index** in the Advanced search view. On the full 2.82 release a rebuild takes about
+25 s (Apple M-series, 195,886 documents). Until it is built, `/searchapi` returns 503 with a
+rebuild hint. Every other interface (FHIR, `/api/v1`, MCP lookups, UI term search) reads SQLite
+directly and does not need it.
+
+The SQLite query indexes are different: import creates them, and startup adds any that are
+missing, before the server accepts requests. They never cause partial results.
+
+## Run once
+
+```bash
+./loinc-browser                 # :9005, UI + /api/v1 + /fhir + /searchapi + /mcp
+./loinc-browser --port 9090
+./loinc-browser --addr 127.0.0.1:9005   # this machine only
+```
+
+In the background, without a service manager:
+
+```bash
+nohup ./loinc-browser > loinc-browser.log 2>&1 &
+```
+
+## macOS
+
+```bash
+tar -xzf loinc-browser_<version>_darwin_arm64.tar.gz
+cd loinc-browser_<version>_darwin_arm64
+xattr -d com.apple.quarantine loinc-browser   # release binaries are not signed/notarized
+sudo mv loinc-browser /usr/local/bin/
+mkdir -p ~/Library/Application\ Support/loinc-browser
+cp ~/Downloads/Loinc_2.82.zip ~/Library/Application\ Support/loinc-browser/
+loinc-browser
+```
+
+To start at login and restart on crash, save `~/Library/LaunchAgents/org.loinc-browser.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.loinc-browser</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/loinc-browser</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/loinc-browser.log</string>
+  <key>StandardErrorPath</key><string>/tmp/loinc-browser.log</string>
+</dict></plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.loinc-browser.plist   # start
+launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/org.loinc-browser.plist   # stop
+```
+
+## Linux (systemd)
+
+```bash
+sudo install -m 755 loinc-browser /usr/local/bin/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin loinc
+```
+
+`/etc/systemd/system/loinc-browser.service`:
+
+```ini
+[Unit]
+Description=LOINC Browser
+After=network.target
+
+[Service]
+User=loinc
+StateDirectory=loinc-browser
+WorkingDirectory=/var/lib/loinc-browser
+Environment=LOINC_BROWSER_DATA_DIR=/var/lib/loinc-browser
+Environment=LOINC_BROWSER_ADDR=:9005
+EnvironmentFile=-/etc/loinc-browser.env
+ExecStart=/usr/local/bin/loinc-browser
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now loinc-browser        # creates /var/lib/loinc-browser, owned by loinc
+sudo cp Loinc_2.82.zip /var/lib/loinc-browser/
+sudo chown loinc: /var/lib/loinc-browser/Loinc_2.82.zip
+sudo systemctl restart loinc-browser             # imports on this start
+curl -X POST http://localhost:9005/api/v1/local-search/rebuild
+journalctl -u loinc-browser -f
+```
+
+Put secrets (passphrase, online-search credentials) in `/etc/loinc-browser.env`, owned by root with
+mode `600`. systemd reads it as root, so the `loinc` user never needs access to it.
+
+## Windows
+
+Unzip and run `loinc-browser.exe` from PowerShell. The data directory is `%AppData%\loinc-browser`
+unless a `data` folder exists in the directory you run it from. To run it in the background,
+use the Windows Task Scheduler ("At startup", "Run whether user is logged on or not") or a service wrapper such as
+NSSM. Nothing in the binary is Windows-service-specific.
+
+## Transports
+
+| Transport | Enable with | Use for |
+| --- | --- | --- |
+| HTTP over TCP | always on (`--addr`, `--port`, `LOINC_BROWSER_ADDR`, `PORT`) | everything |
+| HTTP over a Unix socket | `--unix-socket PATH` / `LOINC_BROWSER_UNIX_SOCKET` | same-host clients; file permissions are the access control |
+| UDP micro-protocol | `--udp-addr :8081` / `LOINC_BROWSER_UDP_ADDR` | lossy, same-host/DC fan-out |
+| HTTP MCP at `/mcp` | on by default; `--no-mcp` to disable | AI agents over HTTP |
+| stdio MCP | `loinc-browser mcp` | an agent config that launches its own process |
+
+## Network exposure and the online search proxy
+
+The default `:9005` listens on **all interfaces**, so anyone who can reach the host can use it.
+Everything is read-only and answered locally, with one exception: `/api/v1/official/*` proxies to
+the real Regenstrief Search API with a LOINC account. To control that:
+
+| Setting | Effect |
+| --- | --- |
+| `--addr 127.0.0.1:9005` | Whole server reachable only from this machine |
+| `--no-official` / `LOINC_OFFICIAL_DISABLED=true` | Online proxy off; search and credential delete return 403. Use for air-gapped installs |
+| `LOINC_OFFICIAL_PASSPHRASE=...` | Online search and credential delete require the `X-Loinc-Passphrase` header (401 otherwise); the UI asks for it |
+| `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` | Account from the environment, used for "saved credentials" ahead of the encrypted vault; not deletable from the UI |
+
+Without any of these, credentials entered in the UI can be saved encrypted in the data directory.
+The encryption key sits beside the encrypted file, so this protects against the KV file leaking on
+its own, not against someone who can read the whole data directory.
+
+## CI/CD
+
+- `.github/workflows/ci.yml` runs `go vet`, `go test`, and the web check and build on every push
+  to `main` and every pull request.
+- `.github/workflows/release.yml` runs on a `v*` tag: it tests, cross-builds, smoke-tests the
+  Linux and Windows binaries, and publishes the GitHub release.
+- Licensed LOINC data never enters CI, so tests gated on `LOINC_TEST_DB`, `make parity`, and
+  `make use-cases` skip there. Run them locally against a loaded server before tagging.
+- If a workflow ever needs online-search credentials (for example exemplar capture), pass
+  `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` from repository secrets. Never bake them
+  into a build.
+
+## Known gaps
+
+- Release archives do not include `docs/agent`, so the MCP concept-doc tools and the `/docs/*`
+  pages have nothing to serve in a packaged install. Copy `docs/agent` to the host and set `LOINC_AGENT_DOCS_DIR`.
+- macOS binaries are unsigned; Gatekeeper blocks them until the quarantine attribute is removed.

@@ -183,6 +183,7 @@
 	let officialPassword = '';
 	let officialRemember = false;
 	let officialUseSavedCredentials = false;
+	let officialPassphrase = '';
 	let officialQueryField = '';
 	let officialQueryOperator = 'field';
 	let officialQueryValue = '';
@@ -632,7 +633,7 @@
 		officialCredentialLoading = true;
 		error = '';
 		try {
-			officialCredentialStatus = await deleteOfficialCredentialsRequest();
+			officialCredentialStatus = await deleteOfficialCredentialsRequest(officialPassphrase);
 			officialUseSavedCredentials = false;
 		} catch (err) {
 			error = errorMessage(err);
@@ -674,7 +675,7 @@
 					password: officialUseSavedCredentials ? undefined : officialPassword,
 					remember: officialUseSavedCredentials ? false : officialRemember,
 					useSavedCredentials: officialUseSavedCredentials,
-				});
+				}, officialPassphrase);
 				if (officialRemember && !officialUseSavedCredentials) {
 					officialPassword = '';
 					await loadOfficialCredentialStatus();
@@ -2286,7 +2287,11 @@
 										Include upstream filter counts
 									</label>
 
-								{#if officialSource === 'proxy'}
+								{#if officialSource === 'proxy' && officialCredentialStatus?.disabled}
+								<div class="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
+									Online LOINC Search API access is disabled on this server. Use the local source instead.
+								</div>
+								{:else if officialSource === 'proxy'}
 								<div class="rounded-md border border-zinc-200 bg-zinc-50 p-3">
 									<div class="flex flex-wrap items-center justify-between gap-2">
 										<div>
@@ -2295,9 +2300,16 @@
 										</div>
 										<div class="flex items-center gap-2">
 											<Button type="button" variant="outline" size="sm" on:click={loadOfficialCredentialStatus} disabled={officialCredentialLoading}>Refresh</Button>
-											<Button type="button" variant="outline" size="sm" on:click={deleteOfficialCredentials} disabled={officialCredentialLoading || !officialCredentialStatus?.saved}>Delete saved</Button>
+											<Button type="button" variant="outline" size="sm" on:click={deleteOfficialCredentials} disabled={officialCredentialLoading || !officialCredentialStatus?.saved || officialCredentialStatus?.source === 'env'}>Delete saved</Button>
 										</div>
 										</div>
+										{#if officialCredentialStatus?.passphraseRequired}
+											<div class="mt-3">
+												<Field label="Server passphrase">
+													<Input type="password" bind:value={officialPassphrase} autocomplete="off" />
+												</Field>
+											</div>
+										{/if}
 										<label class="mt-3 flex items-center gap-2 text-sm text-zinc-700">
 											<Checkbox bind:checked={officialUseSavedCredentials} disabled={!officialCredentialStatus?.usable} />
 											Use saved credentials
@@ -2320,7 +2332,7 @@
 								{/if}
 
 								<div class="flex flex-wrap items-center gap-3">
-									<Button type="submit" disabled={officialLoading}>
+									<Button type="submit" disabled={officialLoading || (officialSource === 'proxy' && officialCredentialStatus?.disabled)}>
 										<Search size={16} />
 										{officialLoading ? 'Searching...' : officialSource === 'local' ? 'Search local database' : 'Search Regenstrief upstream'}
 									</Button>

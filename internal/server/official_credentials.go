@@ -32,6 +32,11 @@ type OfficialCredentialStatus struct {
 	Usable         bool   `json:"usable"`
 	MaskedUsername string `json:"maskedUsername,omitempty"`
 	Message        string `json:"message,omitempty"`
+	// Source is "env" when LOINC_OFFICIAL_USERNAME/PASSWORD supply the credentials, which the UI
+	// cannot delete.
+	Source             string `json:"source,omitempty"`
+	Disabled           bool   `json:"disabled,omitempty"`
+	PassphraseRequired bool   `json:"passphraseRequired,omitempty"`
 }
 
 type officialCredentialRecord struct {

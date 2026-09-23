@@ -1,16 +1,15 @@
 # LOINC Browser — Use Cases
 
-Who should reach for which interface, and how. Every example below was verified against the
-routes, MCP tool names, and CLI flags actually registered in this codebase (`internal/fhirhttp`,
-`internal/server/server.go`, `internal/server/searchapi.go`, `internal/mcpserver/server.go`,
-`internal/udp`, `cmd/loinc-browser/main.go`). See [`LOCAL_APIS.md`](LOCAL_APIS.md) for the full
+Who should reach for which interface, and how. The single-line `curl` examples are executable:
+`make use-cases` runs each one against a running server and fails on any error status
+(`scripts/check-use-cases.sh`). See [`LOCAL_APIS.md`](LOCAL_APIS.md) for the full
 route list and divergences, [`FHIR_TERMINOLOGY_PLAN.md`](FHIR_TERMINOLOGY_PLAN.md) for the wire
-design, [`MCP.md`](MCP.md) for MCP details, and [`API.md`](API.md) for `/api/v1`.
+design, [`DEPLOYMENT.md`](DEPLOYMENT.md) for install and service setup, [`MCP.md`](MCP.md) for MCP details, and [`API.md`](API.md) for `/api/v1`.
 
 **Ground rules that apply to every use case below:**
 
 - This is **not** an official Regenstrief service. It is not affiliated with or endorsed by
-  Regenstrief. It serves one licensed LOINC release loaded into `./data/loinc-normalized.sqlite`
+  Regenstrief. It serves one licensed LOINC release loaded into `loinc-normalized.sqlite` in the data directory
   (whatever version you imported, e.g. 2.82) — not the multi-version window (2.69–2.83) that
   `fhir.loinc.org` serves.
 - Everything is answered from the local SQLite database. Serving paths never call the network.
@@ -18,6 +17,30 @@ design, [`MCP.md`](MCP.md) for MCP details, and [`API.md`](API.md) for `/api/v1`
   the real Regenstrief Search API when you ask it to.
 - Basic-auth headers from existing clients are accepted and ignored; no credentials are needed
   locally.
+- Examples assume the default address `:9005`; `LOINC_BROWSER_ADDR`/`PORT` in `.env` or
+  `--addr` change it.
+
+**Prerequisites:** a licensed LOINC release loaded into the database (`go run ./cmd/loinc-browser`
+auto-ingests a local `Loinc*.zip` when the database is empty; otherwise
+`ingest --release ./Loinc_2.82`). `/searchapi` and `loinc_lucene_search` also need the local
+search index (`POST /api/v1/local-search/rebuild`).
+
+## Choosing an interface
+
+| Need | Interface | Transport |
+| --- | --- | --- |
+| Existing FHIR client, minimal change | `/fhir` | HTTP (Mode B/C) |
+| Existing Search API client, minimal change | `/searchapi` | HTTP |
+| Highest-volume single-code validation | `CodeSystem/$validate-code` | keep-alive HTTP (TCP or UDS); UDP for fire-and-forget fan-out |
+| Form pick-lists, panels | `ValueSet/$expand`, `Questionnaire` | HTTP |
+| Deprecated-code migration | `$lookup` MAP_TO, `$translate` (`loinc-map-to`) | HTTP |
+| Compendium mapping, AI-assisted | `/searchapi`, `$lookup`, MCP tools | HTTP or MCP |
+| Cross-terminology mapping | `ConceptMap` + `$translate` | HTTP |
+| Hierarchy roll-ups / subsumption | `$subsumes`, implicit `vs/{LP}` | HTTP |
+| AI agent integration | MCP tools | HTTP `/mcp` or stdio |
+| In-process Go embedding | `pkg/terminology` (Mode A) | direct call |
+| EMR form-builder scripting, non-FHIR shape | `/api/v1` | HTTP |
+| Interactive exploration | UI (`?mode=apis`, `?mode=advanced`) | browser/HTTP |
 
 ## 1. Drop-in replacement for `fhir.loinc.org` in an existing FHIR client
 
@@ -83,26 +106,28 @@ per-message latency.
 **Interface:** FHIR `CodeSystem/$validate-code`, or the UDP micro-protocol's `validate` op for a
 same-host sidecar.
 
-**Transport:** pick by latency budget (measured p50, in-process, warm; §10.1 of the plan):
+**Transport:** pick by latency budget. Warm `$lookup 718-7` mean per call, loopback, from §10.1
+of the plan (`$validate-code` reuses `$lookup` and runs ~0.1ms cheaper):
 
-| Transport | ~p50 | Notes |
+| Transport | Mean per call | Notes |
 | --- | --- | --- |
-| TCP (default HTTP) | ~0.6–0.8ms round trip (Mode B/C) | simplest, works everywhere |
-| Unix domain socket | ~0.06ms faster than TCP for the same handler tree | same-host only; file permissions double as access control |
-| UDP micro-protocol | no faster than TCP/UDS for a single lookup; wins only by avoiding a TCP handshake per call under extreme fan-out, and is lossy by design | off by default, enable deliberately |
+| In-process (Mode A, for reference) | ~0.61–0.76ms (`BenchmarkLookupTerm`) | the query work itself; every transport below adds to this |
+| HTTP over TCP | ~1.16–1.37ms (`BenchmarkHTTPLookup`) | simplest, works everywhere; reuse keep-alive connections |
+| HTTP over Unix socket | not benchmarked separately; same handler, minus the TCP stack | same-host only; file permissions double as access control; opt in with `--unix-socket` / `LOINC_BROWSER_UNIX_SOCKET` |
+| UDP micro-protocol | ~0.86ms (`BenchmarkUDPLookup`) | skips HTTP framing; lossy by design; off by default (`--udp-addr` / `LOINC_BROWSER_UDP_ADDR`) |
 
-For most pipelines, TCP or UDS is the right choice; UDP only pays off if you are opening a fresh
-TCP connection per validation instead of reusing a keep-alive connection.
+For most pipelines, keep-alive HTTP over TCP or UDS is the right choice. UDP saves roughly 0.3–0.5ms
+per call, but only callers that already tolerate loss and retry idempotently should use it.
 
 **Examples:**
 
 ```bash
 curl 'http://localhost:9005/fhir/CodeSystem/$validate-code?url=http://loinc.org&code=718-7'
 
-# same-host, lower latency
-curl --unix-socket ./data/loinc-browser.sock http://localhost/fhir/CodeSystem/\$validate-code?url=http://loinc.org&code=718-7
+# same-host (start the server with --unix-socket ./data/loinc-browser.sock)
+curl --unix-socket ./data/loinc-browser.sock 'http://localhost/fhir/CodeSystem/$validate-code?url=http://loinc.org&code=718-7'
 
-# UDP sidecar (enable with --udp-addr :8081 / LOINC_BROWSER_UDP_ADDR)
+# UDP sidecar (start the server with --udp-addr :8081)
 echo -n '{"id":"1","op":"validate","code":"718-7"}' | nc -u -w1 localhost 8081
 ```
 
@@ -227,7 +252,9 @@ compact suitability summary (status/usage flags, rank) to check before committin
 similarity alone (`docs/agent/LOINC_CONCEPTS.md`, Search Strategy). A guided, in-app mapping
 chat agent that records per-row decisions is a **future epic**, not implemented — see
 `docs/AGENT_CHAT_PLAN.md` for the design. Today, mapping is a manual or scripted workflow against
-the routes above.
+the routes above. There is no batch endpoint, so a 5,000-row compendium means at least 5,000
+calls. Script them over one keep-alive HTTP connection, or use `pkg/terminology` in-process
+(§13). Don't loop them through MCP.
 
 ## 8. Cross-terminology mapping
 
@@ -269,8 +296,8 @@ node" for roll-up reporting, or needs to check subsumption between two codes.
 **Examples:**
 
 ```bash
-curl 'http://localhost:9005/fhir/CodeSystem/$subsumes?system=http://loinc.org&codeA=LP384441-4&codeB=30064-0'
-curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/LP384441-4&count=1000'
+curl 'http://localhost:9005/fhir/CodeSystem/$subsumes?system=http://loinc.org&codeA=LP15946-4&codeB=30064-0'
+curl 'http://localhost:9005/fhir/ValueSet/$expand?url=http://loinc.org/vs/LP15946-4&count=1000'
 ```
 
 **Response:** `$subsumes` gives `outcome` (valueString: `equivalent`, `subsumes`,
@@ -279,7 +306,9 @@ hierarchy node — the same set `$subsumes` reasons over pairwise.
 
 **Caveats:** `$closure` (stateful incremental closure) is **not implemented** by design —
 `$subsumes` (pairwise) plus `ancestor`/`is-a` filter expansion cover the same need without
-server-side session state (plan §10, decision 6). LG groups use plain text `loinc_num` order in
+server-side session state (plan §10, decision 6). Implicit `vs/{LP}` expansion only works for
+parts with a `Part.csv` row. Hierarchy-only nodes such as `LP384441-4` return a 404 from `$expand`,
+even though `$subsumes` accepts them. LG groups use plain text `loinc_num` order in
 `expansion.contains`, not numeric order, unlike every other served set — a captured upstream
 quirk, not a bug.
 
@@ -346,25 +375,14 @@ dumps of the release.
 
 ## 12. Air-gapped / offline data-centre deployment
 
-**Who / problem:** A DC with no outbound internet access needs LOINC lookups, search, and
-Swagger docs entirely offline.
-
-**Interface:** any of the above — FHIR, `/searchapi`, `/api/v1`, MCP, UI — all served from the
-local SQLite database.
-
-**Transport:** whichever fits the consumer; none require network egress.
-
-**Example:**
+Every interface above already runs offline (see the ground rules), and so do Swagger UI at
+`/api/docs` and `/openapi.json`, because their assets are bundled rather than loaded from a CDN.
 
 ```bash
-./loinc-browser --addr :9005
-curl 'http://localhost:9005/api/docs'   # Swagger UI, bundled — no CDN fetch
+curl 'http://localhost:9005/api/docs'
 ```
 
-**Response:** the app, Swagger UI at `/api/docs`, and `/openapi.json` all work fully offline;
-Swagger's assets are bundled, not loaded from a CDN.
-
-**Caveats:** the **only** feature that calls the network is the optional
+The **only** feature that calls the network is the optional
 `POST /api/v1/official/search` proxy to the real Regenstrief Search API — do not use it in an
 air-gapped environment, or firewall it off deliberately. `make dev-refs` / `scripts/capture-exemplars.sh`
 (vendored docs and golden-response capture) also need network and are development-only, not
@@ -373,7 +391,7 @@ required to run the app.
 ## 13. Embedding in a Go service
 
 **Who / problem:** A Go program on a host that already has a copy of the release SQLite file
-wants LOINC lookups in-process — no HTTP hop, sub-millisecond latency.
+wants LOINC lookups in-process, with no HTTP hop.
 
 **Interface:** Mode A, the in-process `pkg/terminology` library:
 `terminology.Open(dbPath string, opts terminology.OpenOptions) (*terminology.Service, error)`,
@@ -400,12 +418,13 @@ term, _ := svc.Lookup(ctx, terminology.LookupParams{Code: "718-7"})
 vs, _ := svc.Expand(ctx, terminology.ExpandParams{URL: "http://loinc.org/vs/LL1162-8"})
 ```
 
-**Response:** sub-millisecond; ~0.6ms term lookup, µs-level cached expansions (plan §10.1
-benchmarks: `BenchmarkLookupTerm` 610–765µs, `BenchmarkExpandAnswerList` ~34µs).
+**Response:** term lookup costs ~0.61–0.76ms (`BenchmarkLookupTerm`). That saves about 0.5ms
+per call compared with HTTP (§3), but it still misses the plan's ≤100µs Mode A budget, because the
+cost is in the SQL, not the transport. Part lookups (~60–70µs), `$subsumes` (~25–60µs), and cached
+expansions (`BenchmarkExpandAnswerList` ~34µs) do meet it.
 
-**Caveats:** Mode A opens the DB read-only (`mode=ro`, WAL) so it can share the file with a
-running server, and needs the full release DB on that host — a trimmed lookup-only DB is
-deferred until a consumer asks for one (plan §10, decision 2).
+**Caveats:** Mode A needs the full release DB on that host. A trimmed lookup-only DB is deferred
+until a consumer asks for one (plan §10, decision 2).
 
 ## 14. Browsing/exploring in the UI
 
@@ -433,23 +452,6 @@ real upstream.
 
 **Caveats:** this is for interactive exploration, not automation — script against the HTTP
 routes or MCP tools directly for anything repeated.
-
-## Choosing an interface
-
-| Need | Interface | Transport |
-| --- | --- | --- |
-| Existing FHIR client, minimal change | `/fhir` | HTTP (Mode B/C) |
-| Existing Search API client, minimal change | `/searchapi` | HTTP |
-| Highest-volume single-code validation | `CodeSystem/$validate-code` | TCP or UDS; UDP only if avoiding per-call TCP handshakes |
-| Form pick-lists, panels | `ValueSet/$expand`, `Questionnaire` | HTTP |
-| Deprecated-code migration | `$lookup` MAP_TO, `$translate` (`loinc-map-to`) | HTTP |
-| Compendium mapping, AI-assisted | `/searchapi`, `$lookup`, MCP tools | HTTP or MCP |
-| Cross-terminology mapping | `ConceptMap` + `$translate` | HTTP |
-| Hierarchy roll-ups / subsumption | `$subsumes`, implicit `vs/{LP}` | HTTP |
-| AI agent integration | MCP tools | HTTP `/mcp` or stdio |
-| In-process Go embedding | `pkg/terminology` (Mode A) | direct call |
-| EMR form-builder scripting, non-FHIR shape | `/api/v1` | HTTP |
-| Interactive exploration | UI (`?mode=apis`, `?mode=advanced`) | browser/HTTP |
 
 ## Not a fit
 

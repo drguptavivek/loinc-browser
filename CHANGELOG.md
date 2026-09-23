@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.93-rc1 - 2026-09-23
+
+- Added a per-user data directory: `LOINC_BROWSER_DATA_DIR`, else `./data` when present, else `~/Library/Application Support/loinc-browser` (macOS), `%AppData%\loinc-browser` (Windows), or `$XDG_DATA_HOME`/`~/.local/share/loinc-browser` (Linux). Database, uploads, search index, app key, and settings all live there; startup prints it, auto-import also looks for `Loinc*.zip` there, and a `.env` there is loaded. `ingest` now loads `.env` too.
+- Added `--no-official`/`LOINC_OFFICIAL_DISABLED` to turn off the online Search API proxy (403), an optional `LOINC_OFFICIAL_PASSPHRASE` required as the `X-Loinc-Passphrase` header on official search and credential delete (401 otherwise; the UI prompts for it), and `LOINC_OFFICIAL_USERNAME`/`LOINC_OFFICIAL_PASSWORD` environment credentials that take precedence over the encrypted vault.
+- Fixed the server failing to start on an empty (not yet imported) database; store-open FHIR indexes are now skipped until the schema exists.
+- Added `.github/workflows/ci.yml` (vet, tests, web check and build on every push and pull request); release tags containing `-rc` publish as GitHub pre-releases.
+- Added `docs/DEPLOYMENT.md` (macOS launchd, Linux systemd, Windows, data directory, search index, network exposure, CI/CD) and a README deployment section.
+- Added `make use-cases` (`scripts/check-use-cases.sh`), which runs every `curl` example in `docs/USE_CASES.md` against a running server; corrected that doc's latency table, Unix socket example, and hierarchy `$expand` example.
 - Added a local FHIR R4 terminology API at `/fhir` wire-compatible with fhir.loinc.org: `metadata` (CapabilityStatement/TerminologyCapabilities), `CodeSystem` `$lookup`/`$validate-code`/`$subsumes` over all five LOINC code kinds (terms, LP parts, LL answer lists, LA answers, LG groups), `ValueSet` catalogue reads plus `$expand`/`$validate-code` including inline `compose` filter expansion backed by real regex evaluation, `ConceptMap` search plus `$translate` (forward and reverse), `Questionnaire` reads for panels/forms, and `_summary`/`_elements` result shaping on every read/search/`$expand`. Answered entirely from the local normalized SQLite database; not affiliated with or endorsed by Regenstrief.
 - Added a LOINC Search API-compatible `/searchapi/{scope}` (`loincs`, `parts`, `answerlists`, `groups`) over the local Bleve index, matching upstream's request/response shape (`ResponseSummary`, paging, `sortorder`, `includefiltercounts`).
 - Added `--unix-socket`/`LOINC_BROWSER_UNIX_SOCKET` and `--udp-addr`/`LOINC_BROWSER_UDP_ADDR` transports (Modes D/E) alongside the default TCP listener, sharing the same handler tree; the UDP micro-protocol answers compact JSON datagrams for lookup/validate/subsumes/translate/expand and falls back to `use-http` for oversize responses. `serve` now shuts down all listeners gracefully on SIGINT/SIGTERM.

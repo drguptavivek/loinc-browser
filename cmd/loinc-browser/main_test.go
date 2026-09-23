@@ -71,7 +71,7 @@ func TestParseServeConfigAcceptsMCPFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse serve config: %v", err)
 	}
-	if cfg.DBPath != defaultDBPath || cfg.Addr != ":18080" || !cfg.EnableMCP || cfg.MCPPath != "/local-mcp" || cfg.DocsDir != "docs/custom" {
+	if cfg.DBPath != defaultDBPath() || cfg.Addr != ":18080" || !cfg.EnableMCP || cfg.MCPPath != "/local-mcp" || cfg.DocsDir != "docs/custom" {
 		t.Fatalf("unexpected serve config: %#v", cfg)
 	}
 }

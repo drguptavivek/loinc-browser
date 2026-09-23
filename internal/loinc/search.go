@@ -63,7 +63,11 @@ func OpenStore(dbPath string, options StoreOptions) (*Store, error) {
 	// (fhir_queries.go, fhir_map_queries.go) log and skip too. A fresh DB already carries these
 	// from ingest (internal/loinc/ingest.go createPostImportIndexes); only an old DB opened
 	// read-only loses the speed-up, not correctness.
-	if !options.ReadOnly {
+	// An empty (not yet imported) database has no tables to index; the store reopen after an
+	// import adds them.
+	var hasTerms int
+	_ = db.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = 'loinc_terms'`).Scan(&hasTerms)
+	if !options.ReadOnly && hasTerms > 0 {
 		if err := ensureFHIRIndexes(db); err != nil {
 			_ = db.Close()
 			return nil, err

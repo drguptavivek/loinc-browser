@@ -213,6 +213,9 @@ export type OfficialCredentialStatus = {
 	usable: boolean;
 	maskedUsername?: string;
 	message?: string;
+	source?: 'env';
+	disabled?: boolean;
+	passphraseRequired?: boolean;
 };
 
 export type OfficialSearchRequest = {
@@ -375,14 +378,22 @@ export function getOfficialCredentialStatus(): Promise<OfficialCredentialStatus>
 	return requestJSON<OfficialCredentialStatus>('/api/v1/official/credentials/status');
 }
 
-export function deleteOfficialCredentials(): Promise<OfficialCredentialStatus> {
-	return requestJSONWithInit<OfficialCredentialStatus>('/api/v1/official/credentials', { method: 'DELETE' });
+// Sent only when the server sets LOINC_OFFICIAL_PASSPHRASE.
+function passphraseHeaders(passphrase = ''): Record<string, string> {
+	return passphrase ? { 'X-Loinc-Passphrase': passphrase } : {};
 }
 
-export function officialSearch(request: OfficialSearchRequest): Promise<OfficialSearchResponse> {
+export function deleteOfficialCredentials(passphrase = ''): Promise<OfficialCredentialStatus> {
+	return requestJSONWithInit<OfficialCredentialStatus>('/api/v1/official/credentials', {
+		method: 'DELETE',
+		headers: passphraseHeaders(passphrase),
+	});
+}
+
+export function officialSearch(request: OfficialSearchRequest, passphrase = ''): Promise<OfficialSearchResponse> {
 	return requestJSONWithInit<OfficialSearchResponse>('/api/v1/official/search', {
 		method: 'POST',
-		headers: { 'content-type': 'application/json' },
+		headers: { 'content-type': 'application/json', ...passphraseHeaders(passphrase) },
 		body: JSON.stringify(request),
 	});
 }

@@ -32,7 +32,49 @@ import (
 	"loinc-browser/web"
 )
 
-const defaultDBPath = "./data/loinc-normalized.sqlite"
+// dataDir is where the database, uploads, search index, app key, and settings live:
+// LOINC_BROWSER_DATA_DIR, else ./data when it exists (source checkouts), else the per-user
+// data directory, so an installed binary works from any working directory.
+func dataDir() string {
+	if dir := strings.TrimSpace(os.Getenv("LOINC_BROWSER_DATA_DIR")); dir != "" {
+		return dir
+	}
+	if info, err := os.Stat("./data"); err == nil && info.IsDir() {
+		return "./data"
+	}
+	return userDataDir()
+}
+
+// userDataDir returns ~/Library/Application Support/loinc-browser on macOS, %AppData%\loinc-browser
+// on Windows, and $XDG_DATA_HOME (or ~/.local/share)/loinc-browser elsewhere.
+func userDataDir() string {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
+			return filepath.Join(dir, "loinc-browser")
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, ".local", "share", "loinc-browser")
+		}
+	} else if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "loinc-browser")
+	}
+	return "./data"
+}
+
+func defaultDBPath() string {
+	return filepath.Join(dataDir(), "loinc-normalized.sqlite")
+}
+
+// loadEnvFiles loads .env and loinc.env from the working directory, then .env from the data
+// directory (which the first .env may itself have set). Earlier values win.
+func loadEnvFiles() error {
+	for _, path := range []string{".env", "loinc.env"} {
+		if err := loadDotEnv(path); err != nil {
+			return err
+		}
+	}
+	return loadDotEnv(filepath.Join(dataDir(), ".env"))
+}
 
 func main() {
 	log.SetFlags(0)
@@ -85,6 +127,8 @@ type serveConfig struct {
 	AppKeyPath         string
 	KVPath             string
 	SearchIndexPath    string
+	OfficialDisabled   bool
+	OfficialPassphrase string
 }
 
 type mcpConfig struct {
@@ -99,9 +143,16 @@ func runIngest(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if err := loadEnvFiles(); err != nil {
+		return err
+	}
+	dbPath := defaultDBPath()
+	if err := ensureDatabaseDir(dbPath); err != nil {
+		return err
+	}
 	summary, err := loinc.Ingest(context.Background(), loinc.IngestOptions{
 		ReleaseDir: *releaseDir,
-		DBPath:     defaultDBPath,
+		DBPath:     dbPath,
 	})
 	if err != nil {
 		return err
@@ -121,16 +172,14 @@ func runVersion() error {
 }
 
 func runServe(args []string) error {
-	if err := loadDotEnv(".env"); err != nil {
-		return err
-	}
-	if err := loadDotEnv("loinc.env"); err != nil {
+	if err := loadEnvFiles(); err != nil {
 		return err
 	}
 	cfg, err := parseServeConfig(args)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Data directory: %s\n", dataDir())
 	if err := ensureDatabaseFromLocalZip(context.Background(), ".", cfg.DBPath); err != nil {
 		return err
 	}
@@ -149,7 +198,7 @@ func runServe(args []string) error {
 		Store:              store,
 		Assets:             assets,
 		DBPath:             cfg.DBPath,
-		UploadDir:          "./data/uploads",
+		UploadDir:          filepath.Join(dataDir(), "uploads"),
 		CacheEntries:       cfg.CacheEntries,
 		EnableMCP:          cfg.EnableMCP,
 		MCPPath:            cfg.MCPPath,
@@ -158,7 +207,13 @@ func runServe(args []string) error {
 		AppKeyPath:         cfg.AppKeyPath,
 		KVPath:             cfg.KVPath,
 		SearchIndexPath:    cfg.SearchIndexPath,
-		Terminology:        &termSvc,
+		OfficialDisabled:   cfg.OfficialDisabled,
+		OfficialPassphrase: cfg.OfficialPassphrase,
+		OfficialEnvCredentials: server.OfficialCredentials{
+			Username: strings.TrimSpace(os.Getenv("LOINC_OFFICIAL_USERNAME")),
+			Password: os.Getenv("LOINC_OFFICIAL_PASSWORD"),
+		},
+		Terminology: &termSvc,
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -251,6 +306,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	searchIndexPath := flags.String("search-index-path", defaultSearchIndexPath(), "path to generated local Lucene-style search index")
 	unixSocketPath := flags.String("unix-socket", defaultUnixSocketPath(), "path to a Unix domain socket to also serve on (Mode D), off by default")
 	udpAddr := flags.String("udp-addr", defaultUDPAddr(), "UDP address for the compact Mode E micro-protocol, off by default")
+	disableOfficial := flags.Bool("no-official", envBool("LOINC_OFFICIAL_DISABLED"), "disable the /api/v1/official/* proxy to the online LOINC Search API")
 	if err := flags.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -277,7 +333,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		listenAddr = normalizedPort
 	}
 	return serveConfig{
-		DBPath:             defaultDBPath,
+		DBPath:             defaultDBPath(),
 		Addr:               listenAddr,
 		UnixSocketPath:     strings.TrimSpace(*unixSocketPath),
 		UDPAddr:            strings.TrimSpace(*udpAddr),
@@ -289,6 +345,8 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		AppKeyPath:         *appKeyPath,
 		KVPath:             *kvPath,
 		SearchIndexPath:    *searchIndexPath,
+		OfficialDisabled:   *disableOfficial,
+		OfficialPassphrase: os.Getenv("LOINC_OFFICIAL_PASSPHRASE"),
 	}, nil
 }
 
@@ -430,20 +488,18 @@ func isTerminal(file *os.File) bool {
 }
 
 func runMCP(args []string) error {
-	if err := loadDotEnv(".env"); err != nil {
-		return err
-	}
-	if err := loadDotEnv("loinc.env"); err != nil {
+	if err := loadEnvFiles(); err != nil {
 		return err
 	}
 	cfg, err := parseMCPConfig(args)
 	if err != nil {
 		return err
 	}
-	if err := ensureDatabaseFromLocalZip(context.Background(), ".", defaultDBPath); err != nil {
+	dbPath := defaultDBPath()
+	if err := ensureDatabaseFromLocalZip(context.Background(), ".", dbPath); err != nil {
 		return err
 	}
-	store, err := loinc.OpenStore(defaultDBPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
+	store, err := loinc.OpenStore(dbPath, loinc.StoreOptions{CacheEntries: cfg.CacheEntries})
 	if err != nil {
 		return err
 	}
@@ -488,7 +544,11 @@ func ensureDatabaseFromLocalZip(ctx context.Context, cwd string, dbPath string) 
 		return err
 	}
 	if !ok {
-		return nil
+		// An installed binary has no meaningful cwd, so also accept a zip dropped in the data dir.
+		zipPath, ok, err = findLocalReleaseZip(filepath.Dir(dbPath))
+		if err != nil || !ok {
+			return err
+		}
 	}
 	workDir := filepath.Join(filepath.Dir(dbPath), "bootstrap", time.Now().UTC().Format("20060102T150405.000000000"))
 	releaseDir, err := loinc.ExtractReleaseZip(zipPath, filepath.Join(workDir, "release"))
@@ -697,21 +757,21 @@ func defaultAppKeyPath() string {
 	if value := strings.TrimSpace(os.Getenv("LOINC_APP_KEY_PATH")); value != "" {
 		return value
 	}
-	return "./data/loinc-browser-app.key"
+	return filepath.Join(dataDir(), "loinc-browser-app.key")
 }
 
 func defaultKVPath() string {
 	if value := strings.TrimSpace(os.Getenv("LOINC_KV_PATH")); value != "" {
 		return value
 	}
-	return "./data/loinc-browser-kv.json"
+	return filepath.Join(dataDir(), "loinc-browser-kv.json")
 }
 
 func defaultSearchIndexPath() string {
 	if value := strings.TrimSpace(os.Getenv("LOINC_SEARCH_INDEX_PATH")); value != "" {
 		return value
 	}
-	return "./data/loinc-search.bleve"
+	return filepath.Join(dataDir(), "loinc-search.bleve")
 }
 
 func normalizePathFlag(path string) string {
@@ -792,6 +852,18 @@ Environment:
   LOINC_BROWSER_UNIX_SOCKET= (off by default; Mode D local Unix socket transport)
   LOINC_BROWSER_UDP_ADDR= (off by default; Mode E compact UDP micro-protocol, e.g. :8081)
   LOINC_AGENT_DOCS_DIR=./docs/agent
-  LOINC_SEARCH_INDEX_PATH=./data/loinc-search.bleve
+  LOINC_BROWSER_DATA_DIR= (default: ./data if present, else the per-user data directory)
+  LOINC_SEARCH_INDEX_PATH=<data dir>/loinc-search.bleve
+  LOINC_OFFICIAL_DISABLED=false (or --no-official; turns off the online Search API proxy)
+  LOINC_OFFICIAL_PASSPHRASE= (optional; required as X-Loinc-Passphrase on official requests)
+  LOINC_OFFICIAL_USERNAME= / LOINC_OFFICIAL_PASSWORD= (optional; used for "saved credentials")
 `
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
