@@ -21,6 +21,12 @@ This starts the UI, `/api/v1`, Swagger/OpenAPI, and HTTP MCP. It uses `./data/lo
 
 The serve address may be configured in `.env` with `LOINC_BROWSER_ADDR=:8080` or `PORT=8080`; `--addr` still overrides the default. Keep `.env.example` current when adding environment keys.
 
+The UI opens on **Find** (`?mode=find`), the end-user screen for looking up a code and copying it. **Map a list** (`?mode=map`) maps a whole lab test master and relies on `POST /api/v1/terms/match`. The explorer modes (hierarchy, facets, rank, relationships, Search API, Advanced Search) sit on the other tabs; keep their deep links working. The design and its status are in `docs/FIND_MODE_PLAN.md`. The Find components are `web/src/lib/components/{FindMode,TermCard,BasketPanel,MapList,SetupPanel}.svelte`. Pure helpers live in `web/src/lib/{copy,maplist,xlsx,setup,domains}.ts`; domain presets (the class and classType filters) are in `domains.ts`.
+
+The deployment loads one common-codes list. It is set with `LOINC_COMMON_CODES_CSV` (any CSV with a LOINC code column and a name column) and optionally `LOINC_COMMON_CODES_LABEL`; otherwise `LOINC_CLCI_CSV`, otherwise Common Lab Codes for India auto-discovered in the data directory. Its codes rank first and results carry `localName`. Keep `clciName`, `clciMatches`, and `clci=true` backward compatible, because the external mapper and MCP clients read them. `lang=<code>` (e.g. `de-DE`, from the `languages` list in `/api/version`) adds `localizedName` from the release's linguistic variants. It is display only: search stays English.
+
+Search tweaks for request wording (shorthands such as `usg`/`esr`/`lft`, dropping a leading "S." for serum, "with contrast" meaning "W contrast") live in `internal/loinc/search.go` (`requestSynonyms`, `Store.Search`). Add a probe to `TestRankingAgainstMappingProbe` in `internal/loinc/ranking_eval_test.go` for every such change and run it against the real database (see below).
+
 Search results hide `STATUS=DEPRECATED` by default. Selecting the `DEPRECATED` status facet should still allow explicitly browsing deprecated terms.
 
 The explicit `ingest --release ./Loinc_2.82` command remains available for manual import into the default normalized SQLite database.
@@ -37,6 +43,20 @@ Before claiming completion, run:
 go test ./...
 npm --prefix web run check
 npm --prefix web run build
+```
+
+When search ranking, `/api/v1/terms/match`, or the common-codes list changes, also run the ranking and CLCI checks against the real database:
+
+```bash
+LOINC_TEST_DB=$(pwd)/data/loinc-normalized.sqlite go test ./internal/loinc/ -run 'TestRanking|TestMatchNamesAgainstCLCI|Localized' -count=1
+```
+
+When `web/src/lib/{copy,maplist,xlsx}.ts` change, run their node self-checks, which are kept out of the app tsconfig:
+
+```bash
+node --experimental-strip-types web/src/lib/copy.check.ts
+node --experimental-strip-types web/src/lib/maplist.check.ts
+node --experimental-strip-types web/src/lib/xlsx.check.ts
 ```
 
 For rendered browser UI changes, verify behavior with the Codex in-app browser at the running local URL before claiming completion. Do not rely on build output alone for UI interaction fixes.
