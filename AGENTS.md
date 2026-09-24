@@ -19,7 +19,7 @@ go run ./cmd/loinc-browser
 
 This starts the UI, `/api/v1`, Swagger/OpenAPI, and HTTP MCP. It uses `./data/loinc-normalized.sqlite` automatically when `./data` exists (otherwise `LOINC_BROWSER_DATA_DIR` or the per-user data directory; see README) and may auto-ingest a local `Loinc*.zip` when that database is missing or has no `loinc_terms` data. Do not change this to overwrite a populated database.
 
-The serve address may be configured in `.env` with `LOINC_BROWSER_ADDR=:8080` or `PORT=8080`; `--addr` still overrides the default. Keep `.env.example` current when adding environment keys.
+The serve address may be configured in `.env` with `LOINC_BROWSER_ADDR=:8080` or `PORT=8080`; `--addr` still overrides the default. Do NOT read or edit `.env`; keep `.env.example` current when adding environment keys.
 
 The UI opens on **Find** (`?mode=find`), the end-user screen for looking up a code and copying it. **Map a list** (`?mode=map`) maps a whole lab test master and relies on `POST /api/v1/terms/match`. The explorer modes (hierarchy, facets, rank, relationships, Search API, Advanced Search) sit on the other tabs; keep their deep links working. The design and its status are in `docs/FIND_MODE_PLAN.md`. The Find components are `web/src/lib/components/{FindMode,TermCard,BasketPanel,MapList,SetupPanel}.svelte`. Pure helpers live in `web/src/lib/{copy,maplist,xlsx,setup,domains}.ts`; domain presets (the class and classType filters) are in `domains.ts`.
 
