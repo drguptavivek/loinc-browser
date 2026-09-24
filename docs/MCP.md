@@ -165,6 +165,7 @@ Context is capped by default. Use small limits and follow-up calls by stable ID.
 | `loinc_get_hierarchy_terms` | List terms under a hierarchy node. |
 | `loinc_search_parts` | Search LOINC parts. |
 | `loinc_search_groups` | Search LOINC groups. |
+| `loinc_match_names` | Map a batch of local test-master names (1-1000) to LOINC term candidates in one call, one word search per name, same list filters as `loinc_search_terms`. Buckets each result `confident` (typed LOINC number, a CLCI name match, or a clear top result; still spot-check), `review` (pick among the returned candidates), or `none` (nothing found). Same matcher as the UI's "Map a list" and `POST /api/v1/terms/match`. |
 
 ### FHIR terminology + Search API tools
 

@@ -173,6 +173,119 @@ type TermCandidate struct {
 	Fields    map[string]string `json:"fields,omitempty"`
 }
 
+// maxMatchNames caps a batch loinc_match_names call: each name runs its own term search, so an
+// unbounded batch is an unbounded number of queries per call. Mirrors internal/server's
+// maxMatchNames for the HTTP /api/v1/terms/match endpoint this tool wraps.
+const maxMatchNames = 1000
+
+// MatchNamesRequest is loinc_match_names' input: a batch of local test-master names plus the same
+// list filters as SearchTermsRequest, minus the per-name fields (query/limit/offset/sort/mode)
+// MatchNames sets itself for each name.
+type MatchNamesRequest struct {
+	Names              []string `json:"names" jsonschema:"Local lab test master names to map to LOINC terms, e.g. an uploaded order set's test names, 1 to 1000 entries."`
+	Status             string   `json:"status,omitempty" jsonschema:"Status filter. Defaults to every status except DEPRECATED. Use DEPRECATED or * only when needed."`
+	Statuses           []string `json:"statuses,omitempty" jsonschema:"Repeatable status filters"`
+	UsageType          string   `json:"usageType,omitempty" jsonschema:"any, observation, or order"`
+	RankMode           string   `json:"rankMode,omitempty" jsonschema:"observation or order"`
+	RankedOnly         bool     `json:"rankedOnly,omitempty" jsonschema:"Require positive common rank"`
+	Class              string   `json:"class,omitempty" jsonschema:"LOINC class filter"`
+	Classes            []string `json:"classes,omitempty" jsonschema:"Several LOINC classes, any of which may match (e.g. CHEM, SERO)"`
+	ClassType          string   `json:"classType,omitempty" jsonschema:"LOINC CLASSTYPE: lab, clinical, attachment, or survey. Use lab when mapping lab tests to drop survey and attachment noise."`
+	System             string   `json:"system,omitempty" jsonschema:"System axis filter"`
+	TimeAspect         string   `json:"timeAspect,omitempty" jsonschema:"Time aspect filter"`
+	Scale              string   `json:"scale,omitempty" jsonschema:"Scale filter"`
+	Method             string   `json:"method,omitempty" jsonschema:"Method filter"`
+	Property           string   `json:"property,omitempty" jsonschema:"Property filter"`
+	OrderObs           string   `json:"orderObs,omitempty" jsonschema:"Raw ORDER_OBS filter"`
+	HierarchyNodeID    string   `json:"hierarchyNodeId,omitempty" jsonschema:"Hierarchy occurrence node ID"`
+	Component          string   `json:"component,omitempty" jsonschema:"Exact LOINC Component filter"`
+	Contains           []string `json:"contains,omitempty" jsonschema:"Keep only panels containing every one of these LOINC numbers"`
+	UniversalLabOrders bool     `json:"universalLabOrders,omitempty" jsonschema:"Keep only terms in LOINC's Universal Lab Orders value set (orderable lab tests)"`
+	CLCI               bool     `json:"clci,omitempty" jsonschema:"Keep only terms in Common Lab Codes for India (CLCI), the national subset curated by NRCeS/C-DAC."`
+	RadModality        string   `json:"radModality,omitempty" jsonschema:"Radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"`
+	RadSubtype         string   `json:"radSubtype,omitempty" jsonschema:"Radiology playbook modality subtype, e.g. Doppler"`
+	RadRegion          string   `json:"radRegion,omitempty" jsonschema:"Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"`
+	RadFocus           string   `json:"radFocus,omitempty" jsonschema:"Radiology imaging focus (exact playbook part name), e.g. Kidney, Knee, Brain"`
+	RadLaterality      string   `json:"radLaterality,omitempty" jsonschema:"Radiology laterality: Right, Left, Bilateral, Unilateral, Unspecified"`
+	RadContrast        string   `json:"radContrast,omitempty" jsonschema:"Radiology contrast timing: WO (without), W (with), or 'WO & W'"`
+	RadView            string   `json:"radView,omitempty" jsonschema:"Radiology view type (exact playbook part name)"`
+	Detail             string   `json:"detail,omitempty" jsonschema:"summary, standard, or full"`
+}
+
+// searchParams reuses SearchTermsRequest.searchParams for the filter -> loinc.SearchParams
+// mapping, keeping it identical to loinc_search_terms. Limit/offset/query/sort are left zero;
+// Store.MatchNames overwrites them per name (see internal/loinc/match.go).
+func (r MatchNamesRequest) searchParams() loinc.SearchParams {
+	return SearchTermsRequest{
+		Status: r.Status, Statuses: r.Statuses, UsageType: r.UsageType, RankMode: r.RankMode, RankedOnly: r.RankedOnly,
+		Class: r.Class, Classes: r.Classes, ClassType: r.ClassType, System: r.System, TimeAspect: r.TimeAspect,
+		Scale: r.Scale, Method: r.Method, Property: r.Property, OrderObs: r.OrderObs, HierarchyNodeID: r.HierarchyNodeID,
+		Component: r.Component, Contains: r.Contains, UniversalLabOrders: r.UniversalLabOrders, CLCI: r.CLCI,
+		RadModality: r.RadModality, RadSubtype: r.RadSubtype, RadRegion: r.RadRegion, RadFocus: r.RadFocus,
+		RadLaterality: r.RadLaterality, RadContrast: r.RadContrast, RadView: r.RadView,
+	}.searchParams(0, 0)
+}
+
+// MatchResult is one input name's outcome: its bucket and up to 5 compact candidates, in the
+// same shape loinc_search_terms returns.
+type MatchResult struct {
+	Name       string          `json:"name"`
+	Bucket     string          `json:"bucket"`
+	Candidates []TermCandidate `json:"candidates"`
+	Relaxed    bool            `json:"relaxed,omitempty"`
+	Synonyms   []string        `json:"synonyms,omitempty"`
+}
+
+type MatchCounts struct {
+	Confident int `json:"confident"`
+	Review    int `json:"review"`
+	None      int `json:"none"`
+}
+
+type MatchNamesResult struct {
+	Matches []MatchResult `json:"matches"`
+	Counts  MatchCounts   `json:"counts"`
+}
+
+// MatchNames implements loinc_match_names by delegating to loinc.Store.MatchNames, the same
+// batch matcher the UI's "Map a list" and POST /api/v1/terms/match use: one word search per
+// name, bucketed confident/review/none (see internal/loinc/match.go's matchBucket).
+func (s *Service) MatchNames(ctx context.Context, req MatchNamesRequest) (MatchNamesResult, error) {
+	store, err := s.store()
+	if err != nil {
+		return MatchNamesResult{}, err
+	}
+	if len(req.Names) == 0 {
+		return MatchNamesResult{}, errors.New("names is required")
+	}
+	if len(req.Names) > maxMatchNames {
+		return MatchNamesResult{}, fmt.Errorf("too many names: max %d", maxMatchNames)
+	}
+	matches, err := store.MatchNames(ctx, req.Names, req.searchParams())
+	if err != nil {
+		return MatchNamesResult{}, err
+	}
+	out := MatchNamesResult{Matches: make([]MatchResult, 0, len(matches))}
+	for _, m := range matches {
+		out.Matches = append(out.Matches, MatchResult{
+			Name:       m.Name,
+			Bucket:     m.Bucket,
+			Candidates: compactTerms(m.Candidates, req.Detail),
+			Relaxed:    m.Relaxed,
+			Synonyms:   m.Synonyms,
+		})
+		switch m.Bucket {
+		case "confident":
+			out.Counts.Confident++
+		case "review":
+			out.Counts.Review++
+		default:
+			out.Counts.None++
+		}
+	}
+	return out, nil
+}
+
 type TermFitResponse struct {
 	loinc.TermFit
 	Notes []string `json:"notes,omitempty"`
