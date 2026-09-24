@@ -55,3 +55,45 @@ func TestLoadCLCI(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadCommonCodes(t *testing.T) {
+	defer clci.Store(nil)
+
+	// A headerless 2-column list, name before code: any deployment's own common-codes CSV.
+	headerless := filepath.Join(t.TempDir(), "common.csv")
+	if err := os.WriteFile(headerless, []byte("S. Sodium,2951-2\nS. Potassium,2823-3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count, err := LoadCommonCodes(headerless, "US Common Codes")
+	if err != nil || count != 2 {
+		t.Fatalf("want 2 entries, got %d %v", count, err)
+	}
+	if label, n := CommonCodesInfo(); label != "US Common Codes" || n != 2 {
+		t.Fatalf("got label %q count %d", label, n)
+	}
+	if clciName("2951-2") != "" {
+		t.Fatalf("clciName must stay empty for a non-CLCI list, got %q", clciName("2951-2"))
+	}
+	if localName("2951-2") != "S. Sodium" {
+		t.Fatalf("localName: got %q", localName("2951-2"))
+	}
+
+	// A header row plus a code column that isn't first, other columns blank.
+	withHeader := filepath.Join(t.TempDir(), "common2.csv")
+	csv := "site,region,code,note\n" +
+		",,1751-7,\n" +
+		"Lab A,,4548-4,\n"
+	if err := os.WriteFile(withHeader, []byte(csv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count, err = LoadCommonCodes(withHeader, "Hospital List")
+	if err != nil || count != 2 {
+		t.Fatalf("want 2 entries (header skipped, code detected in column 3), got %d %v", count, err)
+	}
+	if localName("4548-4") != "Lab A" {
+		t.Fatalf("localName from first other non-empty column: got %q", localName("4548-4"))
+	}
+	if localName("1751-7") != "" {
+		t.Fatalf("row with no other non-empty column: got %q", localName("1751-7"))
+	}
+}

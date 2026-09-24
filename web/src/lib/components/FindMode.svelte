@@ -1,9 +1,11 @@
 <script lang="ts">
-	import { Search, Copy, Check, Plus, ShoppingBasket, ListChecks } from '@lucide/svelte';
-	import { searchTerms, searchPanels, type SearchResponse, type SearchResult } from '$lib/api';
+	import { Search, Copy, Check, Plus, ShoppingBasket, ListChecks, Settings } from '@lucide/svelte';
+	import { getVersion, searchTerms, searchPanels, type SearchResponse, type SearchResult } from '$lib/api';
 	import { DOMAINS, domainById, type DomainId } from '$lib/domains';
 	import { basket, addToBasket } from '$lib/basket';
-	import { copyText, asCode } from '$lib/copy';
+	import { copyText, formatTerm } from '$lib/copy';
+	import { setup, setupParams } from '$lib/setup';
+	import { loincVersion } from '$lib/version';
 	import Button from './Button.svelte';
 	import Badge from './Badge.svelte';
 	import EmptyState from './EmptyState.svelte';
@@ -12,6 +14,7 @@
 		onOpen,
 		onMapList,
 		onOpenBasket,
+		onOpenSetup,
 		initialQuery = '',
 		initialDomain = 'lab',
 		disabled = false,
@@ -20,9 +23,10 @@
 		onOpen: (loincNum: string) => void;
 		onMapList: () => void;
 		onOpenBasket: () => void;
+		onOpenSetup: () => void;
 		initialQuery?: string;
 		initialDomain?: string;
-		// true while a drawer (term card, basket) covers the list: keys belong to the drawer then
+		// true while a drawer (term card, basket, setup) covers the list: keys belong to the drawer then
 		disabled?: boolean;
 		// reports query and domain so App can keep them in the URL (Back, shared links)
 		onStateChange?: (query: string, domain: string) => void;
@@ -37,11 +41,22 @@
 	let error = $state('');
 	let activeIndex = $state(-1);
 	let copiedCode = $state('');
+	let version = $state<string | undefined>(undefined);
+	let commonCodesLabel = $state<string | undefined>(undefined);
+	loincVersion().then((v) => (version = v));
+	getVersion()
+		.then((v) => (commonCodesLabel = v.commonCodes?.label))
+		.catch(() => {});
 
 	let inputEl: HTMLInputElement | undefined = $state();
 	let rowEls: (HTMLElement | undefined)[] = [];
 
 	const domain = $derived(domainById(domainId));
+	const setupSummary = $derived(
+		[$setup.lang, $setup.commonCodesOnly ? 'common codes only' : '', $setup.orderableOnly ? 'orderable only' : '']
+			.filter(Boolean)
+			.join(' · ')
+	);
 	const results = $derived(response?.results ?? []);
 	const exampleQueries = $derived(
 		domain.hint
@@ -70,6 +85,7 @@
 		error = '';
 		const params = {
 			...domain.params,
+			...setupParams($setup),
 			q,
 			limit: 25,
 			...(domainId === 'radiology' && radModality ? { radModality } : {}),
@@ -98,11 +114,12 @@
 	}
 
 	$effect(() => {
-		// Re-run whenever query, domain, or radiology filters change.
+		// Re-run whenever query, domain, radiology filters, or setup (lang/filters) change.
 		void query;
 		void domainId;
 		void radModality;
 		void radRegion;
+		void $setup;
 		scheduleSearch();
 		onStateChange?.(query, domainId);
 	});
@@ -127,7 +144,7 @@
 	}
 
 	async function copyRow(r: SearchResult) {
-		const ok = await copyText(asCode(r));
+		const ok = await copyText(formatTerm(r, $setup.copyFormat, version));
 		if (ok) {
 			copiedCode = r.loincNum;
 			setTimeout(() => {
@@ -203,6 +220,10 @@
 			<Button variant="outline" size="sm" on:click={onOpenBasket} ariaLabel="Open basket">
 				<ShoppingBasket size={14} />
 				Basket ({$basket.length})
+			</Button>
+			<Button variant="outline" size="sm" on:click={onOpenSetup} ariaLabel="Open setup">
+				<Settings size={14} />
+				{setupSummary || 'Setup'}
 			</Button>
 		</div>
 	</div>
@@ -323,10 +344,13 @@
 									{#if r.status && r.status !== 'ACTIVE'}
 										<Badge variant="warning">{r.status}</Badge>
 									{/if}
-									{#if r.clciName}
-										<Badge variant="secondary">India: {r.clciName}</Badge>
+									{#if r.localName ?? r.clciName}
+										<Badge variant="secondary" title={commonCodesLabel ?? 'Local name'}>{r.localName ?? r.clciName}</Badge>
 									{/if}
 								</div>
+								{#if r.localizedName}
+									<div class="text-sm text-zinc-600">{r.localizedName}</div>
+								{/if}
 								<div class="flex flex-wrap gap-1.5 text-xs text-zinc-500">
 									{#if r.component}<span>{r.component}</span>{/if}
 									{#if r.property}<span>· {r.property}</span>{/if}

@@ -73,8 +73,12 @@ type SearchParams struct {
 	// RadParts keeps only terms whose RSNA radiology playbook has each part, keyed by
 	// PartTypeName (see RadiologyParams), matched on PartName case-insensitively.
 	RadParts map[string]string
-	Limit    int
-	Offset   int
+	// Lang is a linguistic variant language code (see Store.LinguisticVariantLanguages) that
+	// adds LocalizedName to each result's display; it does not affect which terms match. An
+	// unrecognised code is ignored, not an error.
+	Lang   string
+	Limit  int
+	Offset int
 }
 
 type TermListParams = SearchParams
@@ -139,9 +143,16 @@ type SearchResult struct {
 	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
 	ExampleUCUM   string `json:"exampleUcum,omitempty"`
 	MapperComment string `json:"mapperComment,omitempty"`
-	// CLCIName is the Common Lab Codes for India "General Name", when loaded and listed.
-	CLCIName string `json:"clciName,omitempty"`
-	Links    Links  `json:"_links,omitempty"`
+	// CLCIName is the Common Lab Codes for India "General Name", when CLCI is the loaded
+	// common-codes list and it lists this term. LocalName is the same name for any loaded
+	// common-codes list, CLCI or not.
+	CLCIName  string `json:"clciName,omitempty"`
+	LocalName string `json:"localName,omitempty"`
+	// LocalizedName is the term's LONG_COMMON_NAME translated into SearchParams.Lang, when the
+	// release has that linguistic variant for this term. Display only; search still runs in
+	// English.
+	LocalizedName string `json:"localizedName,omitempty"`
+	Links         Links  `json:"_links,omitempty"`
 }
 
 type Term struct {
@@ -149,6 +160,8 @@ type Term struct {
 	ExampleUCUM     string            `json:"exampleUcum,omitempty"`
 	MapperComment   string            `json:"mapperComment,omitempty"`
 	CLCIName        string            `json:"clciName,omitempty"`
+	LocalName       string            `json:"localName,omitempty"`
+	LocalizedName   string            `json:"localizedName,omitempty"`
 	LongCommonName  string            `json:"longCommonName"`
 	ShortName       string            `json:"shortName"`
 	Component       string            `json:"component"`

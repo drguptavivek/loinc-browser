@@ -10,14 +10,18 @@ NRCeS calls the mapping "suggestive": a curated default for a test as Indian lab
 
 Source: [NRCeS national releases: Common Lab Codes for India](https://www.nrces.in/services/national-releases#lab_codes).
 
+## One Deployment, One Common-Codes List
+
+CLCI is one instance of a generic deployment setting: the app loads at most one common-codes list per deployment, and CLCI is simply its default. Any CSV with a column of LOINC numbers and a column of the local name labs use for that code works, via `LOINC_COMMON_CODES_CSV` (path) and `LOINC_COMMON_CODES_LABEL` (label shown in `/api/version`, default the file name) — a US, Australian, or single-hospital deployment can point these at its own list instead of CLCI's. The header row is optional; the code column is detected automatically. `LOINC_COMMON_CODES_CSV` takes precedence over `LOINC_CLCI_CSV`/auto-found CLCI. `localName` on term results carries the loaded list's name regardless of which list it is; `clciName` is populated only when the loaded list is CLCI, since the external mapper and MCP clients read that field specifically.
+
 ## CLCI In This App
 
 When the CLCI CSV is in the data directory (`<data dir>/common-lab-codes-for-india-YYYYMMDD/common-lab-codes-for-india.csv`, the newest folder wins, or `<data dir>/common_codes/common-lab-codes-for-india.csv`, or the path in `LOINC_CLCI_CSV`), startup loads it and word search uses it four ways:
 
 - **Prior.** Word-search relevance boosts CLCI codes by as much as the popularity boost for the most-used US terms. CLCI is India-curated and `COMMON_TEST_RANK` comes from US usage, so neither overrides the other.
 - **Name match.** When the query shares at least 75% of its words with a General Name (shared words over all words of both, ignoring order, punctuation, and stop words), that name's codes come first on page one, still subject to every other filter, and the response lists them in `clciMatches`. "creatinine urine" matches "Creatinine, Urine"; "urine" alone does not. Names are not unique ("Urea Nitrogen (BUN), Urine" has three codes), so several codes can be pinned. This is how long names such as "Band form neutrophils per 100 white blood cells, Blood", which no term matches word for word, still find their code.
-- **Filter.** `clci=true` (HTTP `/api/v1/terms/search`, `/api/search`, MCP `loinc_search_terms`) keeps only CLCI codes. Without the CSV loaded, `clci=true` returns 400.
-- **Label.** Term results, term detail, and MCP candidates carry `clciName`, the CLCI General Name, so a reviewer sees the national default beside each pick.
+- **Filter.** `clci=true` (HTTP `/api/v1/terms/search`, `/api/search`, MCP `loinc_search_terms`) keeps only the loaded list's codes; `commonCodes=true` is the same filter under its list-agnostic name. Without a list loaded, either returns 400.
+- **Label.** Term results, term detail, and MCP candidates carry `clciName`, the CLCI General Name, and `localName`, the same name from whichever list is loaded, so a reviewer sees the national (or local) default beside each pick.
 
 Meaning search (`mode=semantic`) does not use the prior yet; `mode=hybrid` gets it through the word half.
 

@@ -1068,6 +1068,47 @@ func writeServerRequiredZipFiles(t *testing.T, zipWriter *zip.Writer) {
 	}
 }
 
+func TestVersionCommonCodes(t *testing.T) {
+	defer loinc.ResetCommonCodes()
+	ctx := context.Background()
+	releaseDir := writeServerTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := loinc.Ingest(ctx, loinc.IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	store, err := loinc.OpenStore(dbPath, loinc.StoreOptions{CacheEntries: 4})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	commonCodesPath := filepath.Join(t.TempDir(), "common.csv")
+	if err := os.WriteFile(commonCodesPath, []byte("Cholesterol,2000-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loinc.LoadCommonCodes(commonCodesPath, "Test Common Codes"); err != nil {
+		t.Fatalf("load common codes: %v", err)
+	}
+
+	server := httptest.NewServer(New(Options{Store: store}))
+	defer server.Close()
+
+	var versionInfo struct {
+		CommonCodes *struct {
+			Label string `json:"label"`
+			Count int    `json:"count"`
+		} `json:"commonCodes"`
+		Languages []loinc.Language `json:"languages"`
+	}
+	getJSON(t, server.URL+"/api/version", &versionInfo)
+	if versionInfo.CommonCodes == nil || versionInfo.CommonCodes.Label != "Test Common Codes" || versionInfo.CommonCodes.Count != 1 {
+		t.Fatalf("expected commonCodes in /api/version, got %#v", versionInfo.CommonCodes)
+	}
+	if versionInfo.Languages == nil {
+		t.Fatalf("expected languages to be [] not null")
+	}
+}
+
 type serverCSVSpec struct {
 	path   string
 	header []string

@@ -217,12 +217,27 @@ func (a *app) version(w http.ResponseWriter, r *http.Request) {
 	// loincVersion is the loaded release ("2.82"), for FHIR Coding.version; omitted before an import.
 	response := struct {
 		version.Info
-		LOINCVersion string `json:"loincVersion,omitempty"`
-	}{Info: version.Get()}
+		LOINCVersion string           `json:"loincVersion,omitempty"`
+		CommonCodes  *commonCodesInfo `json:"commonCodes,omitempty"`
+		Languages    []loinc.Language `json:"languages"`
+	}{Info: version.Get(), Languages: []loinc.Language{}}
 	if store, err := a.currentStore(); err == nil {
 		response.LOINCVersion, _ = store.ReleaseVersion(r.Context())
+		if languages, err := store.LinguisticVariantLanguages(r.Context()); err == nil {
+			response.Languages = languages
+		}
+	}
+	if label, count := loinc.CommonCodesInfo(); label != "" {
+		response.CommonCodes = &commonCodesInfo{Label: label, Count: count}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// commonCodesInfo is /api/version's summary of the deployment's loaded common-codes list
+// (Common Lab Codes for India by default; see docs/agent/LOINC_CLCI.md).
+type commonCodesInfo struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
 }
 
 func (a *app) search(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +261,7 @@ func (a *app) search(w http.ResponseWriter, r *http.Request) {
 		OrderObsValues: queryValues(query, "orderObs"),
 		RankedOnly:     parseBool(query.Get("rankedOnly")),
 		HierarchyCode:  query.Get("hierarchy"),
+		Lang:           query.Get("lang"),
 		Limit:          parseInt(query.Get("limit"), 25),
 		Offset:         parseInt(query.Get("offset"), 0),
 	}
@@ -605,6 +621,11 @@ func (a *app) v1Term(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if lang := r.URL.Query().Get("lang"); lang != "" {
+		if names, lerr := store.LocalizedNames(r.Context(), lang, []string{term.LOINCNum}); lerr == nil {
+			term.LocalizedName = names[term.LOINCNum]
+		}
 	}
 	writeJSON(w, http.StatusOK, term)
 }
@@ -1181,8 +1202,9 @@ func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 		ComponentFamily:    parseBool(query.Get("componentFamily")),
 		PanelContains:      queryValues(query, "contains"),
 		UniversalLabOrders: parseBool(query.Get("universalLabOrders")),
-		CLCI:               parseBool(query.Get("clci")),
+		CLCI:               parseBool(query.Get("clci")) || parseBool(query.Get("commonCodes")),
 		RadParts:           loinc.RadParts(query.Get),
+		Lang:               query.Get("lang"),
 		Limit:              parseInt(query.Get("limit"), 25),
 		Offset:             parseInt(query.Get("offset"), 0),
 	}

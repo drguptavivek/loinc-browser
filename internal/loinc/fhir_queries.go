@@ -506,6 +506,28 @@ func (s *Store) FHIRLinguisticVariants(ctx context.Context, loincNum string) ([]
 type linguisticVariantUnionQuery struct {
 	sql       string
 	languages []string // "iso-COUNTRY", in the same order as LinguisticVariants.csv's ID column
+	labels    []string // LANGUAGE_NAME ("German (GERMANY)"), same order as languages
+	tables    []string // that language's raw table name (from RawTable), same order as languages
+}
+
+// Language is one LOINC linguistic variant available for FHIR $lookup's displayLanguage.
+type Language struct {
+	Code  string `json:"code"`  // "iso-COUNTRY", e.g. "de-DE"
+	Label string `json:"label"` // LANGUAGE_NAME, e.g. "German (GERMANY)"
+}
+
+// LinguisticVariantLanguages returns the LOINC linguistic variant languages available in the
+// loaded release, for /api/version. [] (never nil) when none are loaded.
+func (s *Store) LinguisticVariantLanguages(ctx context.Context) ([]Language, error) {
+	union, err := s.buildLinguisticVariantUnionOnce(ctx)
+	if err != nil {
+		return nil, err
+	}
+	languages := make([]Language, len(union.languages))
+	for i, code := range union.languages {
+		languages[i] = Language{Code: code, Label: union.labels[i]}
+	}
+	return languages, nil
 }
 
 // buildLinguisticVariantUnionOnce builds linguisticVariantUnion the first time any term is
@@ -526,16 +548,16 @@ func (s *Store) buildLinguisticVariantUnion(ctx context.Context) (linguisticVari
 	if !ok {
 		return linguisticVariantUnionQuery{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `select "ID", "ISO_LANGUAGE", "ISO_COUNTRY" from `+quoteIdentifier(indexTable)+` order by "ID"`)
+	rows, err := s.db.QueryContext(ctx, `select "ID", "ISO_LANGUAGE", "ISO_COUNTRY", coalesce("LANGUAGE_NAME",'') from `+quoteIdentifier(indexTable)+` order by "ID"`)
 	if err != nil {
 		return linguisticVariantUnionQuery{}, fmt.Errorf("load linguistic variant languages: %w", err)
 	}
 	defer rows.Close()
-	type language struct{ id, iso, country string }
+	type language struct{ id, iso, country, name string }
 	var languages []language
 	for rows.Next() {
 		var l language
-		if err := rows.Scan(&l.id, &l.iso, &l.country); err != nil {
+		if err := rows.Scan(&l.id, &l.iso, &l.country, &l.name); err != nil {
 			return linguisticVariantUnionQuery{}, fmt.Errorf("scan linguistic variant language: %w", err)
 		}
 		languages = append(languages, l)
@@ -551,6 +573,8 @@ func (s *Store) buildLinguisticVariantUnion(ctx context.Context) (linguisticVari
 
 	var branches []string
 	var codes []string
+	var labels []string
+	var tables []string
 	for _, l := range languages {
 		iso := strings.ToLower(strings.TrimSpace(l.iso))
 		country := strings.ToUpper(strings.TrimSpace(l.country))
@@ -570,6 +594,8 @@ func (s *Store) buildLinguisticVariantUnion(ctx context.Context) (linguisticVari
 		seq := len(codes)
 		code := iso + "-" + country
 		codes = append(codes, code)
+		labels = append(labels, strings.TrimSpace(l.name))
+		tables = append(tables, table)
 		branches = append(branches, fmt.Sprintf(
 			`select %d as seq, %s as language, %s from %s where "LOINC_NUM" = ?`,
 			seq, quoteSQLLiteral(code), columns, quoteIdentifier(table)))
@@ -578,7 +604,57 @@ func (s *Store) buildLinguisticVariantUnion(ctx context.Context) (linguisticVari
 		return linguisticVariantUnionQuery{}, nil
 	}
 	sqlText := strings.Join(branches, " union all ") + " order by seq"
-	return linguisticVariantUnionQuery{sql: sqlText, languages: codes}, nil
+	return linguisticVariantUnionQuery{sql: sqlText, languages: codes, labels: labels, tables: tables}, nil
+}
+
+// LocalizedNames returns loincNum -> LONG_COMMON_NAME translated into lang, for whichever of
+// codes have that linguistic variant, in one query against that language's raw table (never one
+// query per code). lang is resolved against buildLinguisticVariantUnionOnce's language list, so
+// the table name interpolated into SQL always comes from that allowlist, never from lang itself;
+// an unrecognised lang returns an empty map, not an error.
+func (s *Store) LocalizedNames(ctx context.Context, lang string, codes []string) (map[string]string, error) {
+	names := map[string]string{}
+	if lang == "" || len(codes) == 0 {
+		return names, nil
+	}
+	union, err := s.buildLinguisticVariantUnionOnce(ctx)
+	if err != nil {
+		return nil, err
+	}
+	table := ""
+	for i, code := range union.languages {
+		if code == lang {
+			table = union.tables[i]
+			break
+		}
+	}
+	if table == "" {
+		return names, nil // unrecognised language: ignored, not an error
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(codes)), ",")
+	args := make([]any, len(codes))
+	for i, code := range codes {
+		args[i] = code
+	}
+	rows, err := s.db.QueryContext(ctx, `select "LOINC_NUM", coalesce("LONG_COMMON_NAME",'') from `+quoteIdentifier(table)+
+		` where "LOINC_NUM" in (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("load localized names for %s: %w", lang, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code, name string
+		if err := rows.Scan(&code, &name); err != nil {
+			return nil, fmt.Errorf("scan localized name for %s: %w", lang, err)
+		}
+		if name != "" {
+			names[code] = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate localized names for %s: %w", lang, err)
+	}
+	return names, nil
 }
 
 // quoteSQLLiteral quotes value as a single-quoted SQL text literal. value is always a

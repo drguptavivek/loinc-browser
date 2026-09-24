@@ -3,6 +3,7 @@
 
 	export let variant: 'default' | 'secondary' | 'outline' | 'warning' = 'default';
 	export let className = '';
+	export let title = '';
 
 	const variants = {
 		default: 'border-transparent bg-zinc-950 text-white',
@@ -12,6 +13,6 @@
 	};
 </script>
 
-<span class={cn('inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium', variants[variant], className)}>
+<span {title} class={cn('inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium', variants[variant], className)}>
 	<slot />
 </span>

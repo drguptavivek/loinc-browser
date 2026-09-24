@@ -1,6 +1,6 @@
 # Find Mode — Design Plan
 
-Status: §2 and §3 implemented 2026-09-24 (Find, the term card, the basket, Map a list, `POST /api/v1/terms/match`). §4 ("My setup") and §5 steps 1 and 4 are deferred.
+Status: §2 and §3 implemented 2026-09-24 (Find, the term card, the basket, Map a list, `POST /api/v1/terms/match`). §4 ("My setup": common-code filter, language, default copy format) and §5 step 4 (language setting) implemented 2026-09-24. §5 step 1 (generalizing to any number of labelled common-code lists) remains deferred.
 
 **Goal:** make people's job easier. A clinician, lab manager or HMIS/EHR implementer should get
 from a local test name to the right LOINC code, copied into their system, in seconds. The

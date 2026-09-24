@@ -40,6 +40,7 @@
 	import TermCard from '$lib/components/TermCard.svelte';
 	import BasketPanel from '$lib/components/BasketPanel.svelte';
 	import MapList from '$lib/components/MapList.svelte';
+	import SetupPanel from '$lib/components/SetupPanel.svelte';
 	import type { PaneAPI } from 'paneforge';
 	import {
 		browseAccessories,
@@ -147,6 +148,7 @@
 	let findDomain = 'lab';
 	let findURLTimer: ReturnType<typeof setTimeout> | undefined;
 	let basketOpen = false;
+	let setupOpen = false;
 	let apiConsolePresetId = '';
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
@@ -1097,6 +1099,7 @@
 	function openFindTerm(loincNum: string) {
 		findTerm = loincNum;
 		basketOpen = false;
+		setupOpen = false;
 		updateURL(false);
 	}
 
@@ -1121,6 +1124,7 @@
 	function openTermInExplorer(loincNum: string) {
 		findTerm = '';
 		basketOpen = false;
+		setupOpen = false;
 		openFacetBrowser();
 		void openTerm(loincNum);
 	}
@@ -1975,10 +1979,11 @@
 			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
 				{#key `${findInitialQuery}|${findInitialDomain}`}
 				<FindMode
-					disabled={!!findTerm || basketOpen}
+					disabled={!!findTerm || basketOpen || setupOpen}
 					onOpen={openFindTerm}
 					onMapList={openMap}
 					onOpenBasket={() => (basketOpen = true)}
+					onOpenSetup={() => (setupOpen = true)}
 					initialQuery={findInitialQuery}
 					initialDomain={findInitialDomain || 'lab'}
 					onStateChange={handleFindState}
@@ -3164,6 +3169,14 @@
 		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="basket-drawer" tabindex="-1" use:drawerFocus={() => (basketOpen = false)}>
 				<BasketPanel onClose={() => (basketOpen = false)} onOpen={openFindTerm} />
+			</aside>
+		</div>
+	{/if}
+
+	{#if setupOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="setup-drawer" tabindex="-1" use:drawerFocus={() => (setupOpen = false)}>
+				<SetupPanel onClose={() => (setupOpen = false)} />
 			</aside>
 		</div>
 	{/if}

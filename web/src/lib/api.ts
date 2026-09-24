@@ -18,6 +18,8 @@ export type SearchResult = {
 	exampleUcum?: string;
 	mapperComment?: string;
 	clciName?: string;
+	localName?: string;
+	localizedName?: string;
 	_links?: Links;
 };
 
@@ -45,6 +47,8 @@ export type Term = {
 	exampleUcum?: string;
 	mapperComment?: string;
 	clciName?: string;
+	localName?: string;
+	localizedName?: string;
 	longCommonName: string;
 	shortName: string;
 	component: string;
@@ -222,6 +226,8 @@ export type VersionInfo = {
 	date?: string;
 	goos: string;
 	goarch: string;
+	commonCodes?: { label: string; count: number };
+	languages?: { code: string; label: string }[];
 };
 
 export type OfficialCredentialStatus = {
@@ -340,7 +346,9 @@ export type SearchParams = {
 	sort?: 'relevance' | 'usage' | 'alpha';
 	mode?: 'words' | 'semantic' | 'hybrid';
 	clci?: boolean;
+	commonCodes?: boolean;
 	universalLabOrders?: boolean;
+	lang?: string;
 	radModality?: string | string[];
 	radSubtype?: string | string[];
 	radRegion?: string | string[];
@@ -500,8 +508,9 @@ export function matchNames(names: string[], params: SearchParams = {}): Promise<
 	});
 }
 
-export function getTerm(loincNum: string): Promise<Term> {
-	return requestJSON<Term>(`/api/v1/terms/${encodeURIComponent(loincNum)}`);
+export function getTerm(loincNum: string, lang?: string): Promise<Term> {
+	const suffix = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+	return requestJSON<Term>(`/api/v1/terms/${encodeURIComponent(loincNum)}${suffix}`);
 }
 
 export function getTermRelationships(loincNum: string): Promise<TermRelationshipGraph> {

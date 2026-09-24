@@ -88,6 +88,7 @@ var openAPISpec = map[string]any{
 				"summary": "Get one LOINC term detail without nested relationships",
 				"parameters": []map[string]any{
 					pathParam("loincNum", "LOINC number, for example 14749-6"),
+					queryParam("lang", "Linguistic variant language code from /api/version's languages; adds localizedName to the term."),
 				},
 				"responses": map[string]any{
 					"200": response("LOINC term detail", ref("Term")),
@@ -1142,6 +1143,7 @@ func commonTermListParameters() []map[string]any {
 		queryParam("radContrast", "Radiology contrast timing: WO (without), W (with), or WO & W"),
 		queryParam("radView", "Radiology view type (exact playbook part name)"),
 		boolQueryParam("rankedOnly", "When true, return only terms with a positive rank in the selected rank mode."),
+		queryParam("lang", "Linguistic variant language code from /api/version's languages (e.g. de-DE); adds localizedName to each result's display, does not affect matching. Unknown codes are ignored, not an error."),
 		intQueryParam("limit", "Maximum results to return. Maximum 100.", 25),
 		intQueryParam("offset", "Result offset for pagination", 0),
 	}

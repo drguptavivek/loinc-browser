@@ -4,6 +4,7 @@
 	import { matchNames, type NameMatch, type SearchResult } from '$lib/api';
 	import { DOMAINS, domainById, type DomainId } from '$lib/domains';
 	import { copyText, downloadText, toCSV } from '$lib/copy';
+	import { setup, setupParams } from '$lib/setup';
 	import {
 		buildExportRows,
 		dedupeNames,
@@ -154,7 +155,7 @@
 		picks = {};
 		confidentRejected = {};
 		progressDone = 0;
-		const params = domainId === 'panels' ? {} : domainById(domainId).params;
+		const params = { ...(domainId === 'panels' ? {} : domainById(domainId).params), ...setupParams($setup) };
 		const batches = chunk(uniqueNames, BATCH_SIZE);
 		progressTotal = uniqueNames.length;
 		try {
@@ -530,10 +531,13 @@
 											<span class="flex-1">
 												<span class="font-mono text-xs">{c.loincNum}</span>
 												<span class="ml-2">{c.longCommonName}</span>
+												{#if c.localizedName}
+													<span class="mt-0.5 block text-xs text-zinc-600">{c.localizedName}</span>
+												{/if}
 												<span class="mt-1 block text-xs text-zinc-500">
 													{axisChips(c)}
-													{#if c.clciName}
-														<Badge variant="secondary" className="ml-1">{c.clciName}</Badge>
+													{#if c.localName ?? c.clciName}
+														<Badge variant="secondary" className="ml-1">{c.localName ?? c.clciName}</Badge>
 													{/if}
 												</span>
 											</span>

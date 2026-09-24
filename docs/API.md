@@ -175,8 +175,9 @@ Additional term filters:
 | `componentFamily` | With `component`: also match its ratio forms, so the variants a user might mean are listed together. `component=Hemoglobin A1c&componentFamily=true` returns 41995-2 (mass concentration) and 4548-4 (Hemoglobin A1c/Hemoglobin.total, the % form). |
 | `contains` | Repeatable. Keep only panels containing every listed LOINC number: `/api/v1/panels/search?contains=5902-2&contains=6301-6` returns the PT panel 34528-0 first (no `q` sorts by usage). Use it to map a combined request ("pt inr") once its tests are known. |
 | `universalLabOrders` | `true` keeps only terms in LOINC's Universal Lab Orders value set (orderable lab tests). |
-| `clci` | `true` keeps only terms in Common Lab Codes for India (needs the CLCI CSV in the data directory; 400 otherwise). When loaded, ranking prefers CLCI codes, results carry `clciName`, and a query that matches a CLCI General Name lists those codes first (response `clciMatches`). See `docs/agent/LOINC_CLCI.md`. |
+| `clci` | `true` keeps only terms in the deployment's loaded common-codes list — Common Lab Codes for India by default, or any list set via `LOINC_COMMON_CODES_CSV` (400 if none is loaded). `commonCodes=true` is the same filter under its list-agnostic name. When loaded, ranking prefers the listed codes, results carry `localName` (and `clciName` when the list is CLCI), and a query that matches a listed name lists those codes first (response `clciMatches`). See `docs/agent/LOINC_CLCI.md`. |
 | `radModality`, `radSubtype`, `radRegion`, `radFocus`, `radLaterality`, `radContrast`, `radView` | Radiology filters on the RSNA playbook parts, matched exactly but case-insensitively: `radModality=CT&radRegion=Head&radContrast=WO` returns 30799-1 (CT Head WO contrast) first. `radContrast` is `W`, `WO`, or `WO & W`. Combine with `q` for anything else in the name. |
+| `lang` | A linguistic variant language code from `/api/version`'s `languages` (e.g. `de-DE`). Adds `localizedName` to each result — the term's `LONG_COMMON_NAME` translated into that language, when the release has that translation. Display only: it does not change which terms match or how they rank; search itself stays in English. An unrecognised code is ignored, not an error. `GET /api/v1/terms/{loincNum}?lang=` also adds `localizedName` to the term detail. |
 
 Usage filters:
 
@@ -242,7 +243,7 @@ Term-list routes return `TermSummary`-like results. These are intentionally comp
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| GET | `/api/version` | Get app version, build commit, build date when present, Go target platform, and `loincVersion` (the loaded LOINC release, e.g. `2.82`; omitted before an import). |
+| GET | `/api/version` | Get app version, build commit, build date when present, Go target platform, `loincVersion` (the loaded LOINC release, e.g. `2.82`; omitted before an import), `commonCodes` (`{"label","count"}` for the loaded common-codes list, omitted when none), and `languages` (`[{"code","label"}]`, the LOINC linguistic variant languages available, e.g. `{"code":"de-DE","label":"German (GERMANY)"}`; `[]` when none). |
 | GET | `/api/v1/version` | Same version metadata under the v1 API namespace. |
 
 Example response:

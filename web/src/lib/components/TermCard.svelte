@@ -4,10 +4,12 @@
 	import Button from '$lib/components/Button.svelte';
 	import DetailField from '$lib/components/DetailField.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
-	import { getPanelItems, getPanelMemberships, getTerm, getTermFit, getTermRelationships, getVersion, searchTerms } from '$lib/api';
+	import { getPanelItems, getPanelMemberships, getTerm, getTermFit, getTermRelationships, searchTerms } from '$lib/api';
 	import type { PanelItem, SearchResult, Term, TermAccessory } from '$lib/api';
 	import { COPY_FORMATS, copyText, formatTerm, type CopyFormatId } from '$lib/copy';
 	import { addToBasket, basket, removeFromBasket } from '$lib/basket';
+	import { setup, setupParams } from '$lib/setup';
+	import { loincVersion } from '$lib/version';
 
 	let {
 		loincNum,
@@ -20,17 +22,6 @@
 		onClose: () => void;
 		onOpenInExplorer?: (n: string) => void;
 	} = $props();
-
-	// getVersion() is fetched once per page load and cached across every TermCard instance.
-	let versionPromise: Promise<string | undefined> | null = null;
-	function loadVersion(): Promise<string | undefined> {
-		if (!versionPromise) {
-			versionPromise = getVersion()
-				.then((v) => v.loincVersion)
-				.catch(() => undefined);
-		}
-		return versionPromise;
-	}
 
 	let term = $state<Term | null>(null);
 	let loading = $state(true);
@@ -54,6 +45,7 @@
 
 	$effect(() => {
 		const code = loincNum;
+		const lang = $setup.lang;
 		let cancelled = false;
 
 		loading = true;
@@ -65,11 +57,11 @@
 		panelItems = [];
 		hasPanelItems = false;
 
-		loadVersion().then((v) => {
+		loincVersion().then((v) => {
 			if (!cancelled) version = v;
 		});
 
-		getTerm(code)
+		getTerm(code, lang)
 			.then((t) => {
 				if (cancelled) return;
 				term = t;
@@ -201,8 +193,9 @@
 					<Badge variant={statusVariant(term.status)}>{term.status || 'UNKNOWN'}</Badge>
 				</div>
 				<h3 class="mt-1 text-lg font-semibold leading-snug">{term.longCommonName}</h3>
+				{#if term.localizedName}<p class="mt-0.5 text-sm text-zinc-600">{term.localizedName}</p>{/if}
 				{#if term.shortName}<p class="mt-0.5 text-sm text-zinc-500">{term.shortName}</p>{/if}
-				{#if term.clciName}<p class="mt-1 text-sm text-zinc-600">Common name in India: {term.clciName}</p>{/if}
+				{#if term.localName ?? term.clciName}<p class="mt-1 text-sm text-zinc-600">Local name: {term.localName ?? term.clciName}</p>{/if}
 			</div>
 
 			<!-- b) deprecated / discouraged banner -->
@@ -229,7 +222,7 @@
 			<div class="rounded-md border border-zinc-200 p-3">
 				<div class="flex flex-wrap items-center gap-2">
 					{#each COPY_FORMATS as format}
-						<Button variant="outline" size="sm" on:click={() => handleCopy(format.id)}>
+						<Button variant={format.id === $setup.copyFormat ? 'default' : 'outline'} size="sm" on:click={() => handleCopy(format.id)}>
 							{#if copiedId === format.id}<Check size={14} />Copied{:else}<Copy size={14} />{format.label}{/if}
 						</Button>
 					{/each}

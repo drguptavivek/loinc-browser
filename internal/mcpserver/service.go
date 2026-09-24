@@ -166,9 +166,11 @@ type TermCandidate struct {
 	ExampleUCUM   string `json:"exampleUcum,omitempty"`
 	MapperComment string `json:"mapperComment,omitempty"`
 	// CLCIName is the Common Lab Codes for India "General Name" (the name Indian labs use).
-	CLCIName string            `json:"clciName,omitempty"`
-	Notes    []string          `json:"notes,omitempty"`
-	Fields   map[string]string `json:"fields,omitempty"`
+	// LocalName is the same name from whichever common-codes list the deployment loaded.
+	CLCIName  string            `json:"clciName,omitempty"`
+	LocalName string            `json:"localName,omitempty"`
+	Notes     []string          `json:"notes,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
 }
 
 type TermFitResponse struct {
@@ -458,6 +460,7 @@ func compactTerms(results []loinc.SearchResult, detail string) []TermCandidate {
 			ExampleUCUM:     result.ExampleUCUM,
 			MapperComment:   result.MapperComment,
 			CLCIName:        result.CLCIName,
+			LocalName:       result.LocalName,
 			Notes:           statusNotes(result.Status),
 		}
 		if detail == "standard" || detail == "full" {

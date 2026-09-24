@@ -233,15 +233,21 @@ its own, not against someone who can read the whole data directory.
   `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` from repository secrets. Never bake them
   into a build.
 
-## Common Lab Codes for India (CLCI)
+## Common Lab Codes for India (CLCI), or your own common-codes list
 
-Optional. Download the CLCI zip from [NRCeS national releases](https://www.nrces.in/services/national-releases#lab_codes)
+Optional, and one list per deployment. Download the CLCI zip from [NRCeS national releases](https://www.nrces.in/services/national-releases#lab_codes)
 and extract it into the data directory, keeping its dated folder:
 `<data dir>/common-lab-codes-for-india-20260629/common-lab-codes-for-india.csv` (the newest folder
-is used; `LOINC_CLCI_CSV` points elsewhere). Startup prints `Common Lab Codes for India: 1473 terms`.
-Word search then ranks CLCI codes higher, `clci=true` filters to them, and results carry `clciName`.
-The file is C-DAC's (all rights reserved); keep it out of source control. See
-`docs/agent/LOINC_CLCI.md`.
+is used; `LOINC_CLCI_CSV` points elsewhere). Startup prints
+`Common codes list "Common Lab Codes for India": 1473 terms (...)`.
+Word search then ranks the loaded codes higher, `clci=true` (or `commonCodes=true`) filters to
+them, and results carry `localName` (and `clciName` when the loaded list is CLCI). The CLCI file
+is C-DAC's (all rights reserved); keep it out of source control. See `docs/agent/LOINC_CLCI.md`.
+
+A non-Indian deployment (US, Australian, hospital-local) can load its own list instead: set
+`LOINC_COMMON_CODES_CSV` to any CSV with a LOINC code column and a local-name column (header
+row optional), and `LOINC_COMMON_CODES_LABEL` for the label shown in `/api/version` (default the
+file name). `LOINC_COMMON_CODES_CSV` takes precedence over `LOINC_CLCI_CSV`.
 
 ## Mapper's guide units and comments
 

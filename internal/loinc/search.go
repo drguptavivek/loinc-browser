@@ -142,6 +142,18 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 		entry := mapperGuideEntry(response.Results[i].LOINCNum)
 		response.Results[i].ExampleUCUM, response.Results[i].MapperComment = entry.ExampleUCUM, entry.Comment
 		response.Results[i].CLCIName = clciName(response.Results[i].LOINCNum)
+		response.Results[i].LocalName = localName(response.Results[i].LOINCNum)
+	}
+	if err == nil && params.Lang != "" && len(response.Results) > 0 {
+		codes := make([]string, len(response.Results))
+		for i, result := range response.Results {
+			codes[i] = result.LOINCNum
+		}
+		if localizedNames, lerr := s.LocalizedNames(ctx, params.Lang, codes); lerr == nil {
+			for i := range response.Results {
+				response.Results[i].LocalizedName = localizedNames[response.Results[i].LOINCNum]
+			}
+		}
 	}
 	return response, err
 }
@@ -171,6 +183,7 @@ func (s *Store) PinCLCINameMatches(ctx context.Context, params SearchParams, res
 		}
 		if len(found.Results) == 1 {
 			found.Results[0].CLCIName = clciName(code)
+			found.Results[0].LocalName = localName(code)
 			pinned = append(pinned, found.Results[0])
 			seen[code] = true
 		}
@@ -539,6 +552,7 @@ func withMapperGuide(term Term, err error) (Term, error) {
 	entry := mapperGuideEntry(term.LOINCNum)
 	term.ExampleUCUM, term.MapperComment = entry.ExampleUCUM, entry.Comment
 	term.CLCIName = clciName(term.LOINCNum)
+	term.LocalName = localName(term.LOINCNum)
 	return term, err
 }
 
