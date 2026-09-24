@@ -29,7 +29,11 @@ type SearchParams struct {
 	Class   string
 	Classes []string
 	// ClassType is LOINC CLASSTYPE: lab, clinical, attachment, survey (or 1-4).
-	ClassType       string
+	ClassType string
+	// LOINCNums restricts results to these terms (meaning-based search candidates).
+	LOINCNums []string
+	// MaxLimit raises the 100-row cap for internal callers (candidate fetches); never user input.
+	MaxLimit        int
 	Status          string
 	Statuses        []string
 	UsageType       string
@@ -54,8 +58,18 @@ type SearchParams struct {
 	AnswerListID    string
 	PanelParent     string
 	PanelOnly       bool
-	Limit           int
-	Offset          int
+	// Component keeps only terms with exactly this Component (case-insensitive): every
+	// method, scale, property, and specimen variant of one analyte.
+	Component string
+	// PanelContains keeps only terms (panels) that contain every one of these terms.
+	PanelContains []string
+	// UniversalLabOrders keeps only terms in LOINC's Universal Lab Orders value set.
+	UniversalLabOrders bool
+	// RadParts keeps only terms whose RSNA radiology playbook has each part, keyed by
+	// PartTypeName (see RadiologyParams), matched on PartName case-insensitively.
+	RadParts map[string]string
+	Limit    int
+	Offset   int
 }
 
 type TermListParams = SearchParams
@@ -88,7 +102,13 @@ type SearchResponse struct {
 	Relaxed      bool     `json:"relaxed,omitempty"`
 	DroppedWords []string `json:"droppedWords,omitempty"`
 	Notice       string   `json:"notice,omitempty"`
-	Links        Links    `json:"_links,omitempty"`
+	// IgnoredWords are query words skipped as stop or generic words (for, the, routine, test, ...).
+	IgnoredWords []string `json:"ignoredWords,omitempty"`
+	// Synonyms are shorthand expansions the query used, e.g. "usg→us".
+	Synonyms []string `json:"synonyms,omitempty"`
+	// Mode is "semantic" or "hybrid" for meaning-based search; empty for word search.
+	Mode  string `json:"mode,omitempty"`
+	Links Links  `json:"_links,omitempty"`
 }
 
 type SearchResult struct {
@@ -107,11 +127,16 @@ type SearchResult struct {
 	CommonOrderRank int      `json:"commonOrderRank"`
 	UsageTypes      []string `json:"usageTypes"`
 	Rank            float64  `json:"rank"`
-	Links           Links    `json:"_links,omitempty"`
+	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
+	ExampleUCUM   string `json:"exampleUcum,omitempty"`
+	MapperComment string `json:"mapperComment,omitempty"`
+	Links         Links  `json:"_links,omitempty"`
 }
 
 type Term struct {
 	LOINCNum        string            `json:"loincNum"`
+	ExampleUCUM     string            `json:"exampleUcum,omitempty"`
+	MapperComment   string            `json:"mapperComment,omitempty"`
 	LongCommonName  string            `json:"longCommonName"`
 	ShortName       string            `json:"shortName"`
 	Component       string            `json:"component"`

@@ -190,6 +190,12 @@ func runServe(args []string) error {
 		return err
 	}
 	defer store.Close()
+	guidePath := envOr("LOINC_MAPPER_GUIDE_CSV", filepath.Join(dataDir(), "common_codes", "top2000_mapper_guide.csv"))
+	if count, err := loinc.LoadMapperGuide(guidePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Mapper guide not loaded: %v\n", err)
+	} else if count > 0 {
+		fmt.Printf("Mapper guide: %d terms with example units or comments\n", count)
+	}
 
 	assets, err := web.Assets()
 	if err != nil {
@@ -215,7 +221,11 @@ func runServe(args []string) error {
 			Username: strings.TrimSpace(os.Getenv("LOINC_OFFICIAL_USERNAME")),
 			Password: os.Getenv("LOINC_OFFICIAL_PASSWORD"),
 		},
-		Terminology: &termSvc,
+		EmbeddingURL:    os.Getenv("LOINC_EMBEDDING_URL"),
+		EmbeddingModel:  envOr("LOINC_EMBEDDING_MODEL", "text-embedding-qwen3-embedding-0.6b"),
+		EmbeddingAPIKey: os.Getenv("LOINC_EMBEDDING_API_KEY"),
+		EmbeddingsPath:  envOr("LOINC_EMBEDDINGS_PATH", filepath.Join(dataDir(), "loinc-embeddings.sqlite")),
+		Terminology:     &termSvc,
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -886,7 +896,19 @@ Environment:
   LOINC_OFFICIAL_DISABLED=false (or --no-official; turns off the online Search API proxy)
   LOINC_OFFICIAL_PASSPHRASE= (optional; required as X-Loinc-Passphrase on official requests)
   LOINC_OFFICIAL_USERNAME= / LOINC_OFFICIAL_PASSWORD= (optional; used for "saved credentials")
+  LOINC_EMBEDDING_URL= (optional; OpenAI-compatible embeddings, e.g. http://127.0.0.1:1234/v1 for LM Studio; enables mode=semantic|hybrid)
+  LOINC_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
+  LOINC_EMBEDDING_API_KEY= (only for hosted endpoints)
+  LOINC_EMBEDDINGS_PATH=<data dir>/loinc-embeddings.sqlite
+  LOINC_MAPPER_GUIDE_CSV=<data dir>/common_codes/top2000_mapper_guide.csv (optional; from scripts/extract-top2000-mapper-guide.py; adds exampleUcum/mapperComment to term results)
 `
+}
+
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func envBool(key string) bool {

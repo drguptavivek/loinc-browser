@@ -136,11 +136,33 @@ How `q` matches:
   (more than 1,000 matches), it returns no results with a `notice` instead. Queries of more than
   six words are not relaxed.
 
+Meaning-based search (`mode=semantic` or `mode=hybrid`):
+
+- Off unless `LOINC_EMBEDDING_URL` points at an OpenAI-compatible embeddings endpoint (LM Studio
+  `http://127.0.0.1:1234/v1`, Ollama, vLLM, or a hosted API with `LOINC_EMBEDDING_API_KEY`).
+  `LOINC_EMBEDDING_MODEL` defaults to `text-embedding-qwen3-embedding-0.6b`.
+- `GET /api/v1/semantic/status` reports `disabled`, `missing`, `building` (with `done`/`total`),
+  `incomplete`, `stale`, or `ready`. `POST /api/v1/semantic/rebuild` starts a background build
+  (202); a stopped build resumes. A full 2.82 build embeds 109,325 terms, about 40 minutes with
+  Qwen3-embedding 0.6B in LM Studio.
+- All filters (`status`, `class`, `classType`, ...) apply. `semantic` orders by similarity;
+  `hybrid` merges the meaning and word rankings (reciprocal rank fusion) and is the better
+  default for natural-language requests. Responses carry `"mode"`; `rank` is the score (lower is
+  better, comparable within one response only).
+- Every query is embedded by the endpoint at search time, so with a hosted endpoint the query
+  text leaves the machine.
+
+When the mapper's guide CSV is loaded (see DEPLOYMENT.md), term results and term detail also carry
+`exampleUcum` (LOINC's example unit, e.g. `mg/dL` for 2345-7) and `mapperComment` (LOINC's mapping
+note, e.g. HbA1c NGSP vs IFCC for 4548-4). Compare `exampleUcum` with the local unit to choose
+between mass and molar, activity and mass, or concentration and rate variants.
+
 Additional term filters:
 
 | Parameter | Meaning |
 | --- | --- |
 | `class` | LOINC class filter; repeat for several (`class=CHEM&class=SERO`). |
+| `mode` | `words` (default), `semantic` (nearest terms by meaning), or `hybrid` (meaning and word results merged). The meaning modes need the meaning index (see below); otherwise they return 503. |
 | `classType` | LOINC CLASSTYPE: `lab`, `clinical` (includes radiology), `attachment`, or `survey` (or `1`-`4`). Unknown values return 400. |
 | `system` | System axis filter. |
 | `timeAspect` | Repeatable time aspect filter. |
@@ -149,6 +171,10 @@ Additional term filters:
 | `property` | Property axis filter. |
 | `orderObs` | Repeatable raw `ORDER_OBS` filter. |
 | `hierarchyNodeId` | Restrict results to a hierarchy occurrence subtree. |
+| `component` | Exact LOINC Component, case-insensitive: every method, scale, property, and specimen variant of one analyte. `/api/v1/terms/search?component=Thyrotropin&system=Ser/Plas` lists TSH 3016-3, 11579-0 (2nd generation), and 11580-8 (3rd generation) first (no `q` sorts by usage); `component=Troponin I.cardiac` lists quantitative, high-sensitivity, point-of-care blood, and qualitative troponin I. Add `scale=Qn` or `scale=Ord` to split quantitative from qualitative. |
+| `contains` | Repeatable. Keep only panels containing every listed LOINC number: `/api/v1/panels/search?contains=5902-2&contains=6301-6` returns the PT panel 34528-0 first (no `q` sorts by usage). Use it to map a combined request ("pt inr") once its tests are known. |
+| `universalLabOrders` | `true` keeps only terms in LOINC's Universal Lab Orders value set (orderable lab tests). |
+| `radModality`, `radSubtype`, `radRegion`, `radFocus`, `radLaterality`, `radContrast`, `radView` | Radiology filters on the RSNA playbook parts, matched exactly but case-insensitively: `radModality=CT&radRegion=Head&radContrast=WO` returns 30799-1 (CT Head WO contrast) first. `radContrast` is `W`, `WO`, or `WO & W`. Combine with `q` for anything else in the name. |
 
 Usage filters:
 

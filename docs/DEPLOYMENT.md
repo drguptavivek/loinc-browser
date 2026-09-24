@@ -233,6 +233,40 @@ its own, not against someone who can read the whole data directory.
   `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` from repository secrets. Never bake them
   into a build.
 
+## Mapper's guide units and comments
+
+Optional. If `<data dir>/common_codes/top2000_mapper_guide.csv` exists (or `LOINC_MAPPER_GUIDE_CSV`
+points elsewhere), term results and term detail gain `exampleUcum` (LOINC's example unit) and
+`mapperComment` (LOINC's mapping note) for about 2,200 common lab tests. Build the CSV from your
+own copy of LOINC's *Mapper's Guide to Top 2000++ US Lab Tests* PDF (from loinc.org/usage):
+
+```bash
+python scripts/extract-top2000-mapper-guide.py \
+  data/common_codes/LOINC_1.6_Top2000CommonLabResultsUS.pdf data/common_codes/top2000_mapper_guide.csv
+```
+
+It needs `pdfplumber`. Both files are LOINC-licensed content; keep them out of git. Restart the
+server to load a new CSV.
+
+## Meaning-based search
+
+Optional. Term search can also match by meaning (`mode=hybrid|semantic`, UI **Match**) through
+any OpenAI-compatible embeddings endpoint:
+
+```text
+LOINC_EMBEDDING_URL=http://127.0.0.1:1234/v1     # LM Studio; Ollama http://127.0.0.1:11434/v1
+LOINC_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
+LOINC_EMBEDDING_API_KEY=                          # hosted endpoints only
+LOINC_EMBEDDINGS_PATH=<data dir>/loinc-embeddings.sqlite
+```
+
+Build the index once after each import with `POST /api/v1/semantic/rebuild` or the UI's **Build
+meaning index** link. A 2.82 build embeds 109,325 terms, about 40 minutes with Qwen3-embedding
+0.6B in LM Studio on an Apple M-series machine; a stopped build resumes where it left off. The
+file is about 112 MB and is loaded into memory on first use. Changing `LOINC_EMBEDDING_MODEL`
+requires a rebuild (status says so). The endpoint must be running for searches too, since each
+query is embedded when it is asked. With a hosted endpoint, query text leaves the machine.
+
 ## Docs in a packaged install
 
 The binary embeds `docs/*.md` and `docs/agent/*.md`. When `./docs/agent` (or `--docs-dir` /

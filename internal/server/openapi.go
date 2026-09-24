@@ -277,6 +277,26 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/v1/semantic/status": map[string]any{
+			"get": map[string]any{
+				"summary":     "Check the meaning-based search index",
+				"description": "Reports disabled (no LOINC_EMBEDDING_URL), missing, building (done/total), incomplete, stale, or ready for mode=semantic|hybrid term search.",
+				"responses": map[string]any{
+					"200": response("Meaning index status", semanticStatusSchema()),
+				},
+			},
+		},
+		"/api/v1/semantic/rebuild": map[string]any{
+			"post": map[string]any{
+				"summary":     "Build the meaning-based search index",
+				"description": "Starts a background build that embeds every term through the configured endpoint; a stopped build resumes. Poll /api/v1/semantic/status.",
+				"responses": map[string]any{
+					"202": response("Build started", semanticStatusSchema()),
+					"409": response("A build is already running", ref("ErrorResponse")),
+					"503": response("Meaning-based search is off or the database is not loaded", ref("ErrorResponse")),
+				},
+			},
+		},
 		"/api/v1/local-search/status": map[string]any{
 			"get": map[string]any{
 				"summary":     "Check local Lucene-style search index status",
@@ -992,6 +1012,20 @@ func response(description string, schema map[string]any) map[string]any {
 	}
 }
 
+func semanticStatusSchema() map[string]any {
+	return object(map[string]any{
+		"state":    map[string]any{"type": "string", "enum": []string{"disabled", "missing", "building", "incomplete", "stale", "ready", "error"}},
+		"model":    map[string]any{"type": "string"},
+		"endpoint": map[string]any{"type": "string"},
+		"count":    map[string]any{"type": "integer"},
+		"done":     map[string]any{"type": "integer"},
+		"total":    map[string]any{"type": "integer"},
+		"builtAt":  map[string]any{"type": "string"},
+		"building": map[string]any{"type": "boolean"},
+		"message":  map[string]any{"type": "string"},
+	})
+}
+
 func ref(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
@@ -1037,6 +1071,7 @@ func commonTermListParameters() []map[string]any {
 		queryParam("q", "Full-text query or exact LOINC number"),
 		arrayQueryParam("class", "LOINC class filter; repeat to allow several classes (e.g. class=CHEM&class=SERO)"),
 		queryParam("classType", "LOINC CLASSTYPE filter: lab, clinical (includes radiology), attachment, or survey"),
+		queryParam("mode", "words (default), semantic (nearest by meaning), or hybrid (meaning and words merged); the meaning modes need the meaning index and return 503 without it"),
 		arrayQueryParam("status", "LOINC status filter. Defaults to all statuses except DEPRECATED. Use status=DEPRECATED to browse deprecated terms, or status=* for all statuses."),
 		queryParam("usageType", "Term usage filter: any, observation, or order"),
 		queryParam("rankMode", "Ranking mode: observation or order"),
@@ -1048,6 +1083,16 @@ func commonTermListParameters() []map[string]any {
 		arrayQueryParam("method", "Method axis filter"),
 		queryParam("property", "Property axis filter"),
 		arrayQueryParam("orderObs", "Raw ORDER_OBS filter"),
+		queryParam("component", "Exact LOINC Component (case-insensitive), e.g. Thyrotropin: every method, scale, property, and specimen variant of one analyte"),
+		arrayQueryParam("contains", "Keep only panels containing every one of these LOINC numbers; repeat (contains=5902-2&contains=6301-6 finds the PT panel)"),
+		queryParam("universalLabOrders", "true keeps only terms in LOINC's Universal Lab Orders value set"),
+		queryParam("radModality", "RSNA radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"),
+		queryParam("radSubtype", "Radiology modality subtype (exact playbook part name), e.g. Doppler"),
+		queryParam("radRegion", "Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"),
+		queryParam("radFocus", "Radiology imaging focus (exact playbook part name), e.g. Kidney, Knee"),
+		queryParam("radLaterality", "Radiology laterality: Right, Left, Bilateral, Unilateral, Unspecified"),
+		queryParam("radContrast", "Radiology contrast timing: WO (without), W (with), or WO & W"),
+		queryParam("radView", "Radiology view type (exact playbook part name)"),
 		boolQueryParam("rankedOnly", "When true, return only terms with a positive rank in the selected rank mode."),
 		intQueryParam("limit", "Maximum results to return. Maximum 100.", 25),
 		intQueryParam("offset", "Result offset for pagination", 0),

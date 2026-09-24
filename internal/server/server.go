@@ -23,6 +23,7 @@ import (
 	"loinc-browser/internal/fhirhttp"
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
+	"loinc-browser/internal/semantic"
 	"loinc-browser/internal/version"
 	"loinc-browser/pkg/terminology"
 )
@@ -48,6 +49,12 @@ type Options struct {
 	OfficialDisabled       bool
 	OfficialPassphrase     string
 	OfficialEnvCredentials OfficialCredentials
+	// EmbeddingURL enables meaning-based search (mode=semantic|hybrid) through an OpenAI-compatible
+	// embeddings endpoint such as LM Studio (http://127.0.0.1:1234/v1); empty turns it off.
+	EmbeddingURL    string
+	EmbeddingModel  string
+	EmbeddingAPIKey string
+	EmbeddingsPath  string
 	// Terminology, when non-nil, receives the pkg/terminology Service New builds for the FHIR
 	// routes, so a caller (e.g. cmd/loinc-browser's UDP transport, Mode E) can share the exact
 	// same store-getter-backed Service the HTTP handlers use, rather than building a second one
@@ -77,6 +84,9 @@ func New(options Options) http.Handler {
 		officialEnv:        options.OfficialEnvCredentials,
 		localSearch:        newLocalSearchService(options.SearchIndexPath),
 		autoRebuildSearch:  strings.TrimSpace(options.SearchIndexPath) != "",
+	}
+	if strings.TrimSpace(options.EmbeddingURL) != "" && strings.TrimSpace(options.EmbeddingsPath) != "" {
+		app.semantic = semantic.NewService(semantic.NewClient(options.EmbeddingURL, options.EmbeddingModel, options.EmbeddingAPIKey), options.EmbeddingsPath)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
@@ -124,6 +134,8 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/official/credentials/status", app.officialCredentialStatus)
 	mux.HandleFunc("DELETE /api/v1/official/credentials", app.officialGuard(app.deleteOfficialCredentials))
 	mux.HandleFunc("POST /api/v1/official/search", app.officialGuard(app.officialSearch))
+	mux.HandleFunc("GET /api/v1/semantic/status", app.semanticStatus)
+	mux.HandleFunc("POST /api/v1/semantic/rebuild", app.semanticRebuild)
 	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
 	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
 	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
@@ -151,6 +163,13 @@ func New(options Options) http.Handler {
 			OpenAPIJSON:  OpenAPIJSON,
 			Terminology:  terminologySvc,
 			LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
+			SemanticSearch: func(ctx context.Context, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
+				store, err := app.currentStore()
+				if err != nil {
+					return loinc.SearchResponse{}, err
+				}
+				return app.searchTerms(ctx, store, params, mode)
+			},
 		})
 		mux.Handle(normalizeMCPPath(options.MCPPath), loincmcp.StreamableHTTPHandler(mcpServer))
 	}
@@ -183,6 +202,7 @@ type app struct {
 	officialPassphrase string
 	officialEnv        OfficialCredentials
 	localSearch        *localSearchService
+	semantic           *semantic.Service
 	// autoRebuildSearch is set when the caller configured an explicit index path, so tests that
 	// leave it empty never write an index into the working directory.
 	autoRebuildSearch bool
@@ -220,7 +240,7 @@ func (a *app) search(w http.ResponseWriter, r *http.Request) {
 		Limit:          parseInt(query.Get("limit"), 25),
 		Offset:         parseInt(query.Get("offset"), 0),
 	}
-	response, err := store.Search(r.Context(), params)
+	response, err := a.searchTerms(r.Context(), store, params, query.Get("mode"))
 	if err != nil {
 		writeError(w, searchErrorStatus(err), err)
 		return
@@ -442,12 +462,58 @@ func (a *app) hierarchy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// searchErrorStatus is 400 for a bad search parameter (e.g. an unknown classType), else 500.
+// searchErrorStatus is 400 for a bad search parameter (e.g. an unknown classType), 503 when
+// meaning-based search isn't available, else 500.
 func searchErrorStatus(err error) int {
-	if errors.Is(err, loinc.ErrInvalidParam) {
+	switch {
+	case errors.Is(err, loinc.ErrInvalidParam):
 		return http.StatusBadRequest
+	case errors.Is(err, semantic.ErrNotReady):
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
+}
+
+// searchTerms runs word search (mode "" or "words") or meaning-based search ("semantic",
+// "hybrid") with the same filters.
+func (a *app) searchTerms(ctx context.Context, store *loinc.Store, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
+	switch mode = strings.ToLower(strings.TrimSpace(mode)); mode {
+	case "", "words":
+		return store.Search(ctx, params)
+	case "semantic", "hybrid":
+		if a.semantic == nil {
+			return loinc.SearchResponse{}, fmt.Errorf("%w: set LOINC_EMBEDDING_URL to an OpenAI-compatible embeddings endpoint", semantic.ErrNotReady)
+		}
+		return a.semantic.Search(ctx, store, params, mode)
+	default:
+		return loinc.SearchResponse{}, fmt.Errorf("%w: mode %q (use words, semantic, or hybrid)", loinc.ErrInvalidParam, mode)
+	}
+}
+
+func (a *app) semanticStatus(w http.ResponseWriter, r *http.Request) {
+	if a.semantic == nil {
+		writeJSON(w, http.StatusOK, semantic.Status{State: "disabled", Message: "meaning-based search is off; set LOINC_EMBEDDING_URL (e.g. http://127.0.0.1:1234/v1) and LOINC_EMBEDDING_MODEL"})
+		return
+	}
+	store, _ := a.currentStore()
+	writeJSON(w, http.StatusOK, a.semantic.Status(r.Context(), store))
+}
+
+func (a *app) semanticRebuild(w http.ResponseWriter, r *http.Request) {
+	if a.semantic == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("meaning-based search is off; set LOINC_EMBEDDING_URL"))
+		return
+	}
+	store, err := a.currentStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err := a.semantic.Rebuild(store); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, a.semantic.Status(r.Context(), store))
 }
 
 func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
@@ -456,7 +522,7 @@ func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	response, err := store.Search(r.Context(), termListParamsFromRequest(r))
+	response, err := a.searchTerms(r.Context(), store, termListParamsFromRequest(r), r.URL.Query().Get("mode"))
 	if err != nil {
 		writeError(w, searchErrorStatus(err), err)
 		return
@@ -1049,24 +1115,28 @@ func queryValues(values map[string][]string, key string) []string {
 func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 	query := r.URL.Query()
 	return loinc.SearchParams{
-		Query:           query.Get("q"),
-		Class:           query.Get("class"),
-		Classes:         queryValues(query, "class"),
-		ClassType:       query.Get("classType"),
-		Statuses:        queryValues(query, "status"),
-		UsageType:       query.Get("usageType"),
-		RankMode:        query.Get("rankMode"),
-		Sort:            query.Get("sort"),
-		System:          query.Get("system"),
-		TimeAspects:     queryValues(query, "timeAspect"),
-		Scales:          queryValues(query, "scale"),
-		Methods:         queryValues(query, "method"),
-		Property:        query.Get("property"),
-		OrderObsValues:  queryValues(query, "orderObs"),
-		RankedOnly:      parseBool(query.Get("rankedOnly")),
-		HierarchyNodeID: firstNonEmpty(query.Get("hierarchyNodeId"), query.Get("hierarchy")),
-		Limit:           parseInt(query.Get("limit"), 25),
-		Offset:          parseInt(query.Get("offset"), 0),
+		Query:              query.Get("q"),
+		Class:              query.Get("class"),
+		Classes:            queryValues(query, "class"),
+		ClassType:          query.Get("classType"),
+		Statuses:           queryValues(query, "status"),
+		UsageType:          query.Get("usageType"),
+		RankMode:           query.Get("rankMode"),
+		Sort:               query.Get("sort"),
+		System:             query.Get("system"),
+		TimeAspects:        queryValues(query, "timeAspect"),
+		Scales:             queryValues(query, "scale"),
+		Methods:            queryValues(query, "method"),
+		Property:           query.Get("property"),
+		OrderObsValues:     queryValues(query, "orderObs"),
+		RankedOnly:         parseBool(query.Get("rankedOnly")),
+		HierarchyNodeID:    firstNonEmpty(query.Get("hierarchyNodeId"), query.Get("hierarchy")),
+		Component:          query.Get("component"),
+		PanelContains:      queryValues(query, "contains"),
+		UniversalLabOrders: parseBool(query.Get("universalLabOrders")),
+		RadParts:           loinc.RadParts(query.Get),
+		Limit:              parseInt(query.Get("limit"), 25),
+		Offset:             parseInt(query.Get("offset"), 0),
 	}
 }
 

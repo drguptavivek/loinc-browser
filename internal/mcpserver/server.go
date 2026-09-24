@@ -35,6 +35,10 @@ type Options struct {
 	// index path is configured) makes the tool report "not available" instead of a transport
 	// error.
 	LuceneSearch LuceneSearchFunc
+	// SemanticSearch, when non-nil, answers loinc_search_terms with mode "semantic" or "hybrid"
+	// (meaning-based search through the configured embeddings endpoint). Nil makes those modes
+	// report "not available".
+	SemanticSearch SemanticSearchFunc
 }
 
 func New(options Options) *mcp.Server {
@@ -50,6 +54,7 @@ func New(options Options) *mcp.Server {
 	}
 	docs := NewDocs(options.DocsDir)
 	service := NewService(getStore, docs, options.Terminology, options.LuceneSearch)
+	service.semanticSearch = options.SemanticSearch
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "loinc-browser",
 		Title:   "LOINC Browser MCP",

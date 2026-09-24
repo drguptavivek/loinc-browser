@@ -44,6 +44,8 @@
 		getHierarchyNode,
 		getHierarchyParents,
 		getLocalSearchStatus,
+		getSemanticStatus,
+		rebuildSemantic,
 		getOfficialCredentialStatus,
 		getTerm,
 		getTermRelationships,
@@ -61,6 +63,7 @@
 		type Facets,
 		type OfficialCredentialStatus,
 		type OfficialSearchResponse,
+		type SemanticStatus,
 		type SearchResult,
 		type Term,
 		type TermAccessory,
@@ -103,6 +106,11 @@
 	// LOINC CLASSTYPE filter: '' (any), lab, clinical, attachment, or survey.
 	let classType = '';
 	let searchSort: 'relevance' | 'usage' = 'relevance';
+	// Word search, meaning-based search, or both merged (needs the meaning index; see semanticStatus).
+	let matchMode: 'words' | 'hybrid' | 'semantic' = 'words';
+	let semanticStatus: SemanticStatus | null = null;
+	let semanticStatusTimer: ReturnType<typeof setTimeout> | undefined;
+	$: semanticReady = semanticStatus?.state === 'ready' || semanticStatus?.state === 'stale';
 	let hierarchyNodeId = '';
 	let hierarchyLabel = '';
 	let results: SearchResult[] = [];
@@ -388,6 +396,7 @@
 		{ value: 'hierarchy', label: 'Hierarchy' },
 	];
 	onMount(() => {
+		void loadSemanticStatus();
 		void (async () => {
 			applyURLState();
 			void loadVersion();
@@ -499,6 +508,9 @@
 		orderObsValues = params.getAll('orderObs');
 		rankedOnly = params.get('rankedOnly') === 'true' || params.get('rankedOnly') === '1';
 		searchSort = params.get('sort') === 'usage' ? 'usage' : 'relevance';
+		// "match", not "mode": ?mode= already selects the view (advanced, facets, ...).
+		const match = params.get('match');
+		matchMode = match === 'hybrid' || match === 'semantic' ? match : 'words';
 		hierarchyNodeId = params.get('hierarchyNodeId') ?? params.get('hierarchy') ?? '';
 		hierarchyLabel = params.get('hierarchyLabel') ?? '';
 		offset = Number(params.get('offset') ?? '0') || 0;
@@ -576,6 +588,7 @@
 		for (const value of orderObsValues) params.append('orderObs', value);
 		if (rankedOnly) params.set('rankedOnly', 'true');
 		if (searchSort === 'usage') params.set('sort', 'usage');
+		if (matchMode !== 'words') params.set('match', matchMode);
 		if (hierarchyNodeId) params.set('hierarchyNodeId', hierarchyNodeId);
 		if (hierarchyLabel) params.set('hierarchyLabel', hierarchyLabel);
 		if (activeView === 'accessories') {
@@ -789,6 +802,8 @@
 				orderObs: orderObsValues,
 				rankedOnly,
 				sort: searchSort,
+				// Meaning-based modes need query text and a ready index; otherwise search by words.
+				mode: matchMode !== 'words' && semanticReady && query.trim() ? matchMode : undefined,
 				hierarchyNodeId,
 				limit,
 				offset,
@@ -1036,6 +1051,30 @@
 	function setSearchSort(sort: 'relevance' | 'usage') {
 		searchSort = sort;
 		runSearch(0);
+	}
+
+	function setMatchMode(mode: 'words' | 'hybrid' | 'semantic') {
+		matchMode = mode;
+		runSearch(0);
+	}
+
+	async function loadSemanticStatus() {
+		clearTimeout(semanticStatusTimer);
+		try {
+			semanticStatus = await getSemanticStatus();
+			if (semanticStatus.building) semanticStatusTimer = setTimeout(loadSemanticStatus, 5000);
+		} catch {
+			semanticStatus = null;
+		}
+	}
+
+	async function buildSemanticIndex() {
+		try {
+			semanticStatus = await rebuildSemantic();
+		} catch (err) {
+			error = errorMessage(err);
+		}
+		void loadSemanticStatus();
 	}
 
 	function activeFilterCount() {
@@ -2702,6 +2741,32 @@
 								Rank
 							</button>
 						</div>
+						{#if semanticStatus && semanticStatus.state !== 'disabled'}
+							<span class="ml-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Match</span>
+							<div class="inline-flex rounded-md border border-zinc-200 bg-white p-0.5" data-testid="match-mode">
+								{#each [['words', 'Words'], ['hybrid', 'Both'], ['semantic', 'Meaning']] as [value, label]}
+									<button
+										type="button"
+										class={`rounded px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40 ${matchMode === value ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+										aria-pressed={matchMode === value}
+										disabled={value !== 'words' && !semanticReady}
+										title={value === 'words' ? 'Match the words you typed' : value === 'hybrid' ? 'Words and meaning merged; best for natural-language requests' : 'Nearest terms by meaning only'}
+										on:click={() => setMatchMode(value as 'words' | 'hybrid' | 'semantic')}
+									>
+										{label}
+									</button>
+								{/each}
+							</div>
+							{#if semanticStatus.building}
+								<span class="text-xs text-zinc-500">Meaning index building: {(semanticStatus.done ?? 0).toLocaleString()} of {(semanticStatus.total ?? 0).toLocaleString()}</span>
+							{:else if semanticStatus.state === 'missing' || semanticStatus.state === 'incomplete' || semanticStatus.state === 'error'}
+								<button type="button" class="text-xs text-sky-700 underline" on:click={buildSemanticIndex}>
+									{semanticStatus.state === 'incomplete' ? 'Resume meaning index build' : 'Build meaning index (~30 min)'}
+								</button>
+							{:else if semanticStatus.state === 'stale'}
+								<button type="button" class="text-xs text-amber-700 underline" on:click={buildSemanticIndex}>Meaning index is outdated; rebuild</button>
+							{/if}
+						{/if}
 					</div>
 					<button
 						type="button"

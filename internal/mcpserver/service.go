@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -30,7 +31,12 @@ type Service struct {
 	docs         *Docs
 	terminology  *terminology.Service
 	luceneSearch LuceneSearchFunc
+	// semanticSearch backs mode=semantic|hybrid; nil when meaning-based search isn't configured.
+	semanticSearch SemanticSearchFunc
 }
+
+// SemanticSearchFunc runs meaning-based term search ("semantic" or "hybrid") with params' filters.
+type SemanticSearchFunc func(ctx context.Context, params loinc.SearchParams, mode string) (loinc.SearchResponse, error)
 
 // store resolves the current store, or a plain error suitable for an MCP tool error result.
 func (s *Service) store() (*loinc.Store, error) {
@@ -45,26 +51,37 @@ func (s *Service) store() (*loinc.Store, error) {
 }
 
 type SearchTermsRequest struct {
-	Query           string   `json:"q,omitempty" jsonschema:"Search query or exact LOINC number"`
-	Status          string   `json:"status,omitempty" jsonschema:"Status filter. Defaults to every status except DEPRECATED. Use DEPRECATED or * only when needed."`
-	Statuses        []string `json:"statuses,omitempty" jsonschema:"Repeatable status filters"`
-	UsageType       string   `json:"usageType,omitempty" jsonschema:"any, observation, or order"`
-	RankMode        string   `json:"rankMode,omitempty" jsonschema:"observation or order"`
-	Sort            string   `json:"sort,omitempty" jsonschema:"relevance, usage, or alpha"`
-	RankedOnly      bool     `json:"rankedOnly,omitempty" jsonschema:"Require positive common rank"`
-	Class           string   `json:"class,omitempty" jsonschema:"LOINC class filter"`
-	Classes         []string `json:"classes,omitempty" jsonschema:"Several LOINC classes, any of which may match (e.g. CHEM, SERO)"`
-	ClassType       string   `json:"classType,omitempty" jsonschema:"LOINC CLASSTYPE: lab, clinical, attachment, or survey. Use lab when mapping lab tests to drop survey and attachment noise."`
-	System          string   `json:"system,omitempty" jsonschema:"System axis filter"`
-	TimeAspect      string   `json:"timeAspect,omitempty" jsonschema:"Time aspect filter"`
-	Scale           string   `json:"scale,omitempty" jsonschema:"Scale filter"`
-	Method          string   `json:"method,omitempty" jsonschema:"Method filter"`
-	Property        string   `json:"property,omitempty" jsonschema:"Property filter"`
-	OrderObs        string   `json:"orderObs,omitempty" jsonschema:"Raw ORDER_OBS filter"`
-	HierarchyNodeID string   `json:"hierarchyNodeId,omitempty" jsonschema:"Hierarchy occurrence node ID"`
-	Limit           int      `json:"limit,omitempty" jsonschema:"Maximum rows, capped for context control"`
-	Offset          int      `json:"offset,omitempty" jsonschema:"Result offset"`
-	Detail          string   `json:"detail,omitempty" jsonschema:"summary, standard, or full"`
+	Query              string   `json:"q,omitempty" jsonschema:"Search query or exact LOINC number"`
+	Status             string   `json:"status,omitempty" jsonschema:"Status filter. Defaults to every status except DEPRECATED. Use DEPRECATED or * only when needed."`
+	Statuses           []string `json:"statuses,omitempty" jsonschema:"Repeatable status filters"`
+	UsageType          string   `json:"usageType,omitempty" jsonschema:"any, observation, or order"`
+	RankMode           string   `json:"rankMode,omitempty" jsonschema:"observation or order"`
+	Sort               string   `json:"sort,omitempty" jsonschema:"relevance, usage, or alpha"`
+	RankedOnly         bool     `json:"rankedOnly,omitempty" jsonschema:"Require positive common rank"`
+	Class              string   `json:"class,omitempty" jsonschema:"LOINC class filter"`
+	Classes            []string `json:"classes,omitempty" jsonschema:"Several LOINC classes, any of which may match (e.g. CHEM, SERO)"`
+	ClassType          string   `json:"classType,omitempty" jsonschema:"LOINC CLASSTYPE: lab, clinical, attachment, or survey. Use lab when mapping lab tests to drop survey and attachment noise."`
+	Mode               string   `json:"mode,omitempty" jsonschema:"words (default), semantic (nearest by meaning, needs the meaning index), or hybrid (meaning and words merged; best for natural-language requests)"`
+	System             string   `json:"system,omitempty" jsonschema:"System axis filter"`
+	TimeAspect         string   `json:"timeAspect,omitempty" jsonschema:"Time aspect filter"`
+	Scale              string   `json:"scale,omitempty" jsonschema:"Scale filter"`
+	Method             string   `json:"method,omitempty" jsonschema:"Method filter"`
+	Property           string   `json:"property,omitempty" jsonschema:"Property filter"`
+	OrderObs           string   `json:"orderObs,omitempty" jsonschema:"Raw ORDER_OBS filter"`
+	HierarchyNodeID    string   `json:"hierarchyNodeId,omitempty" jsonschema:"Hierarchy occurrence node ID"`
+	Component          string   `json:"component,omitempty" jsonschema:"Exact LOINC Component (e.g. Thyrotropin, Troponin I.cardiac): lists every method, scale, property, and specimen variant of one analyte; without q it sorts by usage. Use it to show the alternatives for a pick and let the mapper choose."`
+	Contains           []string `json:"contains,omitempty" jsonschema:"Keep only panels containing every one of these LOINC numbers (e.g. 5902-2 and 6301-6 finds the PT panel 34528-0). Use with loinc_search_panels to map a combined request like 'pt inr' once its tests are known."`
+	UniversalLabOrders bool     `json:"universalLabOrders,omitempty" jsonschema:"Keep only terms in LOINC's Universal Lab Orders value set (orderable lab tests)"`
+	RadModality        string   `json:"radModality,omitempty" jsonschema:"Radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"`
+	RadSubtype         string   `json:"radSubtype,omitempty" jsonschema:"Radiology playbook modality subtype, e.g. Doppler"`
+	RadRegion          string   `json:"radRegion,omitempty" jsonschema:"Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"`
+	RadFocus           string   `json:"radFocus,omitempty" jsonschema:"Radiology imaging focus (exact playbook part name), e.g. Kidney, Knee, Brain"`
+	RadLaterality      string   `json:"radLaterality,omitempty" jsonschema:"Radiology laterality: Right, Left, Bilateral, Unilateral, Unspecified"`
+	RadContrast        string   `json:"radContrast,omitempty" jsonschema:"Radiology contrast timing: WO (without), W (with), or 'WO & W'"`
+	RadView            string   `json:"radView,omitempty" jsonschema:"Radiology view type (exact playbook part name)"`
+	Limit              int      `json:"limit,omitempty" jsonschema:"Maximum rows, capped for context control"`
+	Offset             int      `json:"offset,omitempty" jsonschema:"Result offset"`
+	Detail             string   `json:"detail,omitempty" jsonschema:"summary, standard, or full"`
 }
 
 type LOINCRequest struct {
@@ -122,6 +139,9 @@ type PageResponse[T any] struct {
 	// Relaxed is true when no result matched every query word; DroppedWords were left out.
 	Relaxed      bool     `json:"relaxed,omitempty"`
 	DroppedWords []string `json:"droppedWords,omitempty"`
+	// IgnoredWords were skipped as stop or generic words; Mode is set for semantic/hybrid search.
+	IgnoredWords []string `json:"ignoredWords,omitempty"`
+	Mode         string   `json:"mode,omitempty"`
 }
 
 type TermCandidate struct {
@@ -134,13 +154,16 @@ type TermCandidate struct {
 	CommonOrderRank int      `json:"commonOrderRank,omitempty"`
 	// Relevance is the text-match strength for the query (higher is better; 0 without query
 	// text). Compare it within one result set only; sort=relevance orders by it.
-	Relevance float64           `json:"relevance,omitempty"`
-	System    string            `json:"system,omitempty"`
-	Class     string            `json:"class,omitempty"`
-	Scale     string            `json:"scale,omitempty"`
-	Property  string            `json:"property,omitempty"`
-	Notes     []string          `json:"notes,omitempty"`
-	Fields    map[string]string `json:"fields,omitempty"`
+	Relevance float64 `json:"relevance,omitempty"`
+	System    string  `json:"system,omitempty"`
+	Class     string  `json:"class,omitempty"`
+	Scale     string  `json:"scale,omitempty"`
+	Property  string  `json:"property,omitempty"`
+	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
+	ExampleUCUM   string            `json:"exampleUcum,omitempty"`
+	MapperComment string            `json:"mapperComment,omitempty"`
+	Notes         []string          `json:"notes,omitempty"`
+	Fields        map[string]string `json:"fields,omitempty"`
 }
 
 type TermFitResponse struct {
@@ -164,7 +187,18 @@ func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (Page
 	limit := normalizeMCPLimit(req.Limit)
 	offset := normalizeOffset(req.Offset)
 	params := req.searchParams(limit, offset)
-	response, err := store.Search(ctx, params)
+	var response loinc.SearchResponse
+	switch mode := strings.ToLower(strings.TrimSpace(req.Mode)); mode {
+	case "", "words":
+		response, err = store.Search(ctx, params)
+	case "semantic", "hybrid":
+		if s.semanticSearch == nil {
+			return PageResponse[TermCandidate]{}, errors.New("meaning-based search is not available here; use mode=words, or the HTTP MCP server with LOINC_EMBEDDING_URL set")
+		}
+		response, err = s.semanticSearch(ctx, params, mode)
+	default:
+		return PageResponse[TermCandidate]{}, fmt.Errorf("unknown mode %q (use words, semantic, or hybrid)", req.Mode)
+	}
 	if err != nil {
 		return PageResponse[TermCandidate]{}, err
 	}
@@ -176,6 +210,8 @@ func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (Page
 		HasMore:       response.HasMore,
 		Relaxed:       response.Relaxed,
 		DroppedWords:  response.DroppedWords,
+		IgnoredWords:  response.IgnoredWords,
+		Mode:          response.Mode,
 		NextCallHint:  nextCallHint("loinc_search_terms", response.HasMore, limit, offset),
 		ContextHint:   firstNonEmpty(response.Notice, "Compact term candidates. Call loinc_get_term_fit before recommending a term."),
 		RequestedFull: req.Detail == "full",
@@ -367,24 +403,33 @@ func (r SearchTermsRequest) searchParams(limit int, offset int) loinc.SearchPara
 		statuses = append(statuses, r.Status)
 	}
 	return loinc.SearchParams{
-		Query:           r.Query,
-		Statuses:        statuses,
-		UsageType:       r.UsageType,
-		RankMode:        r.RankMode,
-		Sort:            r.Sort,
-		RankedOnly:      r.RankedOnly,
-		Class:           r.Class,
-		Classes:         r.Classes,
-		ClassType:       r.ClassType,
-		System:          r.System,
-		TimeAspect:      r.TimeAspect,
-		Scale:           r.Scale,
-		Method:          r.Method,
-		Property:        r.Property,
-		OrderObs:        r.OrderObs,
-		HierarchyNodeID: r.HierarchyNodeID,
-		Limit:           limit,
-		Offset:          offset,
+		Query:              r.Query,
+		Statuses:           statuses,
+		UsageType:          r.UsageType,
+		RankMode:           r.RankMode,
+		Sort:               r.Sort,
+		RankedOnly:         r.RankedOnly,
+		Class:              r.Class,
+		Classes:            r.Classes,
+		ClassType:          r.ClassType,
+		System:             r.System,
+		TimeAspect:         r.TimeAspect,
+		Scale:              r.Scale,
+		Method:             r.Method,
+		Property:           r.Property,
+		OrderObs:           r.OrderObs,
+		HierarchyNodeID:    r.HierarchyNodeID,
+		Component:          r.Component,
+		PanelContains:      r.Contains,
+		UniversalLabOrders: r.UniversalLabOrders,
+		RadParts: loinc.RadParts(func(param string) string {
+			return map[string]string{
+				"radModality": r.RadModality, "radSubtype": r.RadSubtype, "radRegion": r.RadRegion, "radFocus": r.RadFocus,
+				"radLaterality": r.RadLaterality, "radContrast": r.RadContrast, "radView": r.RadView,
+			}[param]
+		}),
+		Limit:  limit,
+		Offset: offset,
 	}
 }
 
@@ -403,6 +448,8 @@ func compactTerms(results []loinc.SearchResult, detail string) []TermCandidate {
 			Class:           result.Class,
 			Scale:           result.Scale,
 			Property:        result.Property,
+			ExampleUCUM:     result.ExampleUCUM,
+			MapperComment:   result.MapperComment,
 			Notes:           statusNotes(result.Status),
 		}
 		if detail == "standard" || detail == "full" {

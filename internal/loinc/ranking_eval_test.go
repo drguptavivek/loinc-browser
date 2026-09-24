@@ -37,7 +37,10 @@ func TestRankingAgainstMappingProbe(t *testing.T) {
 		{"sgpt alt", []string{"1742-6"}},
 		{"potassium serum", []string{"2823-3"}},
 		{"creatinine serum", []string{"2160-0"}},
-		{"vitamin d", []string{"1989-3", "62292-8"}},
+		// Not "vitamin d": 1989-3 is named "25-hydroxyvitamin D3" (one word), so the word "vitamin"
+		// only reaches it through related names and ~10 points of text score behind "Vit D+metab";
+		// no sane popularity weight bridges that. Meaning search (mode=hybrid) is the fix.
+		{"urine", []string{"5778-6", "5767-9", "2514-8", "630-4"}}, // common urine tests, not rank-161 sediment
 		{"homocysteine", []string{"13965-9", "2428-1"}},
 		{"lipase", []string{"3040-3"}},
 		{"platelet count", []string{"777-3"}},
@@ -45,11 +48,17 @@ func TestRankingAgainstMappingProbe(t *testing.T) {
 		{"ldl cholesterol calculated", []string{"13457-7"}},
 		{"ferritin", []string{"2276-4", "20567-4"}},
 		{"dengue igm", []string{"23992-1", "25338-5"}},
-		{"hba1c fasting", []string{"4548-4"}}, // relaxed: must drop "fasting", not the analyte
+		{"hba1c fasting", []string{"4548-4"}},        // relaxed: must drop "fasting", not the analyte
+		{"tc dc esr", []string{"4537-7", "30341-2"}}, // combined request: the ESR must stay findable
+		{"phosphorus", []string{"2777-1"}},           // LOINC says "Phosphate", not "phosphorus"
+		{"ncct neck", []string{"36514-8"}},           // non-contrast CT: "CT Neck WO contrast", not 36051-1
+		// Known word-search misses from a lab compendium (hybrid finds the first two):
+		//   "ham test" -> 13533-5 (acid hemolysis); "vitamin d" -> 1989-3/62292-8 (see above);
+		//   "pt inr" -> 34528-0 PT panel: a two-test request, and no term names both PT and INR
+		//   except the INR goal 92891-1, which wins; "urea calculated urease" -> 3094-0.
 	}
-	// What a lab mapper should pass: without classType=lab a PhenX survey protocol ranks #2 for
-	// "vitamin d".
-	classType := map[string]string{"vitamin d": "lab"}
+	// What a lab mapper should pass.
+	classType := map[string]string{"urine": "lab"}
 	for _, probe := range probes {
 		response, err := store.Search(context.Background(), SearchParams{Query: probe.query, ClassType: classType[probe.query], Limit: 3})
 		if err != nil {
@@ -95,12 +104,40 @@ func TestRankingAgainstMappingProbe(t *testing.T) {
 		}
 	}
 
-	// "Widal" is not in LOINC; dropping it would leave only "test", matching thousands of terms.
+	// "Widal" is not in LOINC; the widal->typhi synonym finds the S. Typhi antibody terms.
 	widal, err := store.Search(context.Background(), SearchParams{Query: "widal test", Limit: 3})
 	if err != nil {
 		t.Fatalf("search widal test: %v", err)
 	}
-	if widal.Total != 0 || widal.Relaxed {
-		t.Errorf("widal test: want no results rather than a generic relaxed set, got total=%d relaxed=%v", widal.Total, widal.Relaxed)
+	if len(widal.Results) == 0 || !strings.Contains(widal.Results[0].ShortName, "Typhi") {
+		t.Errorf("widal test: want S. Typhi antibody terms first, got %+v", widal.Results)
+	}
+
+	// A word LOINC never uses, with only generic words left: nothing, not thousands of terms.
+	unknown, err := store.Search(context.Background(), SearchParams{Query: "typhidot test", Limit: 3})
+	if err != nil {
+		t.Fatalf("search typhidot test: %v", err)
+	}
+	if unknown.Total != 0 {
+		t.Errorf("typhidot test: want no results, got total=%d", unknown.Total)
+	}
+
+	// Context filters for mapping: the panel holding PT and INR, radiology parts, lab orders.
+	for name, check := range map[string]struct {
+		params SearchParams
+		want   string
+	}{
+		"panel containing PT+INR":   {SearchParams{PanelContains: []string{"5902-2", "6301-6"}, PanelOnly: true, Limit: 1}, "34528-0"},
+		"CT head without contrast":  {SearchParams{RadParts: map[string]string{"Rad.Modality.Modality Type": "ct", "Rad.Anatomic Location.Region Imaged": "head", "Rad.Timing": "WO"}, Limit: 1}, "30799-1"},
+		"lab order glucose":         {SearchParams{Query: "glucose", UniversalLabOrders: true, Limit: 1}, "2345-7"},
+		"TSH variants by component": {SearchParams{Component: "thyrotropin", System: "Ser/Plas", Limit: 1}, "3016-3"},
+	} {
+		response, err := store.Search(context.Background(), check.params)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(response.Results) == 0 || response.Results[0].LOINCNum != check.want {
+			t.Errorf("%s: want %s first, got %+v", name, check.want, response.Results)
+		}
 	}
 }

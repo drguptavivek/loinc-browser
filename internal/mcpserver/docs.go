@@ -26,6 +26,7 @@ var conceptDocFiles = []string{
 	"LOINC_SPECIAL_CASES.md",
 	"LOINC_DATABASE_STRUCTURE.md",
 	"LOINC_PART_LINKAGES.md",
+	"LOINC_MAPPING_GUIDANCE.md",
 	"LOINC_OFFICIAL_API.md",
 	"LOINC_LICENSE_NOTE.md",
 }
@@ -35,7 +36,7 @@ type Docs struct {
 }
 
 type ConceptRequest struct {
-	Topic  string `json:"topic,omitempty" jsonschema:"LOINC concept topic, such as major_parts, names, status, usage, panels, answer_lists, special_cases, microbiology, antimicrobial_susceptibility, database_structure, part_linkages, primary_linkages, semantic_enhancement, map_to_table, source_organization, copyright, or search_strategy"`
+	Topic  string `json:"topic,omitempty" jsonschema:"LOINC concept topic, such as major_parts, names, status, usage, panels, answer_lists, special_cases, microbiology, antimicrobial_susceptibility, database_structure, part_linkages, primary_linkages, semantic_enhancement, map_to_table, source_organization, mapping_guidance, units_and_property, calculated_vs_measured, coagulation_specimens, copyright, or search_strategy"`
 	Detail string `json:"detail,omitempty" jsonschema:"summary, standard, or full"`
 }
 

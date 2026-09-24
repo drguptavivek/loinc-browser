@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,6 +125,15 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
+	response, err := s.searchTerms(ctx, params)
+	for i := range response.Results {
+		entry := mapperGuideEntry(response.Results[i].LOINCNum)
+		response.Results[i].ExampleUCUM, response.Results[i].MapperComment = entry.ExampleUCUM, entry.Comment
+	}
+	return response, err
+}
+
+func (s *Store) searchTerms(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	params = NormalizeTermListParams(params)
 	query := strings.TrimSpace(params.Query)
 	if loincNumberRegexp.MatchString(query) {
@@ -133,6 +143,9 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 		}
 	}
 	response, err := s.search(ctx, params, makeFTSQuery(query))
+	ignored := ignoredWords(query)
+	synonyms := synonymsUsed(query)
+	response.IgnoredWords, response.Synonyms = ignored, synonyms
 	if err != nil || response.Total > 0 {
 		return response, err
 	}
@@ -186,6 +199,7 @@ func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse
 			return response, err
 		}
 		relaxed.Relaxed = true
+		relaxed.IgnoredWords, relaxed.Synonyms = ignored, synonyms
 		relaxed.DroppedWords = droppedWords(words, best)
 		relaxed.Notice = "No term matched every word; dropped: " + strings.Join(relaxed.DroppedWords, ", ") + "."
 		return relaxed, nil
@@ -299,6 +313,34 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 		}
 		where = append(where, `exists (select 1 from `+quoteIdentifier(table)+` ct where ct."LOINC_NUM" = t.loinc_num and ct."CLASSTYPE" = ?)`)
 		args = append(args, code)
+	}
+	if params.UniversalLabOrders {
+		table, ok := s.RawTable(ctx, universalLabOrdersRelPath)
+		if !ok {
+			return SearchResponse{}, fmt.Errorf("%w: universalLabOrders needs the Universal Lab Orders file; re-import the release", ErrInvalidParam)
+		}
+		if err := s.ensureRawIndex(ctx, table, "LOINC_NUM"); err != nil {
+			return SearchResponse{}, err
+		}
+		where = append(where, `exists (select 1 from `+quoteIdentifier(table)+` ulo where ulo."LOINC_NUM" = t.loinc_num)`)
+	}
+	if len(params.RadParts) > 0 {
+		table, ok := s.RawTable(ctx, radiologyPlaybookRelPath)
+		if !ok {
+			return SearchResponse{}, fmt.Errorf("%w: radiology filters need the RSNA radiology playbook file; re-import the release", ErrInvalidParam)
+		}
+		if err := s.ensureRawIndex(ctx, table, "LoincNumber"); err != nil {
+			return SearchResponse{}, err
+		}
+		partTypes := make([]string, 0, len(params.RadParts))
+		for partType := range params.RadParts {
+			partTypes = append(partTypes, partType)
+		}
+		sort.Strings(partTypes)
+		for _, partType := range partTypes {
+			where = append(where, `exists (select 1 from `+quoteIdentifier(table)+` pb where pb."LoincNumber" = t.loinc_num and pb."PartTypeName" = ? and pb."PartName" = ? collate nocase)`)
+			args = append(args, partType, strings.TrimSpace(params.RadParts[partType]))
+		}
 	}
 	query := strings.TrimSpace(params.Query)
 	exactLOINC := loincNumberRegexp.MatchString(query)
@@ -416,11 +458,17 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 }
 
 func (s *Store) Term(ctx context.Context, loincNum string) (Term, error) {
-	return s.term(ctx, loincNum, false)
+	return withMapperGuide(s.term(ctx, loincNum, false))
 }
 
 func (s *Store) TermWithAccessories(ctx context.Context, loincNum string) (Term, error) {
-	return s.term(ctx, loincNum, true)
+	return withMapperGuide(s.term(ctx, loincNum, true))
+}
+
+func withMapperGuide(term Term, err error) (Term, error) {
+	entry := mapperGuideEntry(term.LOINCNum)
+	term.ExampleUCUM, term.MapperComment = entry.ExampleUCUM, entry.Comment
+	return term, err
 }
 
 func (s *Store) term(ctx context.Context, loincNum string, includeAccessories bool) (Term, error) {
@@ -907,7 +955,37 @@ var classTypeCodes = map[string]string{
 
 // loincCSVRelPath is the release file whose raw copy keeps CLASSTYPE, which the normalized
 // loinc_terms table does not store.
-const loincCSVRelPath = "LoincTable/Loinc.csv"
+const (
+	loincCSVRelPath           = "LoincTable/Loinc.csv"
+	universalLabOrdersRelPath = "AccessoryFiles/LoincUniversalLabOrdersValueSet/LoincUniversalLabOrdersValueSet.csv"
+	radiologyPlaybookRelPath  = "AccessoryFiles/LoincRsnaRadiologyPlaybook/LoincRsnaRadiologyPlaybook.csv"
+)
+
+// RadiologyParams maps the radiology filter parameters to RSNA playbook PartTypeNames. Contrast
+// is the playbook's Rad.Timing: W, WO, or "WO & W".
+var RadiologyParams = map[string]string{
+	"radModality":   "Rad.Modality.Modality Type",
+	"radSubtype":    "Rad.Modality.Modality Subtype",
+	"radRegion":     "Rad.Anatomic Location.Region Imaged",
+	"radFocus":      "Rad.Anatomic Location.Imaging Focus",
+	"radLaterality": "Rad.Anatomic Location.Laterality",
+	"radContrast":   "Rad.Timing",
+	"radView":       "Rad.View.View Type",
+}
+
+// RadParts collects the radiology filter parameters that get returns into SearchParams.RadParts.
+func RadParts(get func(param string) string) map[string]string {
+	var parts map[string]string
+	for param, partType := range RadiologyParams {
+		if value := strings.TrimSpace(get(param)); value != "" {
+			if parts == nil {
+				parts = map[string]string{}
+			}
+			parts[partType] = value
+		}
+	}
+	return parts
+}
 
 func (s *Store) Facets(ctx context.Context) (Facets, error) {
 	if facets, ok := s.cache.getFacets(); ok {
@@ -1326,6 +1404,23 @@ func filterClauses(params SearchParams, alias string) ([]string, []any) {
 		}
 	}
 	addMany("class", params.Class, params.Classes)
+	if component := strings.TrimSpace(params.Component); component != "" {
+		where = append(where, alias+".component = ? collate nocase")
+		args = append(args, component)
+	}
+	for _, num := range params.PanelContains {
+		if num = strings.TrimSpace(num); num != "" {
+			where = append(where, fmt.Sprintf("exists (select 1 from panel_items pc where pc.parent_loinc_num = %s.loinc_num and pc.child_loinc_num = ? collate nocase)", alias))
+			args = append(args, num)
+		}
+	}
+	if len(params.LOINCNums) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(params.LOINCNums)), ",")
+		where = append(where, fmt.Sprintf("%s.loinc_num in (%s)", alias, placeholders))
+		for _, num := range params.LOINCNums {
+			args = append(args, num)
+		}
+	}
 	add("system", params.System)
 	add("property", params.Property)
 	statusValues, explicitStatus := normalizedStatusValues(params.Status, params.Statuses)
@@ -1401,8 +1496,12 @@ func NormalizeTermListParams(params SearchParams) SearchParams {
 	if params.Limit <= 0 {
 		params.Limit = 25
 	}
-	if params.Limit > 100 {
-		params.Limit = 100
+	maxLimit := 100
+	if params.MaxLimit > maxLimit {
+		maxLimit = params.MaxLimit
+	}
+	if params.Limit > maxLimit {
+		params.Limit = maxLimit
 	}
 	if params.Offset < 0 {
 		params.Offset = 0
@@ -1612,6 +1711,61 @@ func IsStopWord(word string) bool {
 	return stopWords[strings.ToLower(word)]
 }
 
+// requestSynonyms replace shorthand that clinical requests use but LOINC's names and related
+// names don't with an FTS5 expression for the LOINC wording. The shorthand is replaced, not kept
+// as an alternative: its own prefix matches are the problem ("esr*" hits the ESR1 gene, "pcv*"
+// penciclovir, "dc*" dozens of unrelated terms). Entries were checked against the 2.82 release by
+// a lab-compendium mapping run. Left out: "tlc" (thin-layer chromatography in LOINC), "ast"
+// (asthma), "dlc" (dLCX).
+var requestSynonyms = map[string]string{
+	"usg":        `us`,                                     // ultrasound: LOINC says "US"
+	"ncct":       `ct AND "wo contrast"`,                   // non-contrast CT ("wo contrast" skips "WO and W contrast")
+	"nect":       `ct AND "wo contrast"`,                   // non-enhanced CT
+	"cect":       `ct AND "w contrast"`,                    // contrast-enhanced CT
+	"esr":        `"sed rat" OR "sedimentation rate"`,      // not the ESR1 gene
+	"pcv":        `hematocrit`,                             // packed cell volume
+	"dc":         `differential AND count`,                 // differential (leukocyte) count
+	"mp":         `"malaria parasite" OR plasmodium`,       // malaria parasite smear
+	"lft":        `"liver function" OR "hepatic function"`, // liver function panel
+	"rft":        `"renal function"`,                       // renal function panel ("kidney function" also hits NM kidney scans)
+	"kft":        `"renal function"`,                       // kidney function panel ("kidney function" also hits NM kidney scans)
+	"widal":      `typhi`,                                  // Widal = Salmonella Typhi antibodies
+	"fungal":     `fungal OR fungal* OR fungus`,            // LOINC names cultures "Fungus"
+	"sugar":      `sugar OR glucose`,                       // "blood sugar"
+	"phosphorus": `phosphorus OR phosphate`,                // LOINC names serum phosphorus "Phosphate"
+	"ict":        `"indirect antiglobulin"`,                // indirect Coombs; "ict*" hits "icteric"
+	"lgm":        `igm`,                                    // OCR/typing slip for IgM
+	"ada":        `"adenosine deaminase"`,                  // the enzyme (TB effusions), not the ADA gene
+	"dct":        `"direct antiglobulin"`,                  // direct Coombs
+}
+
+// synonymsUsed reports which requestSynonyms a query triggered, as "usg→us".
+func synonymsUsed(query string) []string {
+	var used []string
+	for _, token := range DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1)) {
+		if synonym, ok := requestSynonyms[token]; ok {
+			used = append(used, token+"→"+strings.ReplaceAll(synonym, `"`, ""))
+		}
+	}
+	return used
+}
+
+// ignoredWords lists the query's stop and generic words that DropStopWords removes (none when
+// nothing else would be left, since they are then kept).
+func ignoredWords(query string) []string {
+	tokens := ftsTokenRegexp.FindAllString(strings.ToLower(query), -1)
+	if len(DropStopWords(tokens)) == len(tokens) {
+		return nil
+	}
+	var ignored []string
+	for _, token := range tokens {
+		if IsStopWord(token) {
+			ignored = append(ignored, token)
+		}
+	}
+	return ignored
+}
+
 // DropStopWords removes stop words from tokens unless that would leave none.
 func DropStopWords(tokens []string) []string {
 	kept := make([]string, 0, len(tokens))
@@ -1634,7 +1788,7 @@ func makeFTSQuery(query string) string {
 // rather than any term sharing its words. Lower is better, like bm25. Each prior is subtracted or
 // added in bm25 units:
 //   - popularity: up to relevancePopularityWeight for the most-used terms, decaying with the
-//     common rank (rank 7 ~ 7.7, rank 22 ~ 7.2, rank 201 ~ 4.0, rank 617 ~ 1.9, unranked 0);
+//     common rank (rank 7 ~ 7.7, rank 69 ~ 5.9, rank 161 ~ 4.4, rank 617 ~ 1.9, unranked 0);
 //   - status: DISCOURAGED and TRIAL terms are pushed down (deprecated ones are hidden by default);
 //   - panels: a panel ranks below single tests unless the query asks for a panel.
 //
@@ -1648,15 +1802,17 @@ const (
 	relevancePanel            = 5.0
 )
 
+// relevanceRankExpr formats every weight with %f: %g would print 200.0 as "200" and make SQLite
+// divide integers (161/200 = 0), giving every ranked term the same boost.
 func relevanceRankExpr(rankColumn string, wantsPanel bool) string {
 	expr := fmt.Sprintf(`bm25(loinc_terms_fts, %s)
-		- %g * (case when t.%s > 0 then 1.0 / (1.0 + t.%s / %g) else 0 end)
-		+ (case t.status when 'DISCOURAGED' then %g when 'TRIAL' then %g else 0 end)`,
+		- %f * (case when t.%s > 0 then 1.0 / (1.0 + t.%s / %f) else 0 end)
+		+ (case t.status when 'DISCOURAGED' then %f when 'TRIAL' then %f else 0 end)`,
 		ftsColumnWeights, relevancePopularityWeight, rankColumn, rankColumn, relevancePopularityScale,
 		relevanceDiscouraged, relevanceTrial)
 	if !wantsPanel {
 		expr += fmt.Sprintf(`
-		+ (case when exists (select 1 from panel_items p where p.parent_loinc_num = t.loinc_num collate nocase) then %g else 0 end)`, relevancePanel)
+		+ (case when exists (select 1 from panel_items p where p.parent_loinc_num = t.loinc_num collate nocase) then %f else 0 end)`, relevancePanel)
 	}
 	return expr
 }
@@ -1665,7 +1821,7 @@ func relevanceRankExpr(rankColumn string, wantsPanel bool) string {
 func queryWantsPanel(query string) bool {
 	for _, word := range ftsTokenRegexp.FindAllString(strings.ToLower(query), -1) {
 		switch word {
-		case "panel", "pnl", "panels", "battery", "profile":
+		case "panel", "pnl", "panels", "battery", "profile", "lft", "rft", "kft":
 			return true
 		}
 	}
@@ -1692,6 +1848,10 @@ func ftsTerms(query string) []string {
 		}
 		// The prefix finds longer words ("gluc" -> glucose); the exact token also matching makes a
 		// whole-word hit, such as an abbreviation like "crp" in the synonyms, score higher.
+		if synonym, ok := requestSynonyms[token]; ok {
+			parts = append(parts, "("+synonym+")")
+			continue
+		}
 		parts = append(parts, "("+token+" OR "+token+"*)")
 	}
 	return parts

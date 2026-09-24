@@ -29,3 +29,6 @@ docs/vendor/
 
 # Local code-index cache from the trace-mcp tool.
 .trace-mcp/
+
+# Session handoff notes
+HANDOFF.md

@@ -22,6 +22,10 @@ Use `loinc_search_terms` with `usageType=order`, `rankMode=order`, and `rankedOn
 
 Call `loinc_get_term_fit` for a compact suitability view. If the term has answer lists, panel items, hierarchy membership, or copyright metadata, call the specific follow-up tool instead of requesting full term detail.
 
+## Map A Local Lab Test
+
+When candidates look alike by name but differ in property, method, timing, or specimen, call `loinc_explain_concepts` with a focused `LOINC_MAPPING_GUIDANCE.md` topic: `units_and_property` when the local test has units, `calculated_vs_measured` (LDL, anion gap), `detection_limit_variants` (TSH, PSA, testosterone), `timed_urine`, `coagulation_specimens`, `cbc_and_differential`, or `drug_screen_vs_confirm`. For combined requests ("PT/INR"), find the tests first, then `loinc_search_panels` with `contains`.
+
 ## Check Scope
 
 Use `loinc_explain_concepts` with `topic=scope` when deciding whether LOINC is appropriate for a requested concept. LOINC covers laboratory specimen observations, clinical observations about patients, discrete measurements, questions, documents, panels, batteries, and other collections.

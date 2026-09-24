@@ -323,9 +323,32 @@ export type SearchParams = {
 	usageType?: 'any' | 'observation' | 'order';
 	rankMode?: 'observation' | 'order';
 	sort?: 'relevance' | 'usage' | 'alpha';
+	mode?: 'words' | 'semantic' | 'hybrid';
 	limit?: number;
 	offset?: number;
 };
+
+export type SemanticStatus = {
+	state: 'disabled' | 'missing' | 'building' | 'incomplete' | 'stale' | 'ready' | 'error';
+	model?: string;
+	endpoint?: string;
+	count?: number;
+	done?: number;
+	total?: number;
+	building?: boolean;
+	message?: string;
+};
+
+export function getSemanticStatus(): Promise<SemanticStatus> {
+	return requestJSON<SemanticStatus>('/api/v1/semantic/status');
+}
+
+export async function rebuildSemantic(): Promise<SemanticStatus> {
+	const response = await fetch('/api/v1/semantic/rebuild', { method: 'POST' });
+	const body = await response.json().catch(() => ({ error: response.statusText }));
+	if (!response.ok) throw new Error(body.error || response.statusText);
+	return body as SemanticStatus;
+}
 
 async function requestJSON<T>(path: string): Promise<T> {
 	const response = await fetch(path);
