@@ -9,9 +9,10 @@ import (
 
 func TestMatchBucket(t *testing.T) {
 	cases := []struct {
-		name string
-		resp SearchResponse
-		want string
+		name  string
+		query string // defaults to "S. Creatinine"
+		resp  SearchResponse
+		want  string
 	}{
 		{
 			name: "no results",
@@ -19,9 +20,10 @@ func TestMatchBucket(t *testing.T) {
 			want: "none",
 		},
 		{
-			name: "typed LOINC number matches the top result",
-			resp: SearchResponse{Results: []SearchResult{{LOINCNum: "2160-0", Rank: 1}}},
-			want: "confident",
+			name:  "typed LOINC number matches the top result",
+			query: "2160-0",
+			resp:  SearchResponse{Results: []SearchResult{{LOINCNum: "2160-0", Rank: 1}}},
+			want:  "confident",
 		},
 		{
 			name: "top result pinned by CLCI name match",
@@ -32,17 +34,25 @@ func TestMatchBucket(t *testing.T) {
 			want: "confident",
 		},
 		{
-			name: "single unambiguous result",
-			resp: SearchResponse{Results: []SearchResult{{LOINCNum: "2160-0", Rank: -3}}},
-			want: "confident",
+			name: "a lone result is not confidence, even a common test",
+			resp: SearchResponse{Results: []SearchResult{{LOINCNum: "2160-0", Rank: -3, CommonTestRank: 4}}},
+			want: "review",
 		},
 		{
-			name: "clear margin between top and runner-up",
+			name: "clear margin on a common test",
 			resp: SearchResponse{Results: []SearchResult{
-				{LOINCNum: "2160-0", Rank: -10},
+				{LOINCNum: "2160-0", Rank: -10, CommonTestRank: 4},
 				{LOINCNum: "9999-9", Rank: -2},
 			}},
 			want: "confident",
+		},
+		{
+			name: "clear margin on an unranked term needs a look",
+			resp: SearchResponse{Results: []SearchResult{
+				{LOINCNum: "68954-7", Rank: -10},
+				{LOINCNum: "9999-9", Rank: -2},
+			}},
+			want: "review",
 		},
 		{
 			name: "close tie between top and runner-up",
@@ -63,7 +73,11 @@ func TestMatchBucket(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := matchBucket(tc.resp, "S. Creatinine"); got != tc.want {
+			query := tc.query
+			if query == "" {
+				query = "S. Creatinine"
+			}
+			if got := matchBucket(tc.resp, query); got != tc.want {
 				t.Fatalf("matchBucket() = %q, want %q", got, tc.want)
 			}
 		})
@@ -90,7 +104,7 @@ func TestMatchNamesOrderAndEmptyNames(t *testing.T) {
 	if len(matches) != 4 {
 		t.Fatalf("expected 4 matches in input order, got %d", len(matches))
 	}
-	if matches[0].Name != "glucose plasma" || matches[0].Bucket != "confident" || len(matches[0].Candidates) == 0 || matches[0].Candidates[0].LOINCNum != "1000-1" {
+	if matches[0].Name != "glucose plasma" || matches[0].Bucket != "review" || len(matches[0].Candidates) == 0 || matches[0].Candidates[0].LOINCNum != "1000-1" {
 		t.Fatalf("unexpected match[0]: %#v", matches[0])
 	}
 	if matches[1].Bucket != "none" || len(matches[1].Candidates) != 0 {

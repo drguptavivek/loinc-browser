@@ -62,8 +62,12 @@ func (s *Store) MatchNames(ctx context.Context, names []string, params SearchPar
 
 // matchBucket buckets one name's search response: "none" with no results; "confident" when the
 // name is itself the top LOINC number, the top result is pinned by a CLCI General Name match, or
-// (absent a relaxed/dropped-word retry) there is exactly one result or the top result clearly
+// (absent a relaxed/dropped-word retry) the top result is a commonly used term that clearly
 // outranks the runner-up; else "review".
+//
+// A lone result is not confidence: on a 6,761-name hospital test master (2026-09-24) it was wrong
+// 10 times in 27 ("Throat swab for Culture" -> a S. pyogenes rRNA test). Requiring a common test
+// or order rank for the margin rule took the judged confident sample from 80% to 98% correct.
 func matchBucket(resp SearchResponse, name string) string {
 	if len(resp.Results) == 0 {
 		return "none"
@@ -78,10 +82,10 @@ func matchBucket(resp SearchResponse, name string) string {
 	if resp.Relaxed {
 		return "review"
 	}
-	if len(resp.Results) == 1 {
-		return "confident"
+	if top.CommonTestRank == 0 && top.CommonOrderRank == 0 {
+		return "review"
 	}
-	if resp.Results[1].Rank-top.Rank >= matchConfidentMargin {
+	if len(resp.Results) > 1 && resp.Results[1].Rank-top.Rank >= matchConfidentMargin {
 		return "confident"
 	}
 	return "review"

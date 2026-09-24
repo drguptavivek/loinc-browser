@@ -175,7 +175,8 @@ func TestV1TermsMatch(t *testing.T) {
 		t.Fatalf("expected 3 matches in input order, got %#v", result)
 	}
 	first := matches[0].(map[string]any)
-	if first["name"] != "cholesterol" || first["bucket"] != "confident" {
+	// a lone result needs a look, even for a common test (see matchBucket)
+	if first["name"] != "cholesterol" || first["bucket"] != "review" {
 		t.Fatalf("unexpected first match: %#v", first)
 	}
 	second := matches[1].(map[string]any)
