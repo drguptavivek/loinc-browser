@@ -190,6 +190,26 @@ func runServe(args []string) error {
 		return err
 	}
 	defer store.Close()
+	guidePath := envOr("LOINC_MAPPER_GUIDE_CSV", filepath.Join(dataDir(), "common_codes", "top2000_mapper_guide.csv"))
+	if count, err := loinc.LoadMapperGuide(guidePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Mapper guide not loaded: %v\n", err)
+	} else if count > 0 {
+		fmt.Printf("Mapper guide: %d terms with example units or comments\n", count)
+	}
+	// The deployment's common-codes list: a custom list (LOINC_COMMON_CODES_CSV, any deployment's
+	// own local names) takes precedence over CLCI's env override, then the CLCI file auto-found
+	// under dataDir(). One list per deployment; see docs/agent/LOINC_CLCI.md.
+	commonCodesPath, commonCodesLabel := os.Getenv("LOINC_COMMON_CODES_CSV"), ""
+	if commonCodesPath != "" {
+		commonCodesLabel = envOr("LOINC_COMMON_CODES_LABEL", strings.TrimSuffix(filepath.Base(commonCodesPath), filepath.Ext(commonCodesPath)))
+	} else {
+		commonCodesPath, commonCodesLabel = envOr("LOINC_CLCI_CSV", loinc.FindCLCIFile(dataDir())), loinc.CLCILabel
+	}
+	if count, err := loinc.LoadCommonCodes(commonCodesPath, commonCodesLabel); err != nil {
+		fmt.Fprintf(os.Stderr, "Common codes list not loaded: %v\n", err)
+	} else if count > 0 {
+		fmt.Printf("Common codes list %q: %d terms (%s)\n", commonCodesLabel, count, commonCodesPath)
+	}
 
 	assets, err := web.Assets()
 	if err != nil {
@@ -215,7 +235,17 @@ func runServe(args []string) error {
 			Username: strings.TrimSpace(os.Getenv("LOINC_OFFICIAL_USERNAME")),
 			Password: os.Getenv("LOINC_OFFICIAL_PASSWORD"),
 		},
-		Terminology: &termSvc,
+		EmbeddingURL:      os.Getenv("LOINC_EMBEDDING_URL"),
+		EmbeddingModel:    envOr("LOINC_EMBEDDING_MODEL", "text-embedding-qwen3-embedding-0.6b"),
+		EmbeddingAPIKey:   os.Getenv("LOINC_EMBEDDING_API_KEY"),
+		EmbeddingsPath:    envOr("LOINC_EMBEDDINGS_PATH", filepath.Join(dataDir(), "loinc-embeddings.sqlite")),
+		Terminology:       &termSvc,
+		AgentDisabled:     envBool("LOINC_AGENT_DISABLED"),
+		AgentLLMBaseURL:   os.Getenv("LOINC_AGENT_LLM_BASE_URL"),
+		AgentLLMModel:     os.Getenv("LOINC_AGENT_LLM_MODEL"),
+		AgentLLMAPIKey:    os.Getenv("LOINC_AGENT_LLM_API_KEY"),
+		AgentLLMLocalOnly: agentLLMLocalOnly(),
+		AgentLLMThinking:  envBool("LOINC_AGENT_LLM_THINKING"),
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -886,7 +916,22 @@ Environment:
   LOINC_OFFICIAL_DISABLED=false (or --no-official; turns off the online Search API proxy)
   LOINC_OFFICIAL_PASSPHRASE= (optional; required as X-Loinc-Passphrase on official requests)
   LOINC_OFFICIAL_USERNAME= / LOINC_OFFICIAL_PASSWORD= (optional; used for "saved credentials")
+  LOINC_EMBEDDING_URL= (optional; OpenAI-compatible embeddings, e.g. http://127.0.0.1:1234/v1 for LM Studio; enables mode=semantic|hybrid)
+  LOINC_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
+  LOINC_EMBEDDING_API_KEY= (only for hosted endpoints)
+  LOINC_EMBEDDINGS_PATH=<data dir>/loinc-embeddings.sqlite
+  LOINC_MAPPER_GUIDE_CSV=<data dir>/common_codes/top2000_mapper_guide.csv (optional; from scripts/extract-top2000-mapper-guide.py; adds exampleUcum/mapperComment to term results)
+  LOINC_CLCI_CSV=<data dir>/common-lab-codes-for-india-*/common-lab-codes-for-india.csv (optional; Common Lab Codes for India from nrces.in; adds clciName/localName, the clci filter, and a ranking prior)
+  LOINC_COMMON_CODES_CSV= (optional; any deployment's own common-codes CSV with a LOINC code column and a local-name column; takes precedence over LOINC_CLCI_CSV; adds localName, the clci/commonCodes filter, and a ranking prior)
+  LOINC_COMMON_CODES_LABEL= (optional; label for LOINC_COMMON_CODES_CSV in /api/version; default is the CSV's file name)
 `
+}
+
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func envBool(key string) bool {
@@ -895,4 +940,18 @@ func envBool(key string) bool {
 		return true
 	}
 	return false
+}
+
+// agentLLMLocalOnly defaults to true (refuse a non-loopback/private agent LLM base URL) unless
+// LOINC_AGENT_LLM_LOCAL_ONLY is explicitly set to false.
+func agentLLMLocalOnly() bool {
+	raw := strings.TrimSpace(os.Getenv("LOINC_AGENT_LLM_LOCAL_ONLY"))
+	if raw == "" {
+		return true
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
 }

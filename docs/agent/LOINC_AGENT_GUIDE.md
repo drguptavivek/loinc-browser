@@ -22,6 +22,14 @@ Use `loinc_search_terms` with `usageType=order`, `rankMode=order`, and `rankedOn
 
 Call `loinc_get_term_fit` for a compact suitability view. If the term has answer lists, panel items, hierarchy membership, or copyright metadata, call the specific follow-up tool instead of requesting full term detail.
 
+## Map A Local Lab Test
+
+Mapping a whole local test master (many names at once)? Call `loinc_match_names` once with the full name list instead of `loinc_search_terms` per name; it buckets each name `confident`/`review`/`none` and still needs a spot check on `confident`.
+
+When candidates look alike by name but differ in property, method, timing, or specimen, call `loinc_explain_concepts` with a focused `LOINC_MAPPING_GUIDANCE.md` topic: `units_and_property` when the local test has units, `calculated_vs_measured` (LDL, anion gap), `detection_limit_variants` (TSH, PSA, testosterone), `timed_urine`, `coagulation_specimens`, `cbc_and_differential`, or `drug_screen_vs_confirm`. For combined requests ("PT/INR"), find the tests first, then `loinc_search_panels` with `contains`.
+
+For Indian lab names, prefer a candidate that carries `clciName` (Common Lab Codes for India) unless the units or specimen say otherwise, and pass `clci=true` to see only the national subset. "Blood" in an Indian test name usually means serum or plasma; see topic `blood_means_serum_or_plasma`.
+
 ## Check Scope
 
 Use `loinc_explain_concepts` with `topic=scope` when deciding whether LOINC is appropriate for a requested concept. LOINC covers laboratory specimen observations, clinical observations about patients, discrete measurements, questions, documents, panels, batteries, and other collections.

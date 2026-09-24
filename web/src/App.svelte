@@ -36,6 +36,12 @@
 	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import ApiConsole from '$lib/components/ApiConsole.svelte';
+	import FindMode from '$lib/components/FindMode.svelte';
+	import AskPanel from '$lib/components/AskPanel.svelte';
+	import TermCard from '$lib/components/TermCard.svelte';
+	import BasketPanel from '$lib/components/BasketPanel.svelte';
+	import MapList from '$lib/components/MapList.svelte';
+	import SetupPanel from '$lib/components/SetupPanel.svelte';
 	import type { PaneAPI } from 'paneforge';
 	import {
 		browseAccessories,
@@ -44,6 +50,8 @@
 		getHierarchyNode,
 		getHierarchyParents,
 		getLocalSearchStatus,
+		getSemanticStatus,
+		rebuildSemantic,
 		getOfficialCredentialStatus,
 		getTerm,
 		getTermRelationships,
@@ -61,6 +69,7 @@
 		type Facets,
 		type OfficialCredentialStatus,
 		type OfficialSearchResponse,
+		type SemanticStatus,
 		type SearchResult,
 		type Term,
 		type TermAccessory,
@@ -74,7 +83,7 @@
 		type VersionInfo,
 	} from '$lib/api';
 
-	type BrowseMode = 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced';
+	type BrowseMode = 'find' | 'map' | 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced';
 	type ResultsColumnKey = 'loinc' | 'name' | 'status' | 'rank' | 'axes';
 
 	const emptyFacets: Facets = {
@@ -103,6 +112,11 @@
 	// LOINC CLASSTYPE filter: '' (any), lab, clinical, attachment, or survey.
 	let classType = '';
 	let searchSort: 'relevance' | 'usage' = 'relevance';
+	// Word search, meaning-based search, or both merged (needs the meaning index; see semanticStatus).
+	let matchMode: 'words' | 'hybrid' | 'semantic' = 'words';
+	let semanticStatus: SemanticStatus | null = null;
+	let semanticStatusTimer: ReturnType<typeof setTimeout> | undefined;
+	$: semanticReady = semanticStatus?.state === 'ready' || semanticStatus?.state === 'stale';
 	let hierarchyNodeId = '';
 	let hierarchyLabel = '';
 	let results: SearchResult[] = [];
@@ -125,7 +139,19 @@
 	let initialTerm = '';
 	let error = '';
 	let offset = 0;
-	let activeView: 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' | 'apis' = 'browse';
+	let activeView: 'find' | 'map' | 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' | 'apis' = 'find';
+	// Find / Map views: the end-user screens; their term card is separate from the explorer's detail drawer.
+	let findTerm = '';
+	let findInitialQuery = '';
+	let findInitialDomain = '';
+	// live Find query/domain, written to the URL; never fed back into findInitial* (that would remount Find)
+	let findQuery = '';
+	let findDomain = 'lab';
+	let findURLTimer: ReturnType<typeof setTimeout> | undefined;
+	let basketOpen = false;
+	let setupOpen = false;
+	let askOpen = false;
+	let askPrefill = '';
 	let apiConsolePresetId = '';
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
@@ -388,6 +414,7 @@
 		{ value: 'hierarchy', label: 'Hierarchy' },
 	];
 	onMount(() => {
+		void loadSemanticStatus();
 		void (async () => {
 			applyURLState();
 			void loadVersion();
@@ -395,7 +422,9 @@
 			void loadOfficialCredentialStatus();
 			void loadLocalLuceneStatus();
 			await loadFacets();
-			if (activeView === 'accessories' || activeView === 'hierarchy') {
+			if (activeView === 'find' || activeView === 'map') {
+				updateURL(true);
+			} else if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
 			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
 				updateURL(true);
@@ -412,6 +441,11 @@
 
 		const handlePopState = async () => {
 			applyURLState();
+			if (activeView === 'find' || activeView === 'map') {
+				selectedTerm = null;
+				detailOpen = false;
+				return;
+			}
 			if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
 			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
@@ -457,7 +491,11 @@
 	}
 
 	$: currentBrowseMode =
-		activeView === 'advanced'
+		activeView === 'find'
+			? 'find'
+			: activeView === 'map'
+			? 'map'
+			: activeView === 'advanced'
 			? 'advanced'
 			: activeView === 'official'
 			? 'official'
@@ -499,6 +537,9 @@
 		orderObsValues = params.getAll('orderObs');
 		rankedOnly = params.get('rankedOnly') === 'true' || params.get('rankedOnly') === '1';
 		searchSort = params.get('sort') === 'usage' ? 'usage' : 'relevance';
+		// "match", not "mode": ?mode= already selects the view (advanced, facets, ...).
+		const match = params.get('match');
+		matchMode = match === 'hybrid' || match === 'semantic' ? match : 'words';
 		hierarchyNodeId = params.get('hierarchyNodeId') ?? params.get('hierarchy') ?? '';
 		hierarchyLabel = params.get('hierarchyLabel') ?? '';
 		offset = Number(params.get('offset') ?? '0') || 0;
@@ -507,7 +548,22 @@
 		const type = params.get('type') ?? '';
 		accessoryOffset = Number(params.get('browseOffset') ?? '0') || 0;
 		accessoryQuery = browse;
-		if (mode === 'hierarchy') {
+		findTerm = '';
+		if (mode === 'find' || (!mode && !hasRouteState)) {
+			activeView = 'find';
+			findInitialQuery = params.get('q') ?? '';
+			findInitialDomain = params.get('domain') ?? '';
+			findQuery = findInitialQuery;
+			findDomain = findInitialDomain || 'lab';
+			findTerm = params.get('term') ?? '';
+			initialTerm = '';
+			return;
+		} else if (mode === 'map') {
+			activeView = 'map';
+			findTerm = params.get('term') ?? '';
+			initialTerm = '';
+			return;
+		} else if (mode === 'hierarchy') {
 			accessoryKind = 'hierarchy';
 			if (!hierarchyNodeId && !browse) {
 				hierarchyNodeId = hierarchyHomeNodeId;
@@ -540,6 +596,18 @@
 
 	function updateURL(replace = true) {
 		const params = new URLSearchParams();
+		if (activeView === 'find' || activeView === 'map') {
+			params.set('mode', activeView);
+			if (activeView === 'find') {
+				if (findQuery.trim()) params.set('q', findQuery.trim());
+				if (findDomain !== 'lab') params.set('domain', findDomain);
+			}
+			if (findTerm) params.set('term', findTerm);
+			const nextURL = `${window.location.pathname}?${params.toString()}`;
+			if (replace) window.history.replaceState(null, '', nextURL);
+			else window.history.pushState(null, '', nextURL);
+			return;
+		}
 		const mode = activeBrowseMode();
 		if (activeView === 'loader') params.set('mode', 'loader');
 		else if (activeView === 'apis') {
@@ -576,6 +644,7 @@
 		for (const value of orderObsValues) params.append('orderObs', value);
 		if (rankedOnly) params.set('rankedOnly', 'true');
 		if (searchSort === 'usage') params.set('sort', 'usage');
+		if (matchMode !== 'words') params.set('match', matchMode);
 		if (hierarchyNodeId) params.set('hierarchyNodeId', hierarchyNodeId);
 		if (hierarchyLabel) params.set('hierarchyLabel', hierarchyLabel);
 		if (activeView === 'accessories') {
@@ -789,6 +858,8 @@
 				orderObs: orderObsValues,
 				rankedOnly,
 				sort: searchSort,
+				// Meaning-based modes need query text and a ready index; otherwise search by words.
+				mode: matchMode !== 'words' && semanticReady && query.trim() ? matchMode : undefined,
 				hierarchyNodeId,
 				limit,
 				offset,
@@ -994,7 +1065,83 @@
 		relationshipsLoaded = false;
 		detailOpen = false;
 		browseDrawerOpen = false;
-		openHierarchyHome(false);
+		openFind();
+	}
+
+	function openFind() {
+		activeView = 'find';
+		findTerm = '';
+		findInitialQuery = '';
+		findInitialDomain = '';
+		findQuery = '';
+		findDomain = 'lab';
+		detailOpen = false;
+		mobileBrowseMenuOpen = false;
+		updateURL(false);
+	}
+
+	function openMap() {
+		activeView = 'map';
+		findTerm = '';
+		detailOpen = false;
+		mobileBrowseMenuOpen = false;
+		updateURL(false);
+	}
+
+	// Typing replaces the URL (debounced); a domain change is a new history entry.
+	function handleFindState(query: string, domain: string) {
+		if (query === findQuery && domain === findDomain) return;
+		const domainChanged = domain !== findDomain;
+		findQuery = query;
+		findDomain = domain;
+		clearTimeout(findURLTimer);
+		if (domainChanged) updateURL(false);
+		else findURLTimer = setTimeout(() => updateURL(true), 400);
+	}
+
+	function openFindTerm(loincNum: string) {
+		findTerm = loincNum;
+		basketOpen = false;
+		setupOpen = false;
+		askOpen = false;
+		updateURL(false);
+	}
+
+	function openAsk(prefill?: string) {
+		askPrefill = prefill ?? '';
+		askOpen = true;
+	}
+
+	function openSetupFromAsk() {
+		askOpen = false;
+		setupOpen = true;
+	}
+
+	function closeFindTerm() {
+		findTerm = '';
+		updateURL(true);
+	}
+
+	// Drawers over Find take keyboard focus (so keys don't type into the search box behind) and close on Esc.
+	function drawerFocus(node: HTMLElement, onEscape: () => void) {
+		node.focus();
+		const handle = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape') return;
+			// Find's own Esc clears the search; this Esc only closes the drawer.
+			event.stopPropagation();
+			onEscape();
+		};
+		node.addEventListener('keydown', handle);
+		return { destroy: () => node.removeEventListener('keydown', handle) };
+	}
+
+	function openTermInExplorer(loincNum: string) {
+		findTerm = '';
+		basketOpen = false;
+		setupOpen = false;
+		askOpen = false;
+		openFacetBrowser();
+		void openTerm(loincNum);
 	}
 
 	function chooseFacet(kind: 'status' | 'class' | 'system' | 'scale' | 'property' | 'orderObs', value: string) {
@@ -1036,6 +1183,30 @@
 	function setSearchSort(sort: 'relevance' | 'usage') {
 		searchSort = sort;
 		runSearch(0);
+	}
+
+	function setMatchMode(mode: 'words' | 'hybrid' | 'semantic') {
+		matchMode = mode;
+		runSearch(0);
+	}
+
+	async function loadSemanticStatus() {
+		clearTimeout(semanticStatusTimer);
+		try {
+			semanticStatus = await getSemanticStatus();
+			if (semanticStatus.building) semanticStatusTimer = setTimeout(loadSemanticStatus, 5000);
+		} catch {
+			semanticStatus = null;
+		}
+	}
+
+	async function buildSemanticIndex() {
+		try {
+			semanticStatus = await rebuildSemantic();
+		} catch (err) {
+			error = errorMessage(err);
+		}
+		void loadSemanticStatus();
 	}
 
 	function activeFilterCount() {
@@ -1653,9 +1824,13 @@
 		return node.label || node.code || node.nodeId;
 	}
 
-	function chooseMobileBrowseMode(mode: 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced') {
+	function chooseMobileBrowseMode(mode: BrowseMode) {
 		mobileBrowseMenuOpen = false;
-		if (mode === 'hierarchy') {
+		if (mode === 'find') {
+			openFind();
+		} else if (mode === 'map') {
+			openMap();
+		} else if (mode === 'hierarchy') {
 			void openHierarchyBrowser();
 		} else if (mode === 'facets') {
 			openFacetBrowser();
@@ -1723,10 +1898,10 @@
 	}
 </script>
 
-<main class="min-h-screen bg-zinc-50 pb-12 text-zinc-950 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
+<main class="min-h-screen bg-zinc-50 text-zinc-950 lg:pb-12 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
 	<header class="border-b border-zinc-200 bg-white lg:shrink-0">
 		<div class="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4 px-5 py-4">
-			<button type="button" class="flex items-center gap-3 rounded-md text-left hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200" aria-label="Go to hierarchy home" on:click={goHome}>
+			<button type="button" class="flex items-center gap-3 rounded-md text-left hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200" aria-label="Go to home" on:click={goHome}>
 				<div class="flex size-10 items-center justify-center rounded-md bg-zinc-950 text-white">
 					<BookOpen size={20} />
 				</div>
@@ -1741,6 +1916,14 @@
 				</Button>
 				{#if mobileBrowseMenuOpen}
 					<div class="absolute right-0 top-10 z-50 flex w-52 max-w-[calc(100vw-1.5rem)] flex-col gap-1 rounded-md border border-zinc-200 bg-white p-1.5 shadow-lg" role="menu" aria-label="Browse mode menu">
+						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'find' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('find')}>
+							<Search size={14} />
+							Find
+						</button>
+						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'map' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('map')}>
+							<Upload size={14} />
+							Map a list
+						</button>
 						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'hierarchy' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('hierarchy')}>
 							<Network size={14} />
 							Hierarchy
@@ -1769,6 +1952,15 @@
 				{/if}
 			</div>
 			<div class="hidden flex-wrap gap-2 md:flex" role="tablist" aria-label="Browse mode">
+				<button type="button" class={modeButtonClass('find', currentBrowseMode)} on:click={openFind}>
+					<Search size={14} />
+					Find
+				</button>
+				<button type="button" class={modeButtonClass('map', currentBrowseMode)} on:click={openMap}>
+					<Upload size={14} />
+					Map a list
+				</button>
+				<span class="mx-1 h-8 w-px bg-zinc-200" aria-hidden="true"></span>
 				<button type="button" class={modeButtonClass('hierarchy', currentBrowseMode)} on:click={() => { void openHierarchyBrowser(); }}>
 					<Network size={14} />
 					Hierarchy
@@ -1798,6 +1990,27 @@
 	</header>
 
 	<div class="mx-auto flex w-full max-w-[1500px] flex-col gap-5 px-5 py-5 lg:min-h-0 lg:flex-1 lg:gap-0 lg:overflow-hidden">
+		{#if activeView === 'find'}
+			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
+				{#key `${findInitialQuery}|${findInitialDomain}`}
+				<FindMode
+					disabled={!!findTerm || basketOpen || setupOpen || askOpen}
+					onOpen={openFindTerm}
+					onMapList={openMap}
+					onOpenBasket={() => (basketOpen = true)}
+					onOpenSetup={() => (setupOpen = true)}
+					onAsk={openAsk}
+					initialQuery={findInitialQuery}
+					initialDomain={findInitialDomain || 'lab'}
+					onStateChange={handleFindState}
+				/>
+				{/key}
+			</div>
+		{:else if activeView === 'map'}
+			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
+				<MapList onOpen={openFindTerm} onClose={openFind} />
+			</div>
+		{:else}
 		<Button variant="outline" size="sm" className="fixed left-3 top-[77px] z-40 w-fit shadow-lg lg:hidden" ariaLabel="Open browse drawer" on:click={openBrowseDrawer}>
 			<PanelLeftOpen size={14} />
 			Browse
@@ -2702,6 +2915,32 @@
 								Rank
 							</button>
 						</div>
+						{#if semanticStatus && semanticStatus.state !== 'disabled'}
+							<span class="ml-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Match</span>
+							<div class="inline-flex rounded-md border border-zinc-200 bg-white p-0.5" data-testid="match-mode">
+								{#each [['words', 'Words'], ['hybrid', 'Both'], ['semantic', 'Meaning']] as [value, label]}
+									<button
+										type="button"
+										class={`rounded px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40 ${matchMode === value ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+										aria-pressed={matchMode === value}
+										disabled={value !== 'words' && !semanticReady}
+										title={value === 'words' ? 'Match the words you typed' : value === 'hybrid' ? 'Words and meaning merged; best for natural-language requests' : 'Nearest terms by meaning only'}
+										on:click={() => setMatchMode(value as 'words' | 'hybrid' | 'semantic')}
+									>
+										{label}
+									</button>
+								{/each}
+							</div>
+							{#if semanticStatus.building}
+								<span class="text-xs text-zinc-500">Meaning index building: {(semanticStatus.done ?? 0).toLocaleString()} of {(semanticStatus.total ?? 0).toLocaleString()}</span>
+							{:else if semanticStatus.state === 'missing' || semanticStatus.state === 'incomplete' || semanticStatus.state === 'error'}
+								<button type="button" class="text-xs text-sky-700 underline" on:click={buildSemanticIndex}>
+									{semanticStatus.state === 'incomplete' ? 'Resume meaning index build' : 'Build meaning index (~30 min)'}
+								</button>
+							{:else if semanticStatus.state === 'stale'}
+								<button type="button" class="text-xs text-amber-700 underline" on:click={buildSemanticIndex}>Meaning index is outdated; rebuild</button>
+							{/if}
+						{/if}
 					</div>
 					<button
 						type="button"
@@ -2931,10 +3170,43 @@
 				</section>
 			</Resizable.Pane>
 		</Resizable.PaneGroup>
+		{/if}
 	</div>
 
+	{#if (activeView === 'find' || activeView === 'map') && findTerm}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[640px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="term-card-drawer" tabindex="-1" use:drawerFocus={closeFindTerm}>
+				<TermCard loincNum={findTerm} onOpen={openFindTerm} onClose={closeFindTerm} onOpenInExplorer={openTermInExplorer} />
+			</aside>
+		</div>
+	{/if}
+
+	{#if basketOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="basket-drawer" tabindex="-1" use:drawerFocus={() => (basketOpen = false)}>
+				<BasketPanel onClose={() => (basketOpen = false)} onOpen={openFindTerm} />
+			</aside>
+		</div>
+	{/if}
+
+	{#if setupOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="setup-drawer" tabindex="-1" use:drawerFocus={() => (setupOpen = false)}>
+				<SetupPanel onClose={() => (setupOpen = false)} />
+			</aside>
+		</div>
+	{/if}
+
+	{#if askOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="ask-drawer" tabindex="-1" use:drawerFocus={() => (askOpen = false)}>
+				<AskPanel onOpen={openFindTerm} onClose={() => (askOpen = false)} onOpenSetup={openSetupFromAsk} prefill={askPrefill} />
+			</aside>
+		</div>
+	{/if}
+
 	{#if detailOpen || termLoading}
-		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col border-l border-zinc-200 bg-white shadow-2xl" data-testid="detail-drawer">
 				<div class="flex items-center justify-between border-b border-zinc-200 px-4 py-3 lg:shrink-0">
 					<h2 class="text-sm font-semibold">Term detail</h2>
@@ -3265,7 +3537,7 @@
 			</section>
 		</div>
 	{/if}
-	<footer class="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white shadow-[0_-1px_3px_rgba(24,24,27,0.04)]">
+	<footer class="lg:fixed lg:inset-x-0 lg:bottom-0 lg:z-50 border-t border-zinc-200 bg-white shadow-[0_-1px_3px_rgba(24,24,27,0.04)]">
 		<div class="mx-auto flex max-w-[1500px] flex-col gap-2 px-5 py-2 text-[11px] leading-4 text-zinc-500 lg:flex-row lg:items-center lg:justify-between">
 			<div class="flex flex-wrap items-center gap-2">
 				{#if versionInfo}<span class="font-mono text-zinc-700">v{versionInfo.version}</span><span class="text-zinc-300">|</span>{/if}

@@ -1,6 +1,7 @@
 # In-App LOINC Mapping Agent — Design Plan
 
-Status: **deferred to the next epic** (decided 2026-09-23). Design only, not implemented.
+Status: A2 (trimmed: agentic search, model picker, thinking switch) implemented; A1/A3/A4
+deferred — Map a list covers batch mapping.
 Drafted 2026-09-23.
 
 ## 1. What it is
@@ -205,3 +206,42 @@ re-verified with `$lookup` before it reaches the UI.
 2. May CSV/user text go to a hosted LLM, or must the default be local-only?
 3. Is the decision history per user? There are no user accounts today; a single shared local
    history is the default.
+
+## 12. Lessons from the external lab-compendium mapper (2026-09-24)
+
+A separate Python mapper (`ehospital-labs/loinc_mapper/app.py`, not in this repo) mapped a
+hospital compendium (15,099 rows, 6,581 distinct names, 13% with units) through `/mcp`. It is
+a working prototype of A1 and A4 and changes the plan as follows.
+
+**A1: ranking.** Port its scoring to Go instead of the axis-weight scoring in §4 step 3.
+Keep the axis grid only to explain each candidate. What it scores:
+
+- token coverage both ways (local name vs candidate), with abbreviation groups;
+- unit agreement: unit → LOINC property (`mg/dL` → MCnc, `%` → MFr, `sec` → Time), and unit
+  vs `exampleUcum` after normalizing UCUM syntax (a missing `exampleUcum` is neutral);
+- contrast intent for imaging (NCCT/NECT → WO, CECT → W; contrast-unstated terms demoted);
+- specimen mismatch penalty, common-rank bonus, deprecated/non-result terms dropped;
+- combined orders: map each part, then prefer a panel containing all parts (`contains`);
+- meaning search (`mode=semantic`) only as a last resort, capped at LOW.
+
+Certainty levels: EXACT / HIGH / MEDIUM / LOW / UNMAPPED. The server should own every rewrite
+(`requestSynonyms`); the mapper's duplicate synonym lists already drifted once (NCCT → the
+contrast-unstated 36051-1 instead of 36514-8).
+
+**Gold set.** Before porting, export the mapper's human-confirmed rows and accepted mappings.
+The Go engine must reproduce the mapper's certainty counts on it (rc6 baseline: EXACT 84,
+HIGH 482, MEDIUM 2,864, LOW 2,328, UNMAPPED 823).
+
+**A3: decisions.** Confirmed rows must survive every re-run (the mapper's MANUAL rows). Add a
+reject list ("never pick X for name Y"), which the mapper designed but did not build.
+
+**A4: CSV session.** A session is stateful: upload, map, review and discuss with the agent,
+export. Changes to §6:
+
+- map each distinct normalized name once, then fan the result out to every row that has it;
+- the unit column is a first-class input, not optional context;
+- the review grid opens on LOW and UNMAPPED rows;
+- export also carries `METHOD` (word / panel / meaning / manual), `SCORE`, and `SEARCH_QUERY`.
+
+Doing the ranking server-side replaces the mapper's 5 to 15 remote searches per name with one
+call, which a live review session needs.

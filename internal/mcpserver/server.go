@@ -35,6 +35,10 @@ type Options struct {
 	// index path is configured) makes the tool report "not available" instead of a transport
 	// error.
 	LuceneSearch LuceneSearchFunc
+	// SemanticSearch, when non-nil, answers loinc_search_terms with mode "semantic" or "hybrid"
+	// (meaning-based search through the configured embeddings endpoint). Nil makes those modes
+	// report "not available".
+	SemanticSearch SemanticSearchFunc
 }
 
 func New(options Options) *mcp.Server {
@@ -50,6 +54,7 @@ func New(options Options) *mcp.Server {
 	}
 	docs := NewDocs(options.DocsDir)
 	service := NewService(getStore, docs, options.Terminology, options.LuceneSearch)
+	service.semanticSearch = options.SemanticSearch
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "loinc-browser",
 		Title:   "LOINC Browser MCP",
@@ -91,6 +96,7 @@ func registerTools(server *mcp.Server, service *Service) {
 	mcp.AddTool(server, tool("loinc_get_hierarchy_terms", "Get LOINC Hierarchy Terms", "List compact term candidates under a hierarchy occurrence node."), service.getHierarchyTermsTool)
 	mcp.AddTool(server, tool("loinc_search_parts", "Search LOINC Parts", "Search LOINC parts by number, name, display name, or type."), service.searchPartsTool)
 	mcp.AddTool(server, tool("loinc_search_groups", "Search LOINC Groups", "Search LOINC groups by ID, name, archetype, or parent group."), service.searchGroupsTool)
+	mcp.AddTool(server, tool("loinc_match_names", "Map Local Test Names to LOINC", "Map a local lab test master (1-1000 names) to LOINC term candidates in one call, one word search per name, same list filters as loinc_search_terms. Each result is bucketed: confident (typed LOINC number, a CLCI name match, or a clear top result) needs only a spot check; review means pick among the returned candidates; none means nothing was found for that name. Example: {\"names\":[\"CBC\",\"Fasting glucose\"],\"classType\":\"lab\"}."), service.matchNamesTool)
 	lookupCode := tool("loinc_lookup_code", "Lookup LOINC Code", "Look up any LOINC code kind (term, LP part, LL answer list, LA answer, or LG group): display, status, key axis/relation properties, and parents. Example: {\"code\":\"718-7\"}.")
 	// Loose object schema: LookupCodeResult.Raw carries the raw FHIR Parameters resource, whose
 	// Part []Parameter self-reference the SDK's output-schema reflection cannot express.
@@ -199,5 +205,10 @@ func (s *Service) searchPartsTool(ctx context.Context, _ *mcp.CallToolRequest, r
 
 func (s *Service) searchGroupsTool(ctx context.Context, _ *mcp.CallToolRequest, req QueryPageRequest) (*mcp.CallToolResult, PageResponse[loinc.LOINCGroup], error) {
 	out, err := s.SearchGroups(ctx, req)
+	return nil, out, err
+}
+
+func (s *Service) matchNamesTool(ctx context.Context, _ *mcp.CallToolRequest, req MatchNamesRequest) (*mcp.CallToolResult, MatchNamesResult, error) {
+	out, err := s.MatchNames(ctx, req)
 	return nil, out, err
 }

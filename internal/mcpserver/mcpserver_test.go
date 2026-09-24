@@ -248,6 +248,49 @@ func TestBrowseHierarchyUsesNodeIDs(t *testing.T) {
 	}
 }
 
+func TestMatchNamesPreservesOrderAndCounts(t *testing.T) {
+	service := newTestService(t)
+
+	result, err := service.MatchNames(context.Background(), MatchNamesRequest{
+		Names: []string{"glucose", "", "no such analyte at all"},
+	})
+	if err != nil {
+		t.Fatalf("match names: %v", err)
+	}
+	if len(result.Matches) != 3 {
+		t.Fatalf("expected 3 matches, got %d", len(result.Matches))
+	}
+	if result.Matches[0].Name != "glucose" || result.Matches[1].Name != "" || result.Matches[2].Name != "no such analyte at all" {
+		t.Fatalf("expected input order preserved, got %#v", result.Matches)
+	}
+	if result.Matches[1].Bucket != "none" {
+		t.Fatalf("expected empty name to bucket none, got %q", result.Matches[1].Bucket)
+	}
+	total := result.Counts.Confident + result.Counts.Review + result.Counts.None
+	if total != 3 {
+		t.Fatalf("expected counts to sum to 3, got %#v", result.Counts)
+	}
+	if result.Counts.None == 0 {
+		t.Fatalf("expected at least one none bucket, got %#v", result.Counts)
+	}
+}
+
+func TestMatchNamesRejectsEmptyOrOversizedBatches(t *testing.T) {
+	service := newTestService(t)
+
+	if _, err := service.MatchNames(context.Background(), MatchNamesRequest{Names: nil}); err == nil {
+		t.Fatal("expected error for empty names")
+	}
+
+	names := make([]string, maxMatchNames+1)
+	for i := range names {
+		names[i] = "glucose"
+	}
+	if _, err := service.MatchNames(context.Background(), MatchNamesRequest{Names: names}); err == nil {
+		t.Fatal("expected error for too many names")
+	}
+}
+
 func writeTestFile(t *testing.T, dir string, name string, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {

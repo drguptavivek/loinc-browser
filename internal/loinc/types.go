@@ -29,7 +29,11 @@ type SearchParams struct {
 	Class   string
 	Classes []string
 	// ClassType is LOINC CLASSTYPE: lab, clinical, attachment, survey (or 1-4).
-	ClassType       string
+	ClassType string
+	// LOINCNums restricts results to these terms (meaning-based search candidates).
+	LOINCNums []string
+	// MaxLimit raises the 100-row cap for internal callers (candidate fetches); never user input.
+	MaxLimit        int
 	Status          string
 	Statuses        []string
 	UsageType       string
@@ -54,8 +58,29 @@ type SearchParams struct {
 	AnswerListID    string
 	PanelParent     string
 	PanelOnly       bool
-	Limit           int
-	Offset          int
+	// Component keeps only terms with exactly this Component (case-insensitive): every
+	// method, scale, property, and specimen variant of one analyte.
+	Component string
+	// ComponentFamily widens Component to its ratio forms too ("Hemoglobin A1c" also matches
+	// "Hemoglobin A1c/Hemoglobin.total"), for listing the variants a user might mean.
+	ComponentFamily bool
+	// PanelContains keeps only terms (panels) that contain every one of these terms.
+	PanelContains []string
+	// UniversalLabOrders keeps only terms in LOINC's Universal Lab Orders value set.
+	UniversalLabOrders bool
+	// CLCI keeps only terms in Common Lab Codes for India, when loaded.
+	CLCI bool
+	// RadParts keeps only terms whose RSNA radiology playbook has each part, keyed by
+	// PartTypeName (see RadiologyParams), matched on PartName case-insensitively.
+	RadParts map[string]string
+	// Lang is a linguistic variant language code (see Store.LinguisticVariantLanguages) that
+	// adds LocalizedName to each result's display, and also matches word search against that
+	// language's names (see mergeLocalizedTerms), once loinc_variant_fts has finished its
+	// background build; until then it falls back to English-only matching. An unrecognised code
+	// is ignored, not an error.
+	Lang   string
+	Limit  int
+	Offset int
 }
 
 type TermListParams = SearchParams
@@ -88,7 +113,16 @@ type SearchResponse struct {
 	Relaxed      bool     `json:"relaxed,omitempty"`
 	DroppedWords []string `json:"droppedWords,omitempty"`
 	Notice       string   `json:"notice,omitempty"`
-	Links        Links    `json:"_links,omitempty"`
+	// IgnoredWords are query words skipped as stop or generic words (for, the, routine, test, ...).
+	IgnoredWords []string `json:"ignoredWords,omitempty"`
+	// Synonyms are shorthand expansions the query used, e.g. "usg→us".
+	Synonyms []string `json:"synonyms,omitempty"`
+	// CLCIMatches are the codes whose Common Lab Codes for India General Name matches the query;
+	// those that pass the filters are listed first.
+	CLCIMatches []string `json:"clciMatches,omitempty"`
+	// Mode is "semantic" or "hybrid" for meaning-based search; empty for word search.
+	Mode  string `json:"mode,omitempty"`
+	Links Links  `json:"_links,omitempty"`
 }
 
 type SearchResult struct {
@@ -97,6 +131,7 @@ type SearchResult struct {
 	ShortName       string   `json:"shortName"`
 	Component       string   `json:"component"`
 	Property        string   `json:"property"`
+	TimeAspect      string   `json:"timeAspect"`
 	System          string   `json:"system"`
 	Scale           string   `json:"scale"`
 	Method          string   `json:"method"`
@@ -107,11 +142,28 @@ type SearchResult struct {
 	CommonOrderRank int      `json:"commonOrderRank"`
 	UsageTypes      []string `json:"usageTypes"`
 	Rank            float64  `json:"rank"`
-	Links           Links    `json:"_links,omitempty"`
+	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
+	ExampleUCUM   string `json:"exampleUcum,omitempty"`
+	MapperComment string `json:"mapperComment,omitempty"`
+	// CLCIName is the Common Lab Codes for India "General Name", when CLCI is the loaded
+	// common-codes list and it lists this term. LocalName is the same name for any loaded
+	// common-codes list, CLCI or not.
+	CLCIName  string `json:"clciName,omitempty"`
+	LocalName string `json:"localName,omitempty"`
+	// LocalizedName is the term's LONG_COMMON_NAME translated into SearchParams.Lang, when the
+	// release has that linguistic variant for this term. Display only; search still runs in
+	// English.
+	LocalizedName string `json:"localizedName,omitempty"`
+	Links         Links  `json:"_links,omitempty"`
 }
 
 type Term struct {
 	LOINCNum        string            `json:"loincNum"`
+	ExampleUCUM     string            `json:"exampleUcum,omitempty"`
+	MapperComment   string            `json:"mapperComment,omitempty"`
+	CLCIName        string            `json:"clciName,omitempty"`
+	LocalName       string            `json:"localName,omitempty"`
+	LocalizedName   string            `json:"localizedName,omitempty"`
 	LongCommonName  string            `json:"longCommonName"`
 	ShortName       string            `json:"shortName"`
 	Component       string            `json:"component"`

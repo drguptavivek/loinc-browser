@@ -56,6 +56,23 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/v1/terms/match": map[string]any{
+			"post": map[string]any{
+				"summary":     "Batch-match lab test master names to LOINC terms",
+				"description": "Runs one term search per name (up to 1000), with the same list filters as /api/v1/terms/search. Order of matches follows the input names. Empty or whitespace names get bucket=none without a lookup.",
+				"parameters":  matchParameters(),
+				"requestBody": map[string]any{
+					"required": true,
+					"content": map[string]any{
+						"application/json": map[string]any{"schema": ref("NameMatchRequest")},
+					},
+				},
+				"responses": map[string]any{
+					"200": response("Name match results", ref("NameMatchResponse")),
+					"400": response("Invalid request or more than 1000 names", ref("ErrorResponse")),
+				},
+			},
+		},
 		"/api/v1/terms/top": map[string]any{
 			"get": map[string]any{
 				"summary":     "List top ranked LOINC terms",
@@ -71,6 +88,7 @@ var openAPISpec = map[string]any{
 				"summary": "Get one LOINC term detail without nested relationships",
 				"parameters": []map[string]any{
 					pathParam("loincNum", "LOINC number, for example 14749-6"),
+					queryParam("lang", "Linguistic variant language code from /api/version's languages; adds localizedName to the term."),
 				},
 				"responses": map[string]any{
 					"200": response("LOINC term detail", ref("Term")),
@@ -277,6 +295,26 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/v1/semantic/status": map[string]any{
+			"get": map[string]any{
+				"summary":     "Check the meaning-based search index",
+				"description": "Reports disabled (no LOINC_EMBEDDING_URL), missing, building (done/total), incomplete, stale, or ready for mode=semantic|hybrid term search.",
+				"responses": map[string]any{
+					"200": response("Meaning index status", semanticStatusSchema()),
+				},
+			},
+		},
+		"/api/v1/semantic/rebuild": map[string]any{
+			"post": map[string]any{
+				"summary":     "Build the meaning-based search index",
+				"description": "Starts a background build that embeds every term through the configured endpoint; a stopped build resumes. Poll /api/v1/semantic/status.",
+				"responses": map[string]any{
+					"202": response("Build started", semanticStatusSchema()),
+					"409": response("A build is already running", ref("ErrorResponse")),
+					"503": response("Meaning-based search is off or the database is not loaded", ref("ErrorResponse")),
+				},
+			},
+		},
 		"/api/v1/local-search/status": map[string]any{
 			"get": map[string]any{
 				"summary":     "Check local Lucene-style search index status",
@@ -310,6 +348,65 @@ var openAPISpec = map[string]any{
 					"200": response("Local search results", ref("LocalSearchResponse")),
 					"400": response("Invalid local search query", ref("ErrorResponse")),
 					"503": response("Local search index unavailable", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/agent/settings": map[string]any{
+			"get": map[string]any{
+				"summary":     "Get agentic search LLM settings",
+				"description": "Reports the effective (env, overridden by any saved) endpoint settings. The API key itself is never returned, only apiKeySet.",
+				"responses": map[string]any{
+					"200": response("Agent settings", map[string]any{"type": "object"}),
+				},
+			},
+			"put": map[string]any{
+				"summary":     "Save agentic search LLM settings",
+				"description": "Guarded by the official-API passphrase when LOINC_OFFICIAL_PASSPHRASE is set. Partial updates merge onto the current effective settings.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+				},
+				"responses": map[string]any{
+					"200": response("Agent settings", map[string]any{"type": "object"}),
+					"400": response("Invalid base URL or request body", ref("ErrorResponse")),
+					"401": response("Missing or incorrect passphrase", ref("ErrorResponse")),
+					"403": response("The agent is disabled", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/agent/models": map[string]any{
+			"get": map[string]any{
+				"summary":     "List models the configured LLM endpoint serves",
+				"description": "Calls GET {baseUrl}/models on the effective (or ?baseUrl override) endpoint and filters out obvious embedding models.",
+				"parameters":  []map[string]any{queryParam("baseUrl", "Endpoint base URL to query instead of the saved one")},
+				"responses": map[string]any{
+					"200": response("Model list", map[string]any{"type": "object"}),
+					"400": response("Invalid or non-local base URL", ref("ErrorResponse")),
+					"502": response("The LLM endpoint could not be reached", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/agent/test": map[string]any{
+			"post": map[string]any{
+				"summary":     "Test the configured LLM endpoint",
+				"description": "Sends one short chat completion with a trivial tool and reports whether the model called it.",
+				"responses": map[string]any{
+					"200": response("Test result", map[string]any{"type": "object"}),
+				},
+			},
+		},
+		"/api/v1/agent/chat": map[string]any{
+			"post": map[string]any{
+				"summary":     "Run one agentic LOINC-search turn",
+				"description": "Streams text/event-stream events (thinking, text, tool-start, tool-end, codes, unverified, done, error) as the model calls read-only LOINC MCP tools. Every LOINC code shown is re-verified against the local database and the tool results seen this run.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+				},
+				"responses": map[string]any{
+					"200": response("text/event-stream of agent events", map[string]any{"type": "object"}),
+					"400": response("Invalid request", ref("ErrorResponse")),
+					"409": response("The agent is not configured", ref("ErrorResponse")),
 				},
 			},
 		},
@@ -642,6 +739,21 @@ var openAPISpec = map[string]any{
 				"usageTypes":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"rank":            map[string]any{"type": "number"},
 				"_links":          linksSchema(),
+			}),
+			"NameMatchRequest": object(map[string]any{
+				"names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 1000},
+			}),
+			"NameMatchResponse": object(map[string]any{
+				"matches": map[string]any{"type": "array", "items": ref("NameMatch")},
+				"total":   map[string]any{"type": "integer"},
+			}),
+			"NameMatch": object(map[string]any{
+				"name":        map[string]any{"type": "string"},
+				"bucket":      map[string]any{"type": "string", "enum": []string{"confident", "review", "none"}},
+				"candidates":  map[string]any{"type": "array", "items": ref("SearchResult")},
+				"relaxed":     map[string]any{"type": "boolean"},
+				"synonyms":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"clciMatches": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			}),
 			"Term": object(map[string]any{
 				"loincNum":        map[string]any{"type": "string"},
@@ -992,6 +1104,20 @@ func response(description string, schema map[string]any) map[string]any {
 	}
 }
 
+func semanticStatusSchema() map[string]any {
+	return object(map[string]any{
+		"state":    map[string]any{"type": "string", "enum": []string{"disabled", "missing", "building", "incomplete", "stale", "ready", "error"}},
+		"model":    map[string]any{"type": "string"},
+		"endpoint": map[string]any{"type": "string"},
+		"count":    map[string]any{"type": "integer"},
+		"done":     map[string]any{"type": "integer"},
+		"total":    map[string]any{"type": "integer"},
+		"builtAt":  map[string]any{"type": "string"},
+		"building": map[string]any{"type": "boolean"},
+		"message":  map[string]any{"type": "string"},
+	})
+}
+
 func ref(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
@@ -1032,11 +1158,26 @@ func pageSchema(itemSchema map[string]any) map[string]any {
 	})
 }
 
+// matchParameters is the term list filters minus what /terms/match sets per name (query, paging,
+// match mode, sort).
+func matchParameters() []map[string]any {
+	var params []map[string]any
+	for _, param := range commonTermListParameters() {
+		switch param["name"] {
+		case "q", "mode", "limit", "offset", "sort":
+			continue
+		}
+		params = append(params, param)
+	}
+	return params
+}
+
 func commonTermListParameters() []map[string]any {
 	return []map[string]any{
 		queryParam("q", "Full-text query or exact LOINC number"),
 		arrayQueryParam("class", "LOINC class filter; repeat to allow several classes (e.g. class=CHEM&class=SERO)"),
 		queryParam("classType", "LOINC CLASSTYPE filter: lab, clinical (includes radiology), attachment, or survey"),
+		queryParam("mode", "words (default), semantic (nearest by meaning), or hybrid (meaning and words merged); the meaning modes need the meaning index and return 503 without it"),
 		arrayQueryParam("status", "LOINC status filter. Defaults to all statuses except DEPRECATED. Use status=DEPRECATED to browse deprecated terms, or status=* for all statuses."),
 		queryParam("usageType", "Term usage filter: any, observation, or order"),
 		queryParam("rankMode", "Ranking mode: observation or order"),
@@ -1048,7 +1189,20 @@ func commonTermListParameters() []map[string]any {
 		arrayQueryParam("method", "Method axis filter"),
 		queryParam("property", "Property axis filter"),
 		arrayQueryParam("orderObs", "Raw ORDER_OBS filter"),
+		queryParam("component", "Exact LOINC Component (case-insensitive), e.g. Thyrotropin: every method, scale, property, and specimen variant of one analyte"),
+		queryParam("componentFamily", "With component: also match its ratio forms, e.g. Hemoglobin A1c also returns Hemoglobin A1c/Hemoglobin.total"),
+		arrayQueryParam("contains", "Keep only panels containing every one of these LOINC numbers; repeat (contains=5902-2&contains=6301-6 finds the PT panel)"),
+		queryParam("universalLabOrders", "true keeps only terms in LOINC's Universal Lab Orders value set"),
+		queryParam("clci", "true keeps only terms in Common Lab Codes for India (needs the CLCI CSV in the data directory; 400 otherwise)"),
+		queryParam("radModality", "RSNA radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"),
+		queryParam("radSubtype", "Radiology modality subtype (exact playbook part name), e.g. Doppler"),
+		queryParam("radRegion", "Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"),
+		queryParam("radFocus", "Radiology imaging focus (exact playbook part name), e.g. Kidney, Knee"),
+		queryParam("radLaterality", "Radiology laterality: Right, Left, Bilateral, Unilateral, Unspecified"),
+		queryParam("radContrast", "Radiology contrast timing: WO (without), W (with), or WO & W"),
+		queryParam("radView", "Radiology view type (exact playbook part name)"),
 		boolQueryParam("rankedOnly", "When true, return only terms with a positive rank in the selected rank mode."),
+		queryParam("lang", "Linguistic variant language code from /api/version's languages (e.g. de-DE); adds localizedName to each result's display, and also matches word search against that language's names once its background index is ready (falls back to English-only until then). Unknown codes are ignored, not an error."),
 		intQueryParam("limit", "Maximum results to return. Maximum 100.", 25),
 		intQueryParam("offset", "Result offset for pagination", 0),
 	}

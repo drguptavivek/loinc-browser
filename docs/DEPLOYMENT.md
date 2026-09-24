@@ -221,6 +221,12 @@ Without any of these, credentials entered in the UI can be saved encrypted in th
 The encryption key sits beside the encrypted file, so this protects against the KV file leaking on
 its own, not against someone who can read the whole data directory.
 
+The agentic search proxy (`/api/v1/agent/*`, see `docs/API.md`) has its own exposure control:
+`LOINC_AGENT_LLM_LOCAL_ONLY` (default `true`) refuses to dial anything but a loopback or private
+LLM endpoint, including at connect time, so a configured endpoint can't be redirected or
+DNS-rebound to an internal or cloud-metadata address. `LOINC_AGENT_DISABLED=true` turns the whole
+feature off.
+
 ## CI/CD
 
 - `.github/workflows/ci.yml` runs `go vet`, `go test`, and the web check and build on every push
@@ -232,6 +238,56 @@ its own, not against someone who can read the whole data directory.
 - If a workflow ever needs online-search credentials (for example exemplar capture), pass
   `LOINC_OFFICIAL_USERNAME` / `LOINC_OFFICIAL_PASSWORD` from repository secrets. Never bake them
   into a build.
+
+## Common Lab Codes for India (CLCI), or your own common-codes list
+
+Optional, and one list per deployment. Download the CLCI zip from [NRCeS national releases](https://www.nrces.in/services/national-releases#lab_codes)
+and extract it into the data directory, keeping its dated folder:
+`<data dir>/common-lab-codes-for-india-20260629/common-lab-codes-for-india.csv` (the newest folder
+is used; `LOINC_CLCI_CSV` points elsewhere). Startup prints
+`Common codes list "Common Lab Codes for India": 1473 terms (...)`.
+Word search then ranks the loaded codes higher, `clci=true` (or `commonCodes=true`) filters to
+them, and results carry `localName` (and `clciName` when the loaded list is CLCI). The CLCI file
+is C-DAC's (all rights reserved); keep it out of source control. See `docs/agent/LOINC_CLCI.md`.
+
+A non-Indian deployment (US, Australian, hospital-local) can load its own list instead: set
+`LOINC_COMMON_CODES_CSV` to any CSV with a LOINC code column and a local-name column (header
+row optional), and `LOINC_COMMON_CODES_LABEL` for the label shown in `/api/version` (default the
+file name). `LOINC_COMMON_CODES_CSV` takes precedence over `LOINC_CLCI_CSV`.
+
+## Mapper's guide units and comments
+
+Optional. If `<data dir>/common_codes/top2000_mapper_guide.csv` exists (or `LOINC_MAPPER_GUIDE_CSV`
+points elsewhere), term results and term detail gain `exampleUcum` (LOINC's example unit) and
+`mapperComment` (LOINC's mapping note) for about 2,200 common lab tests. Build the CSV from your
+own copy of LOINC's *Mapper's Guide to Top 2000++ US Lab Tests* PDF (from loinc.org/usage):
+
+```bash
+python scripts/extract-top2000-mapper-guide.py \
+  data/common_codes/LOINC_1.6_Top2000CommonLabResultsUS.pdf data/common_codes/top2000_mapper_guide.csv
+```
+
+It needs `pdfplumber`. Both files are LOINC-licensed content; keep them out of git. Restart the
+server to load a new CSV.
+
+## Meaning-based search
+
+Optional. Term search can also match by meaning (`mode=hybrid|semantic`, UI **Match**) through
+any OpenAI-compatible embeddings endpoint:
+
+```text
+LOINC_EMBEDDING_URL=http://127.0.0.1:1234/v1     # LM Studio; Ollama http://127.0.0.1:11434/v1
+LOINC_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
+LOINC_EMBEDDING_API_KEY=                          # hosted endpoints only
+LOINC_EMBEDDINGS_PATH=<data dir>/loinc-embeddings.sqlite
+```
+
+Build the index once after each import with `POST /api/v1/semantic/rebuild` or the UI's **Build
+meaning index** link. A 2.82 build embeds 109,325 terms, about 40 minutes with Qwen3-embedding
+0.6B in LM Studio on an Apple M-series machine; a stopped build resumes where it left off. The
+file is about 112 MB and is loaded into memory on first use. Changing `LOINC_EMBEDDING_MODEL`
+requires a rebuild (status says so). The endpoint must be running for searches too, since each
+query is embedded when it is asked. With a hosted endpoint, query text leaves the machine.
 
 ## Docs in a packaged install
 

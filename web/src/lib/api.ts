@@ -1,9 +1,12 @@
+import { parseSSEChunk } from './sse';
+
 export type SearchResult = {
 	loincNum: string;
 	longCommonName: string;
 	shortName: string;
 	component: string;
 	property: string;
+	timeAspect: string;
 	system: string;
 	scale: string;
 	method: string;
@@ -14,6 +17,11 @@ export type SearchResult = {
 	commonOrderRank: number;
 	usageTypes: string[];
 	rank: number;
+	exampleUcum?: string;
+	mapperComment?: string;
+	clciName?: string;
+	localName?: string;
+	localizedName?: string;
 	_links?: Links;
 };
 
@@ -27,6 +35,10 @@ export type SearchResponse = {
 	relaxed?: boolean;
 	droppedWords?: string[];
 	notice?: string;
+	ignoredWords?: string[];
+	synonyms?: string[];
+	clciMatches?: string[];
+	mode?: string;
 	_links?: Links;
 };
 
@@ -34,6 +46,11 @@ export type Links = Record<string, string>;
 
 export type Term = {
 	loincNum: string;
+	exampleUcum?: string;
+	mapperComment?: string;
+	clciName?: string;
+	localName?: string;
+	localizedName?: string;
 	longCommonName: string;
 	shortName: string;
 	component: string;
@@ -205,10 +222,14 @@ export type UploadImportResponse = {
 
 export type VersionInfo = {
 	version: string;
+	// loaded LOINC release, e.g. "2.82"
+	loincVersion?: string;
 	commit: string;
 	date?: string;
 	goos: string;
 	goarch: string;
+	commonCodes?: { label: string; count: number };
+	languages?: { code: string; label: string }[];
 };
 
 export type OfficialCredentialStatus = {
@@ -309,7 +330,7 @@ export type LocalSearchResponse = {
 
 export type SearchParams = {
 	q?: string;
-	class?: string;
+	class?: string | string[];
 	classType?: string;
 	status?: string | string[];
 	system?: string;
@@ -317,15 +338,113 @@ export type SearchParams = {
 	scale?: string | string[];
 	method?: string | string[];
 	property?: string;
+	component?: string;
+	componentFamily?: boolean;
 	orderObs?: string | string[];
 	rankedOnly?: boolean;
 	hierarchyNodeId?: string;
 	usageType?: 'any' | 'observation' | 'order';
 	rankMode?: 'observation' | 'order';
 	sort?: 'relevance' | 'usage' | 'alpha';
+	mode?: 'words' | 'semantic' | 'hybrid';
+	clci?: boolean;
+	commonCodes?: boolean;
+	universalLabOrders?: boolean;
+	lang?: string;
+	radModality?: string | string[];
+	radSubtype?: string | string[];
+	radRegion?: string | string[];
+	radFocus?: string | string[];
+	radLaterality?: string | string[];
+	radContrast?: string | string[];
+	radView?: string | string[];
 	limit?: number;
 	offset?: number;
 };
+
+export type TermFit = {
+	loincNum: string;
+	status: string;
+	deprecated: boolean;
+	discouraged: boolean;
+	inactive: boolean;
+	orderObs: string;
+	usageTypes: string[];
+	commonTestRank: number;
+	commonOrderRank: number;
+	hasAnswerLists: boolean;
+	hasPanelItems: boolean;
+	hasPanelMemberships: boolean;
+	hasHierarchy: boolean;
+	hasExternalCopyright: boolean;
+	_links?: Links;
+};
+
+export type PageLinks = {
+	self?: string;
+	next?: string;
+	prev?: string;
+};
+
+export type Page<T> = {
+	results: T[];
+	total: number;
+	limit: number;
+	offset: number;
+	hasMore: boolean;
+	_links?: PageLinks;
+};
+
+export type PanelItem = {
+	parentLoincNum: string;
+	childLoincNum: string;
+	sequence: number;
+	itemId: string;
+	displayNameForForm: string;
+	observationRequired: string;
+	entryType: string;
+	dataTypeInForm: string;
+	answerListIdOverride: string;
+	childTerm: TermSummary;
+};
+
+export type NameMatchBucket = 'confident' | 'review' | 'none';
+
+export type NameMatch = {
+	name: string;
+	bucket: NameMatchBucket;
+	candidates: SearchResult[];
+	relaxed?: boolean;
+	synonyms?: string[];
+	clciMatches?: string[];
+};
+
+export type MatchResponse = {
+	matches: NameMatch[];
+	total: number;
+};
+
+export type SemanticStatus = {
+	state: 'disabled' | 'missing' | 'building' | 'incomplete' | 'stale' | 'ready' | 'error';
+	model?: string;
+	endpoint?: string;
+	count?: number;
+	done?: number;
+	total?: number;
+	building?: boolean;
+	message?: string;
+};
+
+export function getSemanticStatus(): Promise<SemanticStatus> {
+	return requestJSON<SemanticStatus>('/api/v1/semantic/status');
+}
+
+export async function rebuildSemantic(): Promise<SemanticStatus> {
+	const response = await fetch('/api/v1/semantic/rebuild', { method: 'POST' });
+	const body = await response.json().catch(() => ({ error: response.statusText }));
+	if (!response.ok) throw new Error(body.error || response.statusText);
+	return body as SemanticStatus;
+}
 
 async function requestJSON<T>(path: string): Promise<T> {
 	const response = await fetch(path);
@@ -345,7 +464,9 @@ async function requestJSONWithInit<T>(path: string, init: RequestInit): Promise<
 	return response.json() as Promise<T>;
 }
 
-export function searchTerms(params: SearchParams): Promise<SearchResponse> {
+// searchParamsToQuery mirrors the server's termListParamsFromRequest query parsing:
+// repeatable params (class, status, timeAspect, ...) are appended as multiple values.
+function searchParamsToQuery(params: SearchParams): URLSearchParams {
 	const query = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
 		if (Array.isArray(value)) {
@@ -356,11 +477,42 @@ export function searchTerms(params: SearchParams): Promise<SearchResponse> {
 			query.set(key, String(value));
 		}
 	}
-	return requestJSON<SearchResponse>(`/api/v1/terms/search?${query.toString()}`);
+	return query;
 }
 
-export function getTerm(loincNum: string): Promise<Term> {
-	return requestJSON<Term>(`/api/v1/terms/${encodeURIComponent(loincNum)}`);
+export function searchTerms(params: SearchParams): Promise<SearchResponse> {
+	return requestJSON<SearchResponse>(`/api/v1/terms/search?${searchParamsToQuery(params).toString()}`);
+}
+
+export function getTermFit(loincNum: string): Promise<TermFit> {
+	return requestJSON<TermFit>(`/api/v1/terms/${encodeURIComponent(loincNum)}/fit`);
+}
+
+export function getPanelMemberships(loincNum: string): Promise<Page<TermAccessory>> {
+	return requestJSON<Page<TermAccessory>>(`/api/v1/terms/${encodeURIComponent(loincNum)}/panel-memberships`);
+}
+
+export function getPanelItems(loincNum: string): Promise<Page<PanelItem>> {
+	return requestJSON<Page<PanelItem>>(`/api/v1/panels/${encodeURIComponent(loincNum)}/items`);
+}
+
+export function searchPanels(params: SearchParams): Promise<SearchResponse> {
+	return requestJSON<SearchResponse>(`/api/v1/panels/search?${searchParamsToQuery(params).toString()}`);
+}
+
+export function matchNames(names: string[], params: SearchParams = {}): Promise<MatchResponse> {
+	const query = searchParamsToQuery(params).toString();
+	const suffix = query ? `?${query}` : '';
+	return requestJSONWithInit<MatchResponse>(`/api/v1/terms/match${suffix}`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ names }),
+	});
+}
+
+export function getTerm(loincNum: string, lang?: string): Promise<Term> {
+	const suffix = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+	return requestJSON<Term>(`/api/v1/terms/${encodeURIComponent(loincNum)}${suffix}`);
 }
 
 export function getTermRelationships(loincNum: string): Promise<TermRelationshipGraph> {
@@ -477,6 +629,105 @@ export function localSearchAPI(scope: string, params: LocalSearchAPIParams): Pro
 		if (value !== undefined && value !== '') query.set(key, String(value));
 	}
 	return requestJSON<unknown>(`/searchapi/${encodeURIComponent(scope)}?${query.toString()}`);
+}
+
+export type AgentSettings = {
+	baseUrl: string;
+	model: string;
+	thinking: boolean;
+	apiKeySet: boolean;
+	localOnly: boolean;
+	configured: boolean;
+};
+
+export type AgentSettingsUpdate = {
+	baseUrl?: string;
+	model?: string;
+	thinking?: boolean;
+	apiKey?: string;
+	clearApiKey?: boolean;
+};
+
+export type AgentModel = { id: string };
+
+export type AgentTestResult = {
+	ok: boolean;
+	model: string;
+	latencyMs: number;
+	toolCalls: boolean;
+	error?: string;
+};
+
+export type AgentChatMessage = { role: 'user' | 'assistant'; content: string };
+
+export type AgentChatRequest = { messages: AgentChatMessage[]; thinking?: boolean };
+
+// AgentEvent mirrors the SSE event names the agent chat endpoint emits (docs/API.md).
+export type AgentEvent =
+	| { type: 'thinking'; text: string }
+	| { type: 'text'; text: string }
+	| { type: 'tool-start'; id: string; name: string; args: unknown }
+	| { type: 'tool-end'; id: string; name: string; ok: boolean; chars: number }
+	| { type: 'codes'; codes: { loincNum: string; longCommonName: string; status: string }[] }
+	| { type: 'unverified'; codes: string[] }
+	| { type: 'done'; rounds: number; model: string; elapsedMs: number }
+	| { type: 'error'; message: string };
+
+export function getAgentSettings(): Promise<AgentSettings> {
+	return requestJSON<AgentSettings>('/api/v1/agent/settings');
+}
+
+export function saveAgentSettings(update: AgentSettingsUpdate, passphrase = ''): Promise<AgentSettings> {
+	return requestJSONWithInit<AgentSettings>('/api/v1/agent/settings', {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', ...passphraseHeaders(passphrase) },
+		body: JSON.stringify(update),
+	});
+}
+
+export function listAgentModels(baseUrl?: string): Promise<{ models: AgentModel[] }> {
+	const suffix = baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : '';
+	return requestJSON<{ models: AgentModel[] }>(`/api/v1/agent/models${suffix}`);
+}
+
+export function testAgent(): Promise<AgentTestResult> {
+	return requestJSONWithInit<AgentTestResult>('/api/v1/agent/test', { method: 'POST' });
+}
+
+// streamAgentChat posts the conversation and feeds each parsed SSE event to onEvent as it
+// arrives. Rejects on a non-OK response (before streaming starts) or a network/abort error.
+export async function streamAgentChat(
+	body: AgentChatRequest,
+	onEvent: (event: AgentEvent) => void,
+	signal?: AbortSignal,
+): Promise<void> {
+	const response = await fetch('/api/v1/agent/chat', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body),
+		signal,
+	});
+	if (!response.ok || !response.body) {
+		const errBody = await response.json().catch(() => ({ error: response.statusText }));
+		throw new Error(errBody.error || response.statusText);
+	}
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		const { events, rest } = parseSSEChunk(buffer);
+		buffer = rest;
+		for (const evt of events) {
+			try {
+				onEvent({ type: evt.event, ...JSON.parse(evt.data) } as AgentEvent);
+			} catch {
+				// malformed event line: skip rather than aborting the whole stream
+			}
+		}
+	}
 }
 
 export type ApiConsoleResult = {

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	stdhtml "html"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,9 +22,12 @@ import (
 	"github.com/yuin/goldmark/extension"
 	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"loinc-browser/internal/fhirhttp"
 	"loinc-browser/internal/loinc"
 	loincmcp "loinc-browser/internal/mcpserver"
+	"loinc-browser/internal/semantic"
 	"loinc-browser/internal/version"
 	"loinc-browser/pkg/terminology"
 )
@@ -48,11 +53,29 @@ type Options struct {
 	OfficialDisabled       bool
 	OfficialPassphrase     string
 	OfficialEnvCredentials OfficialCredentials
+	// EmbeddingURL enables meaning-based search (mode=semantic|hybrid) through an OpenAI-compatible
+	// embeddings endpoint such as LM Studio (http://127.0.0.1:1234/v1); empty turns it off.
+	EmbeddingURL    string
+	EmbeddingModel  string
+	EmbeddingAPIKey string
+	EmbeddingsPath  string
 	// Terminology, when non-nil, receives the pkg/terminology Service New builds for the FHIR
 	// routes, so a caller (e.g. cmd/loinc-browser's UDP transport, Mode E) can share the exact
 	// same store-getter-backed Service the HTTP handlers use, rather than building a second one
 	// that would miss store hot-swaps after an upload import.
 	Terminology **terminology.Service
+	// AgentDisabled turns off every /api/v1/agent/* route (403), independent of OfficialDisabled.
+	AgentDisabled bool
+	// AgentLLMBaseURL/_Model/_APIKey seed the agent's OpenAI-compatible chat endpoint settings;
+	// a value saved through PUT /api/v1/agent/settings overrides these for the process lifetime.
+	AgentLLMBaseURL string
+	AgentLLMModel   string
+	AgentLLMAPIKey  string
+	// AgentLLMLocalOnly refuses a non-loopback/private agent base URL (see internal/agent.CheckBaseURL).
+	// Not UI-settable; env only.
+	AgentLLMLocalOnly bool
+	// AgentLLMThinking is the default reasoning switch; a chat request may override it per call.
+	AgentLLMThinking bool
 }
 
 func New(options Options) http.Handler {
@@ -77,6 +100,16 @@ func New(options Options) http.Handler {
 		officialEnv:        options.OfficialEnvCredentials,
 		localSearch:        newLocalSearchService(options.SearchIndexPath),
 		autoRebuildSearch:  strings.TrimSpace(options.SearchIndexPath) != "",
+		agentDisabled:      options.AgentDisabled,
+		agentEnvBaseURL:    strings.TrimSpace(options.AgentLLMBaseURL),
+		agentEnvModel:      strings.TrimSpace(options.AgentLLMModel),
+		agentEnvAPIKey:     options.AgentLLMAPIKey,
+		agentEnvLocalOnly:  options.AgentLLMLocalOnly,
+		agentEnvThinking:   options.AgentLLMThinking,
+		agentSettings:      newAgentSettingsStore(options.AppKeyPath, options.KVPath),
+	}
+	if strings.TrimSpace(options.EmbeddingURL) != "" && strings.TrimSpace(options.EmbeddingsPath) != "" {
+		app.semantic = semantic.NewService(semantic.NewClient(options.EmbeddingURL, options.EmbeddingModel, options.EmbeddingAPIKey), options.EmbeddingsPath)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.health)
@@ -93,6 +126,7 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/health", app.health)
 	mux.HandleFunc("GET /api/v1/version", app.version)
 	mux.HandleFunc("GET /api/v1/terms/search", app.v1TermsSearch)
+	mux.HandleFunc("POST /api/v1/terms/match", app.v1TermsMatch)
 	mux.HandleFunc("GET /api/v1/terms/top", app.v1TermsTop)
 	mux.HandleFunc("GET /api/v1/terms/{loincNum}", app.v1Term)
 	mux.HandleFunc("GET /api/v1/terms/{loincNum}/fit", app.v1TermFit)
@@ -122,11 +156,18 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/source-organizations/{id}", app.v1SourceOrganization)
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
 	mux.HandleFunc("GET /api/v1/official/credentials/status", app.officialCredentialStatus)
-	mux.HandleFunc("DELETE /api/v1/official/credentials", app.officialGuard(app.deleteOfficialCredentials))
-	mux.HandleFunc("POST /api/v1/official/search", app.officialGuard(app.officialSearch))
+	mux.HandleFunc("DELETE /api/v1/official/credentials", csrfGuard(app.officialGuard(app.deleteOfficialCredentials)))
+	mux.HandleFunc("POST /api/v1/official/search", csrfGuard(app.officialGuard(app.officialSearch)))
+	mux.HandleFunc("GET /api/v1/semantic/status", app.semanticStatus)
+	mux.HandleFunc("POST /api/v1/semantic/rebuild", app.semanticRebuild)
 	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
 	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
 	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
+	mux.HandleFunc("GET /api/v1/agent/settings", csrfGuard(app.agentDisabledGuard(app.getAgentSettings)))
+	mux.HandleFunc("PUT /api/v1/agent/settings", csrfGuard(app.agentGuard(app.putAgentSettings)))
+	mux.HandleFunc("GET /api/v1/agent/models", csrfGuard(app.agentGuard(app.agentModels)))
+	mux.HandleFunc("POST /api/v1/agent/test", csrfGuard(app.agentGuard(app.agentTest)))
+	mux.HandleFunc("POST /api/v1/agent/chat", csrfGuard(app.agentGuard(app.agentChat)))
 	mux.HandleFunc("GET /searchapi/{scope}", app.searchAPI)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
@@ -144,14 +185,24 @@ func New(options Options) http.Handler {
 	if options.Terminology != nil {
 		*options.Terminology = terminologySvc
 	}
+	// Built once and shared by the HTTP MCP transport (below, when enabled) and the agent's
+	// in-process tool bridge (agent.go), rather than each building its own copy.
+	mcpServer := loincmcp.New(loincmcp.Options{
+		StoreGetter:  app.currentStore,
+		DocsDir:      options.DocsDir,
+		OpenAPIJSON:  OpenAPIJSON,
+		Terminology:  terminologySvc,
+		LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
+		SemanticSearch: func(ctx context.Context, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
+			store, err := app.currentStore()
+			if err != nil {
+				return loinc.SearchResponse{}, err
+			}
+			return app.searchTerms(ctx, store, params, mode)
+		},
+	})
+	app.agentMCPServer = mcpServer
 	if options.EnableMCP {
-		mcpServer := loincmcp.New(loincmcp.Options{
-			StoreGetter:  app.currentStore,
-			DocsDir:      options.DocsDir,
-			OpenAPIJSON:  OpenAPIJSON,
-			Terminology:  terminologySvc,
-			LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
-		})
 		mux.Handle(normalizeMCPPath(options.MCPPath), loincmcp.StreamableHTTPHandler(mcpServer))
 	}
 	mux.HandleFunc("/", app.frontend)
@@ -183,9 +234,22 @@ type app struct {
 	officialPassphrase string
 	officialEnv        OfficialCredentials
 	localSearch        *localSearchService
+	semantic           *semantic.Service
 	// autoRebuildSearch is set when the caller configured an explicit index path, so tests that
 	// leave it empty never write an index into the working directory.
 	autoRebuildSearch bool
+
+	// Agentic search (internal/agent, internal/server/agent.go). agentMCPServer is the same MCP
+	// server instance the HTTP MCP transport uses, connected to per-request over an in-process
+	// transport (see agent.NewToolBridge) rather than a second copy.
+	agentDisabled     bool
+	agentEnvBaseURL   string
+	agentEnvModel     string
+	agentEnvAPIKey    string
+	agentEnvLocalOnly bool
+	agentEnvThinking  bool
+	agentSettings     *agentSettingsStore
+	agentMCPServer    *mcp.Server
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +257,30 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) version(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, version.Get())
+	// loincVersion is the loaded release ("2.82"), for FHIR Coding.version; omitted before an import.
+	response := struct {
+		version.Info
+		LOINCVersion string           `json:"loincVersion,omitempty"`
+		CommonCodes  *commonCodesInfo `json:"commonCodes,omitempty"`
+		Languages    []loinc.Language `json:"languages"`
+	}{Info: version.Get(), Languages: []loinc.Language{}}
+	if store, err := a.currentStore(); err == nil {
+		response.LOINCVersion, _ = store.ReleaseVersion(r.Context())
+		if languages, err := store.LinguisticVariantLanguages(r.Context()); err == nil {
+			response.Languages = languages
+		}
+	}
+	if label, count := loinc.CommonCodesInfo(); label != "" {
+		response.CommonCodes = &commonCodesInfo{Label: label, Count: count}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// commonCodesInfo is /api/version's summary of the deployment's loaded common-codes list
+// (Common Lab Codes for India by default; see docs/agent/LOINC_CLCI.md).
+type commonCodesInfo struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
 }
 
 func (a *app) search(w http.ResponseWriter, r *http.Request) {
@@ -217,10 +304,11 @@ func (a *app) search(w http.ResponseWriter, r *http.Request) {
 		OrderObsValues: queryValues(query, "orderObs"),
 		RankedOnly:     parseBool(query.Get("rankedOnly")),
 		HierarchyCode:  query.Get("hierarchy"),
+		Lang:           query.Get("lang"),
 		Limit:          parseInt(query.Get("limit"), 25),
 		Offset:         parseInt(query.Get("offset"), 0),
 	}
-	response, err := store.Search(r.Context(), params)
+	response, err := a.searchTerms(r.Context(), store, params, query.Get("mode"))
 	if err != nil {
 		writeError(w, searchErrorStatus(err), err)
 		return
@@ -300,6 +388,56 @@ func (a *app) sourceOrganizations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// csrfGuard rejects a cross-origin request and, on POST/PUT with a body, requires a JSON content
+// type. These routes accept a passphrase header or rely on an app-local session, neither of which
+// stops a same-browser cross-site request (no cookie is involved, but a plain HTML form or
+// fetch("...", {mode: "no-cors"}) from another origin can still hit them); this closes that gap.
+func csrfGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, r.Host) {
+			writeError(w, http.StatusForbidden, errors.New("cross-origin request refused"))
+			return
+		}
+		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.ContentLength != 0 {
+			if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				writeError(w, http.StatusUnsupportedMediaType, errors.New("request body must be application/json"))
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+// sameOrigin reports whether the Origin header's host:port matches the request's Host, or both
+// name a loopback host (so http://localhost:5173 talking to a proxy on 127.0.0.1:8080, as the
+// Vite dev proxy does, is not treated as cross-origin).
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Host == host {
+		return true
+	}
+	return isLoopbackHost(u.Hostname()) && isLoopbackHost(hostOnly(host))
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func hostOnly(hostport string) string {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return hostport
+	}
+	return host
 }
 
 const officialPassphraseHeader = "X-Loinc-Passphrase"
@@ -442,12 +580,62 @@ func (a *app) hierarchy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// searchErrorStatus is 400 for a bad search parameter (e.g. an unknown classType), else 500.
+// searchErrorStatus is 400 for a bad search parameter (e.g. an unknown classType), 503 when
+// meaning-based search isn't available, else 500.
 func searchErrorStatus(err error) int {
-	if errors.Is(err, loinc.ErrInvalidParam) {
+	switch {
+	case errors.Is(err, loinc.ErrInvalidParam):
 		return http.StatusBadRequest
+	case errors.Is(err, semantic.ErrNotReady):
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
+}
+
+// searchTerms runs word search (mode "" or "words") or meaning-based search ("semantic",
+// "hybrid") with the same filters.
+func (a *app) searchTerms(ctx context.Context, store *loinc.Store, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
+	switch mode = strings.ToLower(strings.TrimSpace(mode)); mode {
+	case "", "words":
+		return store.Search(ctx, params)
+	case "semantic", "hybrid":
+		if a.semantic == nil {
+			return loinc.SearchResponse{}, fmt.Errorf("%w: set LOINC_EMBEDDING_URL to an OpenAI-compatible embeddings endpoint", semantic.ErrNotReady)
+		}
+		response, err := a.semantic.Search(ctx, store, params, mode)
+		if err != nil {
+			return response, err
+		}
+		return store.PinCLCINameMatches(ctx, params, response)
+	default:
+		return loinc.SearchResponse{}, fmt.Errorf("%w: mode %q (use words, semantic, or hybrid)", loinc.ErrInvalidParam, mode)
+	}
+}
+
+func (a *app) semanticStatus(w http.ResponseWriter, r *http.Request) {
+	if a.semantic == nil {
+		writeJSON(w, http.StatusOK, semantic.Status{State: "disabled", Message: "meaning-based search is off; set LOINC_EMBEDDING_URL (e.g. http://127.0.0.1:1234/v1) and LOINC_EMBEDDING_MODEL"})
+		return
+	}
+	store, _ := a.currentStore()
+	writeJSON(w, http.StatusOK, a.semantic.Status(r.Context(), store))
+}
+
+func (a *app) semanticRebuild(w http.ResponseWriter, r *http.Request) {
+	if a.semantic == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("meaning-based search is off; set LOINC_EMBEDDING_URL"))
+		return
+	}
+	store, err := a.currentStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err := a.semantic.Rebuild(store); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, a.semantic.Status(r.Context(), store))
 }
 
 func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
@@ -456,12 +644,45 @@ func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	response, err := store.Search(r.Context(), termListParamsFromRequest(r))
+	response, err := a.searchTerms(r.Context(), store, termListParamsFromRequest(r), r.URL.Query().Get("mode"))
 	if err != nil {
 		writeError(w, searchErrorStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// maxMatchNames caps a batch name-match request: each name runs its own term search, so an
+// unbounded batch is an unbounded number of queries per request.
+const maxMatchNames = 1000
+
+type namesMatchRequest struct {
+	Names []string `json:"names"`
+}
+
+// v1TermsMatch maps a batch of lab test master names (e.g. an uploaded order set) to LOINC term
+// candidates, one word search per name with the same list filters as v1TermsSearch.
+func (a *app) v1TermsMatch(w http.ResponseWriter, r *http.Request) {
+	store, err := a.currentStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var request namesMatchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid name match request"))
+		return
+	}
+	if len(request.Names) > maxMatchNames {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("too many names: max %d", maxMatchNames))
+		return
+	}
+	matches, err := store.MatchNames(r.Context(), request.Names, termListParamsFromRequest(r))
+	if err != nil {
+		writeError(w, searchErrorStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"matches": matches, "total": len(matches)})
 }
 
 func (a *app) v1TermsTop(w http.ResponseWriter, r *http.Request) {
@@ -493,6 +714,11 @@ func (a *app) v1Term(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if lang := r.URL.Query().Get("lang"); lang != "" {
+		if names, lerr := store.LocalizedNames(r.Context(), lang, []string{term.LOINCNum}); lerr == nil {
+			term.LocalizedName = names[term.LOINCNum]
+		}
 	}
 	writeJSON(w, http.StatusOK, term)
 }
@@ -1049,24 +1275,31 @@ func queryValues(values map[string][]string, key string) []string {
 func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 	query := r.URL.Query()
 	return loinc.SearchParams{
-		Query:           query.Get("q"),
-		Class:           query.Get("class"),
-		Classes:         queryValues(query, "class"),
-		ClassType:       query.Get("classType"),
-		Statuses:        queryValues(query, "status"),
-		UsageType:       query.Get("usageType"),
-		RankMode:        query.Get("rankMode"),
-		Sort:            query.Get("sort"),
-		System:          query.Get("system"),
-		TimeAspects:     queryValues(query, "timeAspect"),
-		Scales:          queryValues(query, "scale"),
-		Methods:         queryValues(query, "method"),
-		Property:        query.Get("property"),
-		OrderObsValues:  queryValues(query, "orderObs"),
-		RankedOnly:      parseBool(query.Get("rankedOnly")),
-		HierarchyNodeID: firstNonEmpty(query.Get("hierarchyNodeId"), query.Get("hierarchy")),
-		Limit:           parseInt(query.Get("limit"), 25),
-		Offset:          parseInt(query.Get("offset"), 0),
+		Query:              query.Get("q"),
+		Class:              query.Get("class"),
+		Classes:            queryValues(query, "class"),
+		ClassType:          query.Get("classType"),
+		Statuses:           queryValues(query, "status"),
+		UsageType:          query.Get("usageType"),
+		RankMode:           query.Get("rankMode"),
+		Sort:               query.Get("sort"),
+		System:             query.Get("system"),
+		TimeAspects:        queryValues(query, "timeAspect"),
+		Scales:             queryValues(query, "scale"),
+		Methods:            queryValues(query, "method"),
+		Property:           query.Get("property"),
+		OrderObsValues:     queryValues(query, "orderObs"),
+		RankedOnly:         parseBool(query.Get("rankedOnly")),
+		HierarchyNodeID:    firstNonEmpty(query.Get("hierarchyNodeId"), query.Get("hierarchy")),
+		Component:          query.Get("component"),
+		ComponentFamily:    parseBool(query.Get("componentFamily")),
+		PanelContains:      queryValues(query, "contains"),
+		UniversalLabOrders: parseBool(query.Get("universalLabOrders")),
+		CLCI:               parseBool(query.Get("clci")) || parseBool(query.Get("commonCodes")),
+		RadParts:           loinc.RadParts(query.Get),
+		Lang:               query.Get("lang"),
+		Limit:              parseInt(query.Get("limit"), 25),
+		Offset:             parseInt(query.Get("offset"), 0),
 	}
 }
 

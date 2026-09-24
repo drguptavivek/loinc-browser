@@ -136,11 +136,33 @@ How `q` matches:
   (more than 1,000 matches), it returns no results with a `notice` instead. Queries of more than
   six words are not relaxed.
 
+Meaning-based search (`mode=semantic` or `mode=hybrid`):
+
+- Off unless `LOINC_EMBEDDING_URL` points at an OpenAI-compatible embeddings endpoint (LM Studio
+  `http://127.0.0.1:1234/v1`, Ollama, vLLM, or a hosted API with `LOINC_EMBEDDING_API_KEY`).
+  `LOINC_EMBEDDING_MODEL` defaults to `text-embedding-qwen3-embedding-0.6b`.
+- `GET /api/v1/semantic/status` reports `disabled`, `missing`, `building` (with `done`/`total`),
+  `incomplete`, `stale`, or `ready`. `POST /api/v1/semantic/rebuild` starts a background build
+  (202); a stopped build resumes. A full 2.82 build embeds 109,325 terms, about 40 minutes with
+  Qwen3-embedding 0.6B in LM Studio.
+- All filters (`status`, `class`, `classType`, ...) apply. `semantic` orders by similarity;
+  `hybrid` merges the meaning and word rankings (reciprocal rank fusion) and is the better
+  default for natural-language requests. Responses carry `"mode"`; `rank` is the score (lower is
+  better, comparable within one response only).
+- Every query is embedded by the endpoint at search time, so with a hosted endpoint the query
+  text leaves the machine.
+
+When the mapper's guide CSV is loaded (see DEPLOYMENT.md), term results and term detail also carry
+`exampleUcum` (LOINC's example unit, e.g. `mg/dL` for 2345-7) and `mapperComment` (LOINC's mapping
+note, e.g. HbA1c NGSP vs IFCC for 4548-4). Compare `exampleUcum` with the local unit to choose
+between mass and molar, activity and mass, or concentration and rate variants.
+
 Additional term filters:
 
 | Parameter | Meaning |
 | --- | --- |
 | `class` | LOINC class filter; repeat for several (`class=CHEM&class=SERO`). |
+| `mode` | `words` (default), `semantic` (nearest terms by meaning), or `hybrid` (meaning and word results merged). The meaning modes need the meaning index (see below); otherwise they return 503. |
 | `classType` | LOINC CLASSTYPE: `lab`, `clinical` (includes radiology), `attachment`, or `survey` (or `1`-`4`). Unknown values return 400. |
 | `system` | System axis filter. |
 | `timeAspect` | Repeatable time aspect filter. |
@@ -149,6 +171,13 @@ Additional term filters:
 | `property` | Property axis filter. |
 | `orderObs` | Repeatable raw `ORDER_OBS` filter. |
 | `hierarchyNodeId` | Restrict results to a hierarchy occurrence subtree. |
+| `component` | Exact LOINC Component, case-insensitive: every method, scale, property, and specimen variant of one analyte. `/api/v1/terms/search?component=Thyrotropin&system=Ser/Plas` lists TSH 3016-3, 11579-0 (2nd generation), and 11580-8 (3rd generation) first (no `q` sorts by usage); `component=Troponin I.cardiac` lists quantitative, high-sensitivity, point-of-care blood, and qualitative troponin I. Add `scale=Qn` or `scale=Ord` to split quantitative from qualitative. |
+| `componentFamily` | With `component`: also match its ratio forms, so the variants a user might mean are listed together. `component=Hemoglobin A1c&componentFamily=true` returns 41995-2 (mass concentration) and 4548-4 (Hemoglobin A1c/Hemoglobin.total, the % form). |
+| `contains` | Repeatable. Keep only panels containing every listed LOINC number: `/api/v1/panels/search?contains=5902-2&contains=6301-6` returns the PT panel 34528-0 first (no `q` sorts by usage). Use it to map a combined request ("pt inr") once its tests are known. |
+| `universalLabOrders` | `true` keeps only terms in LOINC's Universal Lab Orders value set (orderable lab tests). |
+| `clci` | `true` keeps only terms in the deployment's loaded common-codes list — Common Lab Codes for India by default, or any list set via `LOINC_COMMON_CODES_CSV` (400 if none is loaded). `commonCodes=true` is the same filter under its list-agnostic name. When loaded, ranking prefers the listed codes, results carry `localName` (and `clciName` when the list is CLCI), and a query that matches a listed name lists those codes first (response `clciMatches`). See `docs/agent/LOINC_CLCI.md`. |
+| `radModality`, `radSubtype`, `radRegion`, `radFocus`, `radLaterality`, `radContrast`, `radView` | Radiology filters on the RSNA playbook parts, matched exactly but case-insensitively: `radModality=CT&radRegion=Head&radContrast=WO` returns 30799-1 (CT Head WO contrast) first. `radContrast` is `W`, `WO`, or `WO & W`. Combine with `q` for anything else in the name. |
+| `lang` | A linguistic variant language code from `/api/version`'s `languages` (e.g. `de-DE`). Adds `localizedName` to each result — the term's `LONG_COMMON_NAME` translated into that language, when the release has that translation. It also makes word search match that language's names in addition to English (e.g. `q=Natrium&lang=de-DE` finds Sodium terms), once the background language index has finished building after the release loads; until then it falls back to English-only matching. Localized-only matches are appended after any English matches (or, when English matches nothing, returned on their own, ranked by usage then relevance); every other filter (class, status, clci, ...) still applies. An unrecognised code is ignored, not an error. `GET /api/v1/terms/{loincNum}?lang=` also adds `localizedName` to the term detail. |
 
 Usage filters:
 
@@ -214,7 +243,7 @@ Term-list routes return `TermSummary`-like results. These are intentionally comp
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| GET | `/api/version` | Get app version, build commit, build date when present, and Go target platform. |
+| GET | `/api/version` | Get app version, build commit, build date when present, Go target platform, `loincVersion` (the loaded LOINC release, e.g. `2.82`; omitted before an import), `commonCodes` (`{"label","count"}` for the loaded common-codes list, omitted when none), and `languages` (`[{"code","label"}]`, the LOINC linguistic variant languages available, e.g. `{"code":"de-DE","label":"German (GERMANY)"}`; `[]` when none). |
 | GET | `/api/v1/version` | Same version metadata under the v1 API namespace. |
 
 Example response:
@@ -224,7 +253,8 @@ Example response:
   "version": "0.92",
   "commit": "dev",
   "goos": "darwin",
-  "goarch": "arm64"
+  "goarch": "arm64",
+  "loincVersion": "2.82"
 }
 ```
 
@@ -234,12 +264,41 @@ Example response:
 | --- | --- | --- |
 | GET | `/api/v1/terms/search` | Search ranked LOINC terms for an EMR field. |
 | GET | `/api/v1/terms/top` | Browse top ranked terms without a text query. |
+| POST | `/api/v1/terms/match` | Match a batch of local test names (a lab test master) to LOINC in one request. |
 | GET | `/api/v1/terms/{loincNum}` | Get one full term detail. |
 | GET | `/api/v1/terms/{loincNum}/fit` | Get form-builder suitability metadata. |
 | GET | `/api/v1/terms/{loincNum}/relationships` | Get grouped lightweight relationships. |
 | GET | `/api/v1/terms/{loincNum}/answer-lists` | List answer lists linked to one term. |
 | GET | `/api/v1/terms/{loincNum}/panel-memberships` | List panels that contain one term. |
 | GET | `/api/v1/terms/{loincNum}/copyright` | Get copyright/source metadata state for one term. |
+
+### Batch name matching
+
+`POST /api/v1/terms/match` takes `{"names": [...]}` (at most 1,000; more returns 400) and the same filter query parameters as `/api/v1/terms/search` (`classType`, `class`, `clci`, `status`, ...). Each name runs as a word search, with shorthands, the CLCI prior, and the relaxed retry, and returns up to 5 candidates, best first. Matches are returned in input order, each with a `bucket`:
+
+- `confident`: the name is a LOINC number, or the top candidate is a common-codes (CLCI) name match, or the search matched every word and the top candidate is a commonly used term (common test or order rank) well clear of the runner-up. A lone result is never confident on its own. On a 6,761-name hospital test master, a judged sample of confident picks was 98% correct under this rule (80% before).
+- `review`: candidates exist, but a person should pick.
+- `none`: nothing matched.
+
+```bash
+curl -X POST 'http://localhost:9005/api/v1/terms/match?classType=lab' \
+  -H 'content-type: application/json' \
+  -d '{"names": ["Serum Sodium", "HbA1c", "2345-7", "xyzzy"]}'
+```
+
+```json
+{
+  "matches": [
+    {"name": "Serum Sodium", "bucket": "confident", "candidates": [{"loincNum": "2951-2", "...": "..."}]},
+    {"name": "HbA1c", "bucket": "review", "candidates": [{"loincNum": "41995-2", "...": "..."}]},
+    {"name": "2345-7", "bucket": "confident", "candidates": [{"loincNum": "2345-7", "...": "..."}]},
+    {"name": "xyzzy", "bucket": "none", "candidates": []}
+  ],
+  "total": 4
+}
+```
+
+The UI's **Map a list** screen sends batches of 200.
 
 ### Hierarchy
 
@@ -501,6 +560,53 @@ Supported query syntax includes:
 | escaped special characters | `Class:DRUG\\/TOX` |
 
 Unsupported or planned fields are returned as warnings in the local-search response.
+
+### Agentic search
+
+An in-app chat that lets a configured OpenAI-compatible LLM (LM Studio, Ollama, vLLM, or a
+hosted API) call the existing read-only LOINC MCP tools to suggest codes. The model never
+invents a code shown to the user: every LOINC number in its final answer is checked against the
+tool results from that run and re-verified with `Store.Term` before it reaches the client
+(see [`AGENT_CHAT_PLAN.md`](AGENT_CHAT_PLAN.md) for the full design; this is the trimmed phase
+A2 of it).
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/agent/settings` | Effective endpoint settings (env, overridden by any saved value). Never returns the API key, only `apiKeySet`. |
+| PUT | `/api/v1/agent/settings` | Save `baseUrl`, `model`, `thinking`, and/or `apiKey`/`clearApiKey`. Guarded by `LOINC_OFFICIAL_PASSPHRASE` when set. |
+| GET | `/api/v1/agent/models` | List chat-capable model ids from `GET {baseUrl}/models` (or `?baseUrl=` to probe another endpoint first). |
+| POST | `/api/v1/agent/test` | One short chat completion with a trivial tool call, to check the endpoint works and supports tools. |
+| POST | `/api/v1/agent/chat` | Stream one agent turn as `text/event-stream`. |
+
+`LOINC_AGENT_DISABLED=true` makes every agent route return 403. `LOINC_AGENT_LLM_LOCAL_ONLY`
+(default `true`) refuses a base URL that doesn't resolve to loopback or a private address and
+blocks link-local/cloud-metadata addresses (e.g. `169.254.169.254`) even at connect time; set it
+to `false` to allow a hosted endpoint (whose provider then receives the chat text and, for tool
+calls, LOINC term text — never LOINC's own licensed data files, and no upload/CSV content). Every
+agent route refuses a cross-origin request (checked against `Origin`, when sent). The saved/env
+API key is only ever sent to the saved base URL; an ad-hoc `?baseUrl=` probe on
+`GET /api/v1/agent/models` gets no key.
+
+```bash
+curl -X PUT 'http://localhost:9005/api/v1/agent/settings' \
+  -H 'content-type: application/json' \
+  -d '{"baseUrl":"http://127.0.0.1:1234/v1","model":"qwen3-8b","thinking":false}'
+
+curl 'http://localhost:9005/api/v1/agent/models'
+
+curl -X POST 'http://localhost:9005/api/v1/agent/test'
+
+curl -N -X POST 'http://localhost:9005/api/v1/agent/chat' \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"serum sodium in mmol/L"}],"thinking":false}'
+```
+
+The chat stream's `data:` payloads are the flat event body — `{"text":"..."}`,
+`{"id":"...","name":"...","args":"..."}`, `{"codes":[{"loincNum":"2951-2","longCommonName":"...","status":"ACTIVE"}]}`,
+`{"rounds":3,"model":"qwen3-8b","elapsedMs":4210}` — framed as
+`event: <type>\ndata: <json>\n\n`, one event type per line: `thinking`, `text`, `tool-start`,
+`tool-end`, `codes` (once, at the end), `unverified` (only if the model mentioned a code that
+never showed up in a tool result), `done`, `error`.
 
 ## EMR form-builder workflows
 

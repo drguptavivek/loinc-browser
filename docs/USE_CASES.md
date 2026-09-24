@@ -36,6 +36,7 @@ search index (`POST /api/v1/local-search/rebuild`).
 | Deprecated-code migration | `$lookup` MAP_TO, `$translate` (`loinc-map-to`) | HTTP |
 | Compendium mapping, AI-assisted | term search with `classType=lab`, `$lookup`, MCP tools | HTTP or MCP |
 | Lab-only or radiology-only results | `classType=lab`, `class=RAD` | HTTP or MCP |
+| Natural-language requests | `mode=hybrid` term search (§16) | HTTP or MCP |
 | Cross-terminology mapping | `ConceptMap` + `$translate` | HTTP |
 | Hierarchy roll-ups / subsumption | `$subsumes`, implicit `vs/{LP}` | HTTP |
 | AI agent integration | MCP tools | HTTP `/mcp` or stdio |
@@ -522,6 +523,58 @@ Lab classes include `CHEM`, `HEM/BC`, `MICRO`, `SERO`, `UA`, `COAG`, `BLDBK`, `D
 **Caveats:** `classType` reads CLASSTYPE from the raw `Loinc.csv` table kept at import; a database
 imported by a very old version without raw tables returns 400 until re-imported. An unknown
 `classType` value returns 400. `/searchapi` has no class-type field; combine `Class:` clauses.
+
+## 16. Natural-language search by meaning
+
+**Who / problem:** A user or agent describes a test in their own words ("sugar in blood after
+fasting", "kidney function", "hepatitis B surface antigen") that may share few or no words with
+LOINC's names.
+
+**Interface:** term search with `mode=hybrid` (meaning and words merged; the better default) or
+`mode=semantic` (meaning only): UI **Match: Both / Meaning**, `/api/v1/terms/search`, and MCP
+`loinc_search_terms` with `"mode"`.
+
+**Transport:** HTTP or MCP over HTTP. The stdio MCP command has no meaning index.
+
+**Setup:** run an OpenAI-compatible embeddings endpoint and point the server at it, then build the
+meaning index once per import:
+
+```text
+LOINC_EMBEDDING_URL=http://127.0.0.1:1234/v1        # LM Studio; Ollama/vLLM/hosted also work
+LOINC_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
+POST /api/v1/semantic/rebuild                        # ~40 min for 2.82; resumable
+GET  /api/v1/semantic/status                         # building 12,345 of 109,325 ... ready
+```
+
+**Examples** (need the meaning index, so not run by `make use-cases`):
+
+```text
+/api/v1/terms/search?q=sugar%20in%20blood%20after%20fasting&mode=hybrid&classType=lab
+/api/v1/terms/search?q=kidney%20function&mode=semantic&classType=lab
+```
+
+**Response:** the usual term list with `"mode"`; every filter (`status`, `class`, `classType`)
+applies. `hybrid` merges the two rankings by reciprocal rank fusion, so a term found both ways
+rises to the top.
+
+**Quality** (2.82, Qwen3-embedding 0.6B, `classType=lab`; right term at #1 / in top 3 / in top 10):
+
+| Query set | Words | Meaning | Hybrid |
+|---|---|---|---|
+| 20 lab probes (used to tune; lay phrases overlap them) | 11 / 12 / 14 | 14 / 20 / 20 | 12 / 20 / 20 |
+| 20 held-out plain-language queries (15 lay-phrase tests, 5 controls) | 9 / 9 / 10 | 12 / 16 / 18 | 11 / 11 / 15 |
+
+Word search is best for exact codes and names; meaning finds plain-language requests. Meaning
+ranking adds the same kind of popularity prior as word search, so common tests beat obscure
+near-synonyms. About 35 common tests also carry hand-written lay phrases ("average blood sugar",
+"bad cholesterol") in their embedded text, since LOINC's names never use them; on the held-out
+set they moved meaning from 6 / 12 / 14 to 12 / 16 / 18 with the controls unchanged. Changing
+the phrases marks the index stale, and a rebuild re-embeds only those terms.
+
+**Caveats:** prefer `hybrid` over `semantic` for mapping; it keeps word search's exact-name hits. Each query is embedded by the endpoint at search time,
+so a hosted endpoint sees query text; LM Studio or Ollama keeps everything on the machine. The
+index is about 112 MB in memory (int8 vectors) and is marked `stale` after a new import. See
+[`DEPLOYMENT.md`](DEPLOYMENT.md#meaning-based-search).
 
 ## Not a fit
 
