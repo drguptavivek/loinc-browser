@@ -29,8 +29,8 @@ type NameMatch struct {
 }
 
 // MatchNames looks up each name as a term search, for mapping a whole lab test master in one
-// request. params carries the shared list filters (class, status, clci, ...); Query and Limit are
-// overridden per name. Order of the result matches names. An empty or whitespace-only name is
+// request. params carries the shared list filters (class, status, clci, ...); Query, paging, and
+// sort are overridden per name. Order of the result matches names. An empty or whitespace-only name is
 // bucketed "none" without a lookup.
 func (s *Store) MatchNames(ctx context.Context, names []string, params SearchParams) ([]NameMatch, error) {
 	matches := make([]NameMatch, len(names))
@@ -44,7 +44,7 @@ func (s *Store) MatchNames(ctx context.Context, names []string, params SearchPar
 		}
 		p := params
 		p.Query = trimmed
-		p.Limit = matchCandidateLimit
+		p.Limit, p.Offset, p.Sort = matchCandidateLimit, 0, "relevance"
 		resp, err := s.Search(ctx, p)
 		if err != nil {
 			return nil, err

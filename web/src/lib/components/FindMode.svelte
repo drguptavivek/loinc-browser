@@ -14,7 +14,8 @@
 		onOpenBasket,
 		initialQuery = '',
 		initialDomain = 'lab',
-		disabled = false
+		disabled = false,
+		onStateChange
 	}: {
 		onOpen: (loincNum: string) => void;
 		onMapList: () => void;
@@ -23,6 +24,8 @@
 		initialDomain?: string;
 		// true while a drawer (term card, basket) covers the list: keys belong to the drawer then
 		disabled?: boolean;
+		// reports query and domain so App can keep them in the URL (Back, shared links)
+		onStateChange?: (query: string, domain: string) => void;
 	} = $props();
 
 	let query = $state(initialQuery);
@@ -101,6 +104,7 @@
 		void radModality;
 		void radRegion;
 		scheduleSearch();
+		onStateChange?.(query, domainId);
 	});
 
 	function selectDomain(id: DomainId) {

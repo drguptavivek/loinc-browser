@@ -142,6 +142,10 @@
 	let findTerm = '';
 	let findInitialQuery = '';
 	let findInitialDomain = '';
+	// live Find query/domain, written to the URL; never fed back into findInitial* (that would remount Find)
+	let findQuery = '';
+	let findDomain = 'lab';
+	let findURLTimer: ReturnType<typeof setTimeout> | undefined;
 	let basketOpen = false;
 	let apiConsolePresetId = '';
 	let detailOpen = false;
@@ -544,6 +548,8 @@
 			activeView = 'find';
 			findInitialQuery = params.get('q') ?? '';
 			findInitialDomain = params.get('domain') ?? '';
+			findQuery = findInitialQuery;
+			findDomain = findInitialDomain || 'lab';
 			findTerm = params.get('term') ?? '';
 			initialTerm = '';
 			return;
@@ -587,6 +593,10 @@
 		const params = new URLSearchParams();
 		if (activeView === 'find' || activeView === 'map') {
 			params.set('mode', activeView);
+			if (activeView === 'find') {
+				if (findQuery.trim()) params.set('q', findQuery.trim());
+				if (findDomain !== 'lab') params.set('domain', findDomain);
+			}
 			if (findTerm) params.set('term', findTerm);
 			const nextURL = `${window.location.pathname}?${params.toString()}`;
 			if (replace) window.history.replaceState(null, '', nextURL);
@@ -1058,6 +1068,8 @@
 		findTerm = '';
 		findInitialQuery = '';
 		findInitialDomain = '';
+		findQuery = '';
+		findDomain = 'lab';
 		detailOpen = false;
 		mobileBrowseMenuOpen = false;
 		updateURL(false);
@@ -1069,6 +1081,17 @@
 		detailOpen = false;
 		mobileBrowseMenuOpen = false;
 		updateURL(false);
+	}
+
+	// Typing replaces the URL (debounced); a domain change is a new history entry.
+	function handleFindState(query: string, domain: string) {
+		if (query === findQuery && domain === findDomain) return;
+		const domainChanged = domain !== findDomain;
+		findQuery = query;
+		findDomain = domain;
+		clearTimeout(findURLTimer);
+		if (domainChanged) updateURL(false);
+		else findURLTimer = setTimeout(() => updateURL(true), 400);
 	}
 
 	function openFindTerm(loincNum: string) {
@@ -1958,6 +1981,7 @@
 					onOpenBasket={() => (basketOpen = true)}
 					initialQuery={findInitialQuery}
 					initialDomain={findInitialDomain || 'lab'}
+					onStateChange={handleFindState}
 				/>
 				{/key}
 			</div>

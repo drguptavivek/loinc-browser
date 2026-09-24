@@ -16,6 +16,7 @@
 		type MatchStatus,
 		type ParsedTable,
 	} from '$lib/maplist';
+	import { readXlsxFirstSheet } from '$lib/xlsx';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Input from '$lib/components/Input.svelte';
@@ -66,10 +67,25 @@
 		const file = input.files?.[0];
 		if (!file) return;
 		fileError = null;
-		if (/\.xlsx?$/i.test(file.name)) {
-			fileError = 'Please save the sheet as CSV first.';
+		if (/\.xls$/i.test(file.name)) {
+			fileError = "Old .xls files aren't supported — save as .xlsx or CSV.";
 			table = null;
 			fileName = null;
+			return;
+		}
+		if (/\.xlsx$/i.test(file.name)) {
+			try {
+				const grid = await readXlsxFirstSheet(await file.arrayBuffer());
+				const multiColumn = (grid[0]?.length ?? 1) > 1;
+				table = tableFromGrid(grid, hasHeader && multiColumn);
+				fileName = file.name;
+				nameColumnIndex = '0';
+				localCodeColumnIndex = '-1';
+			} catch (err) {
+				fileError = err instanceof Error ? err.message : 'Could not read this .xlsx file.';
+				table = null;
+				fileName = null;
+			}
 			return;
 		}
 		const text = await file.text();
@@ -84,6 +100,16 @@
 	function looksMultiColumn(text: string, delimiter: string): boolean {
 		const firstLine = text.split(/\r\n|\r|\n/).find((l) => l.trim() !== '') ?? '';
 		return firstLine.includes(delimiter);
+	}
+
+	// tableFromGrid mirrors parseDelimitedTable's header-split/blank-row-drop behaviour for a
+	// grid that's already split into cells (from readXlsxFirstSheet), so both file paths feed
+	// the same ParsedTable shape into the rest of the flow.
+	function tableFromGrid(grid: string[][], splitHeader: boolean): ParsedTable {
+		const rows = grid.filter((r) => r.some((cell) => cell.trim() !== ''));
+		if (rows.length === 0) return { header: null, rows: [] };
+		if (splitHeader) return { header: rows[0], rows: rows.slice(1) };
+		return { header: null, rows };
 	}
 
 	function onHasHeaderToggle() {
@@ -356,8 +382,8 @@
 			<div>
 				<label class="flex w-fit cursor-pointer items-center gap-2 rounded-md border border-dashed border-zinc-300 px-4 py-3 text-sm text-zinc-600 hover:bg-zinc-50">
 					<Upload size={16} />
-					{fileName ?? 'Upload .csv, .tsv, or .txt'}
-					<input type="file" accept=".csv,.tsv,.txt" class="hidden" on:change={handleFile} />
+					{fileName ?? 'Upload .csv, .tsv, .txt, or .xlsx'}
+					<input type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden" on:change={handleFile} />
 				</label>
 				{#if fileError}
 					<p class="mt-2 text-sm text-red-600">{fileError}</p>

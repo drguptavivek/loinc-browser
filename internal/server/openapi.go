@@ -60,7 +60,7 @@ var openAPISpec = map[string]any{
 			"post": map[string]any{
 				"summary":     "Batch-match lab test master names to LOINC terms",
 				"description": "Runs one term search per name (up to 1000), with the same list filters as /api/v1/terms/search. Order of matches follows the input names. Empty or whitespace names get bucket=none without a lookup.",
-				"parameters":  commonTermListParameters(),
+				"parameters":  matchParameters(),
 				"requestBody": map[string]any{
 					"required": true,
 					"content": map[string]any{
@@ -1096,6 +1096,20 @@ func pageSchema(itemSchema map[string]any) map[string]any {
 			"prev": map[string]any{"type": "string"},
 		}),
 	})
+}
+
+// matchParameters is the term list filters minus what /terms/match sets per name (query, paging,
+// match mode, sort).
+func matchParameters() []map[string]any {
+	var params []map[string]any
+	for _, param := range commonTermListParameters() {
+		switch param["name"] {
+		case "q", "mode", "limit", "offset", "sort":
+			continue
+		}
+		params = append(params, param)
+	}
+	return params
 }
 
 func commonTermListParameters() []map[string]any {
