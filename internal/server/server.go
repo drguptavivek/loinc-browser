@@ -484,7 +484,11 @@ func (a *app) searchTerms(ctx context.Context, store *loinc.Store, params loinc.
 		if a.semantic == nil {
 			return loinc.SearchResponse{}, fmt.Errorf("%w: set LOINC_EMBEDDING_URL to an OpenAI-compatible embeddings endpoint", semantic.ErrNotReady)
 		}
-		return a.semantic.Search(ctx, store, params, mode)
+		response, err := a.semantic.Search(ctx, store, params, mode)
+		if err != nil {
+			return response, err
+		}
+		return store.PinCLCINameMatches(ctx, params, response)
 	default:
 		return loinc.SearchResponse{}, fmt.Errorf("%w: mode %q (use words, semantic, or hybrid)", loinc.ErrInvalidParam, mode)
 	}
@@ -1134,6 +1138,7 @@ func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 		Component:          query.Get("component"),
 		PanelContains:      queryValues(query, "contains"),
 		UniversalLabOrders: parseBool(query.Get("universalLabOrders")),
+		CLCI:               parseBool(query.Get("clci")),
 		RadParts:           loinc.RadParts(query.Get),
 		Limit:              parseInt(query.Get("limit"), 25),
 		Offset:             parseInt(query.Get("offset"), 0),

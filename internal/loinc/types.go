@@ -65,6 +65,8 @@ type SearchParams struct {
 	PanelContains []string
 	// UniversalLabOrders keeps only terms in LOINC's Universal Lab Orders value set.
 	UniversalLabOrders bool
+	// CLCI keeps only terms in Common Lab Codes for India, when loaded.
+	CLCI bool
 	// RadParts keeps only terms whose RSNA radiology playbook has each part, keyed by
 	// PartTypeName (see RadiologyParams), matched on PartName case-insensitively.
 	RadParts map[string]string
@@ -106,6 +108,9 @@ type SearchResponse struct {
 	IgnoredWords []string `json:"ignoredWords,omitempty"`
 	// Synonyms are shorthand expansions the query used, e.g. "usg→us".
 	Synonyms []string `json:"synonyms,omitempty"`
+	// CLCIMatches are the codes whose Common Lab Codes for India General Name matches the query;
+	// those that pass the filters are listed first.
+	CLCIMatches []string `json:"clciMatches,omitempty"`
 	// Mode is "semantic" or "hybrid" for meaning-based search; empty for word search.
 	Mode  string `json:"mode,omitempty"`
 	Links Links  `json:"_links,omitempty"`
@@ -130,13 +135,16 @@ type SearchResult struct {
 	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
 	ExampleUCUM   string `json:"exampleUcum,omitempty"`
 	MapperComment string `json:"mapperComment,omitempty"`
-	Links         Links  `json:"_links,omitempty"`
+	// CLCIName is the Common Lab Codes for India "General Name", when loaded and listed.
+	CLCIName string `json:"clciName,omitempty"`
+	Links    Links  `json:"_links,omitempty"`
 }
 
 type Term struct {
 	LOINCNum        string            `json:"loincNum"`
 	ExampleUCUM     string            `json:"exampleUcum,omitempty"`
 	MapperComment   string            `json:"mapperComment,omitempty"`
+	CLCIName        string            `json:"clciName,omitempty"`
 	LongCommonName  string            `json:"longCommonName"`
 	ShortName       string            `json:"shortName"`
 	Component       string            `json:"component"`

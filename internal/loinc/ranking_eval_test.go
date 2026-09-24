@@ -3,6 +3,7 @@ package loinc
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,13 @@ func TestRankingAgainstMappingProbe(t *testing.T) {
 		t.Fatalf("open %s: %v", dbPath, err)
 	}
 	defer store.Close()
+	// Rank as the server does: with the CLCI prior when that file sits in the data directory.
+	if count, err := LoadCLCI(FindCLCIFile(filepath.Dir(dbPath))); err != nil {
+		t.Fatal(err)
+	} else if count > 0 {
+		t.Logf("ranking with the CLCI prior (%d terms)", count)
+		defer clci.Store(nil)
+	}
 
 	probes := []struct {
 		query string

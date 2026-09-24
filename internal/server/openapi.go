@@ -1086,6 +1086,7 @@ func commonTermListParameters() []map[string]any {
 		queryParam("component", "Exact LOINC Component (case-insensitive), e.g. Thyrotropin: every method, scale, property, and specimen variant of one analyte"),
 		arrayQueryParam("contains", "Keep only panels containing every one of these LOINC numbers; repeat (contains=5902-2&contains=6301-6 finds the PT panel)"),
 		queryParam("universalLabOrders", "true keeps only terms in LOINC's Universal Lab Orders value set"),
+		queryParam("clci", "true keeps only terms in Common Lab Codes for India (needs the CLCI CSV in the data directory; 400 otherwise)"),
 		queryParam("radModality", "RSNA radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"),
 		queryParam("radSubtype", "Radiology modality subtype (exact playbook part name), e.g. Doppler"),
 		queryParam("radRegion", "Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"),

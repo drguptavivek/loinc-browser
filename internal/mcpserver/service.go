@@ -72,6 +72,7 @@ type SearchTermsRequest struct {
 	Component          string   `json:"component,omitempty" jsonschema:"Exact LOINC Component (e.g. Thyrotropin, Troponin I.cardiac): lists every method, scale, property, and specimen variant of one analyte; without q it sorts by usage. Use it to show the alternatives for a pick and let the mapper choose."`
 	Contains           []string `json:"contains,omitempty" jsonschema:"Keep only panels containing every one of these LOINC numbers (e.g. 5902-2 and 6301-6 finds the PT panel 34528-0). Use with loinc_search_panels to map a combined request like 'pt inr' once its tests are known."`
 	UniversalLabOrders bool     `json:"universalLabOrders,omitempty" jsonschema:"Keep only terms in LOINC's Universal Lab Orders value set (orderable lab tests)"`
+	CLCI               bool     `json:"clci,omitempty" jsonschema:"Keep only terms in Common Lab Codes for India (CLCI), the national subset curated by NRCeS/C-DAC. Ranking already prefers CLCI codes when the CLCI file is loaded."`
 	RadModality        string   `json:"radModality,omitempty" jsonschema:"Radiology playbook modality: CT, MR, US, XR, RF, NM, MG, PT, DXA"`
 	RadSubtype         string   `json:"radSubtype,omitempty" jsonschema:"Radiology playbook modality subtype, e.g. Doppler"`
 	RadRegion          string   `json:"radRegion,omitempty" jsonschema:"Radiology region imaged: Head, Neck, Chest, Abdomen, Pelvis, Upper extremity, Lower extremity, Breast, Whole Body"`
@@ -142,6 +143,8 @@ type PageResponse[T any] struct {
 	// IgnoredWords were skipped as stop or generic words; Mode is set for semantic/hybrid search.
 	IgnoredWords []string `json:"ignoredWords,omitempty"`
 	Mode         string   `json:"mode,omitempty"`
+	// CLCIMatches are codes whose Common Lab Codes for India General Name matches the query.
+	CLCIMatches []string `json:"clciMatches,omitempty"`
 }
 
 type TermCandidate struct {
@@ -160,10 +163,12 @@ type TermCandidate struct {
 	Scale     string  `json:"scale,omitempty"`
 	Property  string  `json:"property,omitempty"`
 	// ExampleUCUM and MapperComment come from LOINC's Top 2000 mapper's guide, when loaded.
-	ExampleUCUM   string            `json:"exampleUcum,omitempty"`
-	MapperComment string            `json:"mapperComment,omitempty"`
-	Notes         []string          `json:"notes,omitempty"`
-	Fields        map[string]string `json:"fields,omitempty"`
+	ExampleUCUM   string `json:"exampleUcum,omitempty"`
+	MapperComment string `json:"mapperComment,omitempty"`
+	// CLCIName is the Common Lab Codes for India "General Name" (the name Indian labs use).
+	CLCIName string            `json:"clciName,omitempty"`
+	Notes    []string          `json:"notes,omitempty"`
+	Fields   map[string]string `json:"fields,omitempty"`
 }
 
 type TermFitResponse struct {
@@ -212,6 +217,7 @@ func (s *Service) SearchTerms(ctx context.Context, req SearchTermsRequest) (Page
 		DroppedWords:  response.DroppedWords,
 		IgnoredWords:  response.IgnoredWords,
 		Mode:          response.Mode,
+		CLCIMatches:   response.CLCIMatches,
 		NextCallHint:  nextCallHint("loinc_search_terms", response.HasMore, limit, offset),
 		ContextHint:   firstNonEmpty(response.Notice, "Compact term candidates. Call loinc_get_term_fit before recommending a term."),
 		RequestedFull: req.Detail == "full",
@@ -422,6 +428,7 @@ func (r SearchTermsRequest) searchParams(limit int, offset int) loinc.SearchPara
 		Component:          r.Component,
 		PanelContains:      r.Contains,
 		UniversalLabOrders: r.UniversalLabOrders,
+		CLCI:               r.CLCI,
 		RadParts: loinc.RadParts(func(param string) string {
 			return map[string]string{
 				"radModality": r.RadModality, "radSubtype": r.RadSubtype, "radRegion": r.RadRegion, "radFocus": r.RadFocus,
@@ -450,6 +457,7 @@ func compactTerms(results []loinc.SearchResult, detail string) []TermCandidate {
 			Property:        result.Property,
 			ExampleUCUM:     result.ExampleUCUM,
 			MapperComment:   result.MapperComment,
+			CLCIName:        result.CLCIName,
 			Notes:           statusNotes(result.Status),
 		}
 		if detail == "standard" || detail == "full" {

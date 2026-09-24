@@ -143,6 +143,7 @@ The agent KB is split into focused Markdown files:
 - `docs/agent/LOINC_DATABASE_STRUCTURE.md`: technical reference for LOINC release fields, replacement mappings, source organizations, and import guidance.
 - `docs/agent/LOINC_PART_LINKAGES.md`: technical reference for enriched term-to-part linkages, link types, properties, and import guidance.
 - `docs/agent/LOINC_MAPPING_GUIDANCE.md`: lab-mapping rules (units to property, calculated vs measured, detection-limit variants, timed urine, coagulation and blood gas specimens, CBC, drug screens) summarized from LOINC's Top 2000 mapper's guide.
+- `docs/agent/LOINC_CLCI.md`: Common Lab Codes for India (NRCeS): how the optional CLCI file becomes a ranking prior, the `clci` filter, and `clciName`; why "Blood" also matches serum or plasma.
 - `docs/agent/LOINC_LICENSE_NOTE.md`: license, copyright, and repository data-handling constraints.
 
 ## UI Browsing

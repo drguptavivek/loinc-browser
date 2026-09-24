@@ -196,6 +196,12 @@ func runServe(args []string) error {
 	} else if count > 0 {
 		fmt.Printf("Mapper guide: %d terms with example units or comments\n", count)
 	}
+	clciPath := envOr("LOINC_CLCI_CSV", loinc.FindCLCIFile(dataDir()))
+	if count, err := loinc.LoadCLCI(clciPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Common Lab Codes for India not loaded: %v\n", err)
+	} else if count > 0 {
+		fmt.Printf("Common Lab Codes for India: %d terms (%s)\n", count, clciPath)
+	}
 
 	assets, err := web.Assets()
 	if err != nil {
@@ -901,6 +907,7 @@ Environment:
   LOINC_EMBEDDING_API_KEY= (only for hosted endpoints)
   LOINC_EMBEDDINGS_PATH=<data dir>/loinc-embeddings.sqlite
   LOINC_MAPPER_GUIDE_CSV=<data dir>/common_codes/top2000_mapper_guide.csv (optional; from scripts/extract-top2000-mapper-guide.py; adds exampleUcum/mapperComment to term results)
+  LOINC_CLCI_CSV=<data dir>/common-lab-codes-for-india-*/common-lab-codes-for-india.csv (optional; Common Lab Codes for India from nrces.in; adds clciName, the clci filter, and a ranking prior)
 `
 }
 

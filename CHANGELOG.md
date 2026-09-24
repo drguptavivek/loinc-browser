@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added Common Lab Codes for India (CLCI, the NRCeS national LOINC subset) as an optional data file: when `common-lab-codes-for-india.csv` is in the data directory (or `LOINC_CLCI_CSV`), word search ranks its 1,473 codes higher, `clci=true` keeps only them (HTTP and MCP), and results, term detail, and MCP candidates carry `clciName`, the name Indian labs use. A query matching a CLCI General Name (≥75% of words shared) lists that name's codes first and returns them in `clciMatches`. See `docs/agent/LOINC_CLCI.md`.
+- "blood" in a search now also matches Serum or Plasma terms, ranked below true blood terms: Indian lab names say "Blood" for serum tests (578 of CLCI's 758 ", Blood" names are Ser/Plas codes). Searching the CLCI names, the right code is in the top 10 for 85% (was 50%) without the CLCI prior, 92% with it.
+- `widal` now searches "Salmonella typhi" or "Salmonella paratyphi" instead of any "typhi", which also matched Rickettsia typhi (typhus).
+
 ## 0.93-rc6 - 2026-09-24
 
 - Added request shorthands LOINC doesn't use, replaced by the LOINC wording before searching: `usg`→US ("usg abdomen" → 24558-9), `ncct`/`nect`→CT WO contrast ("ncct neck" → 36514-8, not the contrast-unspecified 36051-1), `cect`→CT W contrast, `esr`→Sed Rat (→ 4537-7, not the ESR1 gene), `pcv`→hematocrit (→ 4544-3, not penciclovir), `dc`→differential count, `mp`→malaria parasite, `lft`/`rft`/`kft`→liver/renal function panels, `widal`→Typhi, `fungal`→fungus, `sugar`→glucose, `ict`/`dct`→indirect/direct antiglobulin (not "icteric"), `lgm`→IgM (typo), `ada`→adenosine deaminase (the enzyme; "ada gene" now also returns the enzyme tests). Responses list them in `synonyms`.

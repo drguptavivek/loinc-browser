@@ -126,11 +126,64 @@ func (s *Store) Close() error {
 
 func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	response, err := s.searchTerms(ctx, params)
+	if err == nil {
+		response, err = s.PinCLCINameMatches(ctx, params, response)
+	}
 	for i := range response.Results {
 		entry := mapperGuideEntry(response.Results[i].LOINCNum)
 		response.Results[i].ExampleUCUM, response.Results[i].MapperComment = entry.ExampleUCUM, entry.Comment
+		response.Results[i].CLCIName = clciName(response.Results[i].LOINCNum)
 	}
 	return response, err
+}
+
+// PinCLCINameMatches (also applied after meaning-based search merges its lists) puts the terms whose CLCI General Name matches the query first on page one:
+// a curated Indian lab name beats word matching, which fails on long names ("Band form
+// neutrophils per 100 white blood cells, Blood" matches no term word for word). The pinned terms
+// still pass every other filter.
+// ponytail: page one only, so a pinned term can show again on a later page; fine for top-k use.
+func (s *Store) PinCLCINameMatches(ctx context.Context, params SearchParams, response SearchResponse) (SearchResponse, error) {
+	params = NormalizeTermListParams(params)
+	if params.Offset > 0 {
+		return response, nil
+	}
+	codes := clciNameMatches(params.Query)
+	if len(codes) == 0 {
+		return response, nil
+	}
+	pinned := make([]SearchResult, 0, len(codes))
+	seen := map[string]bool{}
+	for _, code := range codes {
+		probe := params
+		probe.Query, probe.Limit, probe.Offset = code, 1, 0
+		found, err := s.search(ctx, probe, "")
+		if err != nil {
+			return response, err
+		}
+		if len(found.Results) == 1 {
+			found.Results[0].CLCIName = clciName(code)
+			pinned = append(pinned, found.Results[0])
+			seen[code] = true
+		}
+	}
+	if len(pinned) == 0 {
+		return response, nil
+	}
+	added := len(pinned)
+	for _, result := range response.Results {
+		if seen[result.LOINCNum] {
+			added--
+			continue
+		}
+		pinned = append(pinned, result)
+	}
+	if len(pinned) > params.Limit {
+		pinned = pinned[:params.Limit]
+	}
+	response.Results = pinned
+	response.Total += added // ponytail: pinned terms already counted elsewhere may be missed
+	response.CLCIMatches = codes
+	return response, nil
 }
 
 func (s *Store) searchTerms(ctx context.Context, params SearchParams) (SearchResponse, error) {
@@ -324,6 +377,13 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 		}
 		where = append(where, `exists (select 1 from `+quoteIdentifier(table)+` ulo where ulo."LOINC_NUM" = t.loinc_num)`)
 	}
+	if params.CLCI {
+		list := clciInList()
+		if list == "" {
+			return SearchResponse{}, fmt.Errorf("%w: clci needs the Common Lab Codes for India CSV (see docs/agent/LOINC_CLCI.md)", ErrInvalidParam)
+		}
+		where = append(where, "t.loinc_num in "+list)
+	}
 	if len(params.RadParts) > 0 {
 		table, ok := s.RawTable(ctx, radiologyPlaybookRelPath)
 		if !ok {
@@ -403,7 +463,7 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 	order := termOrderClause(params.Sort, rankColumn, ftsQuery != "")
 	selectRank := `0.0 as rank`
 	if ftsQuery != "" {
-		selectRank = relevanceRankExpr(rankColumn, queryWantsPanel(query)) + ` as rank`
+		selectRank = relevanceRankExpr(rankColumn, queryWantsPanel(query), queryHasWord(query, "blood")) + ` as rank`
 	}
 
 	searchQuery := `select distinct
@@ -468,6 +528,7 @@ func (s *Store) TermWithAccessories(ctx context.Context, loincNum string) (Term,
 func withMapperGuide(term Term, err error) (Term, error) {
 	entry := mapperGuideEntry(term.LOINCNum)
 	term.ExampleUCUM, term.MapperComment = entry.ExampleUCUM, entry.Comment
+	term.CLCIName = clciName(term.LOINCNum)
 	return term, err
 }
 
@@ -1718,25 +1779,26 @@ func IsStopWord(word string) bool {
 // a lab-compendium mapping run. Left out: "tlc" (thin-layer chromatography in LOINC), "ast"
 // (asthma), "dlc" (dLCX).
 var requestSynonyms = map[string]string{
-	"usg":        `us`,                                     // ultrasound: LOINC says "US"
-	"ncct":       `ct AND "wo contrast"`,                   // non-contrast CT ("wo contrast" skips "WO and W contrast")
-	"nect":       `ct AND "wo contrast"`,                   // non-enhanced CT
-	"cect":       `ct AND "w contrast"`,                    // contrast-enhanced CT
-	"esr":        `"sed rat" OR "sedimentation rate"`,      // not the ESR1 gene
-	"pcv":        `hematocrit`,                             // packed cell volume
-	"dc":         `differential AND count`,                 // differential (leukocyte) count
-	"mp":         `"malaria parasite" OR plasmodium`,       // malaria parasite smear
-	"lft":        `"liver function" OR "hepatic function"`, // liver function panel
-	"rft":        `"renal function"`,                       // renal function panel ("kidney function" also hits NM kidney scans)
-	"kft":        `"renal function"`,                       // kidney function panel ("kidney function" also hits NM kidney scans)
-	"widal":      `typhi`,                                  // Widal = Salmonella Typhi antibodies
-	"fungal":     `fungal OR fungal* OR fungus`,            // LOINC names cultures "Fungus"
-	"sugar":      `sugar OR glucose`,                       // "blood sugar"
-	"phosphorus": `phosphorus OR phosphate`,                // LOINC names serum phosphorus "Phosphate"
-	"ict":        `"indirect antiglobulin"`,                // indirect Coombs; "ict*" hits "icteric"
-	"lgm":        `igm`,                                    // OCR/typing slip for IgM
-	"ada":        `"adenosine deaminase"`,                  // the enzyme (TB effusions), not the ADA gene
-	"dct":        `"direct antiglobulin"`,                  // direct Coombs
+	"usg":        `us`,                                           // ultrasound: LOINC says "US"
+	"blood":      `blood OR blood* OR serum OR plasma`,           // Indian labs say "Blood" for serum tests; ranked below true blood terms
+	"ncct":       `ct AND "wo contrast"`,                         // non-contrast CT ("wo contrast" skips "WO and W contrast")
+	"nect":       `ct AND "wo contrast"`,                         // non-enhanced CT
+	"cect":       `ct AND "w contrast"`,                          // contrast-enhanced CT
+	"esr":        `"sed rat" OR "sedimentation rate"`,            // not the ESR1 gene
+	"pcv":        `hematocrit`,                                   // packed cell volume
+	"dc":         `differential AND count`,                       // differential (leukocyte) count
+	"mp":         `"malaria parasite" OR plasmodium`,             // malaria parasite smear
+	"lft":        `"liver function" OR "hepatic function"`,       // liver function panel
+	"rft":        `"renal function"`,                             // renal function panel ("kidney function" also hits NM kidney scans)
+	"kft":        `"renal function"`,                             // kidney function panel ("kidney function" also hits NM kidney scans)
+	"widal":      `"salmonella typhi" OR "salmonella paratyphi"`, // Widal = Salmonella Typhi antibodies, not Rickettsia typhi
+	"fungal":     `fungal OR fungal* OR fungus`,                  // LOINC names cultures "Fungus"
+	"sugar":      `sugar OR glucose`,                             // "blood sugar"
+	"phosphorus": `phosphorus OR phosphate`,                      // LOINC names serum phosphorus "Phosphate"
+	"ict":        `"indirect antiglobulin"`,                      // indirect Coombs; "ict*" hits "icteric"
+	"lgm":        `igm`,                                          // OCR/typing slip for IgM
+	"ada":        `"adenosine deaminase"`,                        // the enzyme (TB effusions), not the ADA gene
+	"dct":        `"direct antiglobulin"`,                        // direct Coombs
 }
 
 // synonymsUsed reports which requestSynonyms a query triggered, as "usg→us".
@@ -1800,11 +1862,17 @@ const (
 	relevanceDiscouraged      = 6.0
 	relevanceTrial            = 4.0
 	relevancePanel            = 5.0
+	// relevanceCLCI is the Common Lab Codes for India prior: India-curated, so a peer of the
+	// US-derived popularity boost.
+	relevanceCLCI = 8.0
+	// relevanceBloodAlternate pushes Serum/Plasma terms, which "blood" also matches (Indian labs
+	// say "Blood" for serum tests), below terms whose system really is blood.
+	relevanceBloodAlternate = 4.0
 )
 
 // relevanceRankExpr formats every weight with %f: %g would print 200.0 as "200" and make SQLite
 // divide integers (161/200 = 0), giving every ranked term the same boost.
-func relevanceRankExpr(rankColumn string, wantsPanel bool) string {
+func relevanceRankExpr(rankColumn string, wantsPanel, wantsBlood bool) string {
 	expr := fmt.Sprintf(`bm25(loinc_terms_fts, %s)
 		- %f * (case when t.%s > 0 then 1.0 / (1.0 + t.%s / %f) else 0 end)
 		+ (case t.status when 'DISCOURAGED' then %f when 'TRIAL' then %f else 0 end)`,
@@ -1814,7 +1882,25 @@ func relevanceRankExpr(rankColumn string, wantsPanel bool) string {
 		expr += fmt.Sprintf(`
 		+ (case when exists (select 1 from panel_items p where p.parent_loinc_num = t.loinc_num collate nocase) then %f else 0 end)`, relevancePanel)
 	}
+	if list := clciInList(); list != "" {
+		expr += fmt.Sprintf(`
+		- (case when t.loinc_num in %s then %f else 0 end)`, list, relevanceCLCI)
+	}
+	if wantsBlood {
+		expr += fmt.Sprintf(`
+		+ (case when t.system like '%%bld%%' then 0 else %f end)`, relevanceBloodAlternate)
+	}
 	return expr
+}
+
+// queryHasWord reports whether the query contains word as a whole token.
+func queryHasWord(query, word string) bool {
+	for _, token := range ftsTokenRegexp.FindAllString(strings.ToLower(query), -1) {
+		if token == word {
+			return true
+		}
+	}
+	return false
 }
 
 // queryWantsPanel reports whether the query asks for a panel, so panels are not demoted.
