@@ -45,6 +45,10 @@ type Store struct {
 	// order) that FHIRLinguisticVariants runs instead of one query per language table.
 	linguisticVariantUnion     linguisticVariantUnionQuery
 	linguisticVariantUnionOnce sync.Once
+
+	// variantFTS gates loinc_variant_fts's background build (see localized_search.go); lang word
+	// search falls back to English-only matching until it is ready.
+	variantFTS variantFTSBuild
 }
 
 func OpenStore(dbPath string, options StoreOptions) (*Store, error) {
@@ -78,14 +82,16 @@ func OpenStore(dbPath string, options StoreOptions) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{
+	store := &Store{
 		db:                   db,
 		cache:                newObjectCache(options.CacheEntries),
 		readOnly:             options.ReadOnly,
 		termSourceCounts:     newTermSourceCache[int](termSourceCacheMaxEntries, 0, nil),
 		termSourceEmbeds:     newTermSourceCache(termSourceListMaxEntries, termSourceListMaxTotalMembers, func(v []FHIRConceptRef) int { return len(v) }),
 		termSourceExpandList: newTermSourceCache(termSourceListMaxEntries, termSourceListMaxTotalMembers, func(v []FHIRExpandedConcept) int { return len(v) }),
-	}, nil
+	}
+	store.startVariantFTSBuild(hasTerms > 0)
+	return store, nil
 }
 
 // sqliteDSN builds the modernc.org/sqlite DSN for dbPath, adding the `mode=ro` URI query param
@@ -208,7 +214,18 @@ func (s *Store) PinCLCINameMatches(ctx context.Context, params SearchParams, res
 	return response, nil
 }
 
+// searchTerms runs the English-word search pipeline, then, when params.Lang asks for a linguistic
+// variant language, merges in that language's word matches (mergeLocalizedTerms) so a query typed
+// in that language ("Natrium") finds terms English search alone would miss.
 func (s *Store) searchTerms(ctx context.Context, params SearchParams) (SearchResponse, error) {
+	response, err := s.englishSearchTerms(ctx, params)
+	if err != nil {
+		return response, err
+	}
+	return s.mergeLocalizedTerms(ctx, params, response)
+}
+
+func (s *Store) englishSearchTerms(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	params = NormalizeTermListParams(params)
 	query := strings.TrimSpace(params.Query)
 	if loincNumberRegexp.MatchString(query) {

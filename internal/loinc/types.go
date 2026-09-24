@@ -74,8 +74,10 @@ type SearchParams struct {
 	// PartTypeName (see RadiologyParams), matched on PartName case-insensitively.
 	RadParts map[string]string
 	// Lang is a linguistic variant language code (see Store.LinguisticVariantLanguages) that
-	// adds LocalizedName to each result's display; it does not affect which terms match. An
-	// unrecognised code is ignored, not an error.
+	// adds LocalizedName to each result's display, and also matches word search against that
+	// language's names (see mergeLocalizedTerms), once loinc_variant_fts has finished its
+	// background build; until then it falls back to English-only matching. An unrecognised code
+	// is ignored, not an error.
 	Lang   string
 	Limit  int
 	Offset int
