@@ -172,6 +172,7 @@ Additional term filters:
 | `orderObs` | Repeatable raw `ORDER_OBS` filter. |
 | `hierarchyNodeId` | Restrict results to a hierarchy occurrence subtree. |
 | `component` | Exact LOINC Component, case-insensitive: every method, scale, property, and specimen variant of one analyte. `/api/v1/terms/search?component=Thyrotropin&system=Ser/Plas` lists TSH 3016-3, 11579-0 (2nd generation), and 11580-8 (3rd generation) first (no `q` sorts by usage); `component=Troponin I.cardiac` lists quantitative, high-sensitivity, point-of-care blood, and qualitative troponin I. Add `scale=Qn` or `scale=Ord` to split quantitative from qualitative. |
+| `componentFamily` | With `component`: also match its ratio forms, so the variants a user might mean are listed together. `component=Hemoglobin A1c&componentFamily=true` returns 41995-2 (mass concentration) and 4548-4 (Hemoglobin A1c/Hemoglobin.total, the % form). |
 | `contains` | Repeatable. Keep only panels containing every listed LOINC number: `/api/v1/panels/search?contains=5902-2&contains=6301-6` returns the PT panel 34528-0 first (no `q` sorts by usage). Use it to map a combined request ("pt inr") once its tests are known. |
 | `universalLabOrders` | `true` keeps only terms in LOINC's Universal Lab Orders value set (orderable lab tests). |
 | `clci` | `true` keeps only terms in Common Lab Codes for India (needs the CLCI CSV in the data directory; 400 otherwise). When loaded, ranking prefers CLCI codes, results carry `clciName`, and a query that matches a CLCI General Name lists those codes first (response `clciMatches`). See `docs/agent/LOINC_CLCI.md`. |
@@ -241,7 +242,7 @@ Term-list routes return `TermSummary`-like results. These are intentionally comp
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| GET | `/api/version` | Get app version, build commit, build date when present, and Go target platform. |
+| GET | `/api/version` | Get app version, build commit, build date when present, Go target platform, and `loincVersion` (the loaded LOINC release, e.g. `2.82`; omitted before an import). |
 | GET | `/api/v1/version` | Same version metadata under the v1 API namespace. |
 
 Example response:
@@ -251,7 +252,8 @@ Example response:
   "version": "0.92",
   "commit": "dev",
   "goos": "darwin",
-  "goarch": "arm64"
+  "goarch": "arm64",
+  "loincVersion": "2.82"
 }
 ```
 
@@ -261,12 +263,41 @@ Example response:
 | --- | --- | --- |
 | GET | `/api/v1/terms/search` | Search ranked LOINC terms for an EMR field. |
 | GET | `/api/v1/terms/top` | Browse top ranked terms without a text query. |
+| POST | `/api/v1/terms/match` | Match a batch of local test names (a lab test master) to LOINC in one request. |
 | GET | `/api/v1/terms/{loincNum}` | Get one full term detail. |
 | GET | `/api/v1/terms/{loincNum}/fit` | Get form-builder suitability metadata. |
 | GET | `/api/v1/terms/{loincNum}/relationships` | Get grouped lightweight relationships. |
 | GET | `/api/v1/terms/{loincNum}/answer-lists` | List answer lists linked to one term. |
 | GET | `/api/v1/terms/{loincNum}/panel-memberships` | List panels that contain one term. |
 | GET | `/api/v1/terms/{loincNum}/copyright` | Get copyright/source metadata state for one term. |
+
+### Batch name matching
+
+`POST /api/v1/terms/match` takes `{"names": [...]}` (at most 1,000; more returns 400) and the same filter query parameters as `/api/v1/terms/search` (`classType`, `class`, `clci`, `status`, ...). Each name runs as a word search, with shorthands, the CLCI prior, and the relaxed retry, and returns up to 5 candidates, best first. Matches are returned in input order, each with a `bucket`:
+
+- `confident`: the name is a LOINC number, or the top candidate is a CLCI General Name match, or the search matched every word and returned one term or a top term well clear of the runner-up.
+- `review`: candidates exist, but a person should pick.
+- `none`: nothing matched.
+
+```bash
+curl -X POST 'http://localhost:9005/api/v1/terms/match?classType=lab' \
+  -H 'content-type: application/json' \
+  -d '{"names": ["Serum Sodium", "HbA1c", "2345-7", "xyzzy"]}'
+```
+
+```json
+{
+  "matches": [
+    {"name": "Serum Sodium", "bucket": "confident", "candidates": [{"loincNum": "2951-2", "...": "..."}]},
+    {"name": "HbA1c", "bucket": "review", "candidates": [{"loincNum": "41995-2", "...": "..."}]},
+    {"name": "2345-7", "bucket": "confident", "candidates": [{"loincNum": "2345-7", "...": "..."}]},
+    {"name": "xyzzy", "bucket": "none", "candidates": []}
+  ],
+  "total": 4
+}
+```
+
+The UI's **Map a list** screen sends batches of 200.
 
 ### Hierarchy
 

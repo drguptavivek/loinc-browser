@@ -61,6 +61,9 @@ type SearchParams struct {
 	// Component keeps only terms with exactly this Component (case-insensitive): every
 	// method, scale, property, and specimen variant of one analyte.
 	Component string
+	// ComponentFamily widens Component to its ratio forms too ("Hemoglobin A1c" also matches
+	// "Hemoglobin A1c/Hemoglobin.total"), for listing the variants a user might mean.
+	ComponentFamily bool
 	// PanelContains keeps only terms (panels) that contain every one of these terms.
 	PanelContains []string
 	// UniversalLabOrders keeps only terms in LOINC's Universal Lab Orders value set.
@@ -122,6 +125,7 @@ type SearchResult struct {
 	ShortName       string   `json:"shortName"`
 	Component       string   `json:"component"`
 	Property        string   `json:"property"`
+	TimeAspect      string   `json:"timeAspect"`
 	System          string   `json:"system"`
 	Scale           string   `json:"scale"`
 	Method          string   `json:"method"`

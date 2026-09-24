@@ -152,6 +152,72 @@ func TestV1API(t *testing.T) {
 	}
 }
 
+func TestV1TermsMatch(t *testing.T) {
+	ctx := context.Background()
+	releaseDir := writeServerTestRelease(t)
+	dbPath := filepath.Join(t.TempDir(), "loinc.sqlite")
+	if _, err := loinc.Ingest(ctx, loinc.IngestOptions{ReleaseDir: releaseDir, DBPath: dbPath}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	store, err := loinc.OpenStore(dbPath, loinc.StoreOptions{CacheEntries: 4})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(New(Options{Store: store}))
+	defer server.Close()
+
+	var result map[string]any
+	postJSONValue(t, server.URL+"/api/v1/terms/match", map[string]any{"names": []string{"cholesterol", "  ", "2000-1"}}, &result)
+	matches, _ := result["matches"].([]any)
+	if len(matches) != 3 || result["total"] != float64(3) {
+		t.Fatalf("expected 3 matches in input order, got %#v", result)
+	}
+	first := matches[0].(map[string]any)
+	if first["name"] != "cholesterol" || first["bucket"] != "confident" {
+		t.Fatalf("unexpected first match: %#v", first)
+	}
+	second := matches[1].(map[string]any)
+	if candidates, ok := second["candidates"].([]any); second["bucket"] != "none" || !ok || len(candidates) != 0 {
+		t.Fatalf("expected blank name to bucket none with no candidates, got %#v", second)
+	}
+	third := matches[2].(map[string]any)
+	if third["bucket"] != "confident" {
+		t.Fatalf("expected typed LOINC number to be confident, got %#v", third)
+	}
+
+	tooMany := make([]string, 1001)
+	for i := range tooMany {
+		tooMany[i] = "x"
+	}
+	body, err := json.Marshal(map[string]any{"names": tooMany})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/v1/terms/match", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for more than 1000 names, got %d", resp.StatusCode)
+	}
+	var errResponse map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&errResponse); err != nil || errResponse["error"] == "" {
+		t.Fatalf("expected JSON error body, got err=%v body=%#v", err, errResponse)
+	}
+
+	badJSON, err := http.Post(server.URL+"/api/v1/terms/match", "application/json", strings.NewReader("not json"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer badJSON.Body.Close()
+	if badJSON.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid JSON, got %d", badJSON.StatusCode)
+	}
+}
+
 func TestLocalSearchIndexLifecycleAndQuery(t *testing.T) {
 	ctx := context.Background()
 	releaseDir := writeServerTestRelease(t)

@@ -56,6 +56,23 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/v1/terms/match": map[string]any{
+			"post": map[string]any{
+				"summary":     "Batch-match lab test master names to LOINC terms",
+				"description": "Runs one term search per name (up to 1000), with the same list filters as /api/v1/terms/search. Order of matches follows the input names. Empty or whitespace names get bucket=none without a lookup.",
+				"parameters":  commonTermListParameters(),
+				"requestBody": map[string]any{
+					"required": true,
+					"content": map[string]any{
+						"application/json": map[string]any{"schema": ref("NameMatchRequest")},
+					},
+				},
+				"responses": map[string]any{
+					"200": response("Name match results", ref("NameMatchResponse")),
+					"400": response("Invalid request or more than 1000 names", ref("ErrorResponse")),
+				},
+			},
+		},
 		"/api/v1/terms/top": map[string]any{
 			"get": map[string]any{
 				"summary":     "List top ranked LOINC terms",
@@ -663,6 +680,21 @@ var openAPISpec = map[string]any{
 				"rank":            map[string]any{"type": "number"},
 				"_links":          linksSchema(),
 			}),
+			"NameMatchRequest": object(map[string]any{
+				"names": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 1000},
+			}),
+			"NameMatchResponse": object(map[string]any{
+				"matches": map[string]any{"type": "array", "items": ref("NameMatch")},
+				"total":   map[string]any{"type": "integer"},
+			}),
+			"NameMatch": object(map[string]any{
+				"name":        map[string]any{"type": "string"},
+				"bucket":      map[string]any{"type": "string", "enum": []string{"confident", "review", "none"}},
+				"candidates":  map[string]any{"type": "array", "items": ref("SearchResult")},
+				"relaxed":     map[string]any{"type": "boolean"},
+				"synonyms":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"clciMatches": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			}),
 			"Term": object(map[string]any{
 				"loincNum":        map[string]any{"type": "string"},
 				"longCommonName":  map[string]any{"type": "string"},
@@ -1084,6 +1116,7 @@ func commonTermListParameters() []map[string]any {
 		queryParam("property", "Property axis filter"),
 		arrayQueryParam("orderObs", "Raw ORDER_OBS filter"),
 		queryParam("component", "Exact LOINC Component (case-insensitive), e.g. Thyrotropin: every method, scale, property, and specimen variant of one analyte"),
+		queryParam("componentFamily", "With component: also match its ratio forms, e.g. Hemoglobin A1c also returns Hemoglobin A1c/Hemoglobin.total"),
 		arrayQueryParam("contains", "Keep only panels containing every one of these LOINC numbers; repeat (contains=5902-2&contains=6301-6 finds the PT panel)"),
 		queryParam("universalLabOrders", "true keeps only terms in LOINC's Universal Lab Orders value set"),
 		queryParam("clci", "true keeps only terms in Common Lab Codes for India (needs the CLCI CSV in the data directory; 400 otherwise)"),

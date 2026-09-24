@@ -125,7 +125,16 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
+	query := params.Query
+	trimmed := dropLeadingSerumInitial(query)
+	params.Query = withContrastPhrase.ReplaceAllString(trimmed, "wcontrast")
 	response, err := s.searchTerms(ctx, params)
+	if params.Query != query {
+		response.Query = query
+	}
+	if trimmed != query {
+		response.IgnoredWords = append([]string{"s"}, response.IgnoredWords...)
+	}
 	if err == nil {
 		response, err = s.PinCLCINameMatches(ctx, params, response)
 	}
@@ -467,7 +476,7 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 	}
 
 	searchQuery := `select distinct
-		t.loinc_num, t.long_common_name, t.short_name, t.component, t.property,
+		t.loinc_num, t.long_common_name, t.short_name, t.component, t.property, t.time_aspect,
 		t.system, t.scale, t.method, t.class, t.status, t.order_obs, t.common_test_rank,
 		t.common_order_rank, ` + selectRank + ` ` + base + ` ` + order + ` limit ? offset ?`
 	searchArgs := append(append(baseArgs, args...), limit, offset)
@@ -486,6 +495,7 @@ func (s *Store) search(ctx context.Context, params SearchParams, ftsQuery string
 			&result.ShortName,
 			&result.Component,
 			&result.Property,
+			&result.TimeAspect,
 			&result.System,
 			&result.Scale,
 			&result.Method,
@@ -1466,8 +1476,13 @@ func filterClauses(params SearchParams, alias string) ([]string, []any) {
 	}
 	addMany("class", params.Class, params.Classes)
 	if component := strings.TrimSpace(params.Component); component != "" {
-		where = append(where, alias+".component = ? collate nocase")
-		args = append(args, component)
+		if params.ComponentFamily {
+			where = append(where, fmt.Sprintf("(%[1]s.component = ? collate nocase or substr(%[1]s.component, 1, ?) = ? collate nocase)", alias))
+			args = append(args, component, len([]rune(component))+1, component+"/")
+		} else {
+			where = append(where, alias+".component = ? collate nocase")
+			args = append(args, component)
+		}
 	}
 	for _, num := range params.PanelContains {
 		if num = strings.TrimSpace(num); num != "" {
@@ -1784,6 +1799,7 @@ var requestSynonyms = map[string]string{
 	"ncct":       `ct AND "wo contrast"`,                         // non-contrast CT ("wo contrast" skips "WO and W contrast")
 	"nect":       `ct AND "wo contrast"`,                         // non-enhanced CT
 	"cect":       `ct AND "w contrast"`,                          // contrast-enhanced CT
+	"wcontrast":  `"w contrast"`,                                 // "with contrast", rewritten before tokenizing (withContrastPhrase)
 	"esr":        `"sed rat" OR "sedimentation rate"`,            // not the ESR1 gene
 	"pcv":        `hematocrit`,                                   // packed cell volume
 	"dc":         `differential AND count`,                       // differential (leukocyte) count
@@ -1801,12 +1817,30 @@ var requestSynonyms = map[string]string{
 	"dct":        `"direct antiglobulin"`,                        // direct Coombs
 }
 
+// leadingSerumInitial is the "S." that Indian lab test masters put before serum tests ("S. Creatinine",
+// "S Sodium"). As a word, "s*" prefix-matches half of LOINC (GFR ranked above creatinine), so a
+// leading lone S is dropped. It is not read as "serum": "S. aureus" and "S. typhi" are organisms,
+// and "Protein S" keeps its S because only a leading one is dropped.
+var leadingSerumInitial = regexp.MustCompile(`(?i)^\s*s\.?\s+(\S)`)
+
+// withContrastPhrase is "with contrast" in a radiology request: "with" is a stop word, so the bare
+// "contrast" left over matched "WO contrast" as well. It becomes the wcontrast synonym ("W contrast").
+var withContrastPhrase = regexp.MustCompile(`(?i)\bwith\s+(iv\s+)?contrast\b`)
+
+func dropLeadingSerumInitial(query string) string {
+	return leadingSerumInitial.ReplaceAllString(query, "$1")
+}
+
 // synonymsUsed reports which requestSynonyms a query triggered, as "usg→us".
 func synonymsUsed(query string) []string {
 	var used []string
 	for _, token := range DropStopWords(ftsTokenRegexp.FindAllString(strings.ToLower(query), -1)) {
 		if synonym, ok := requestSynonyms[token]; ok {
-			used = append(used, token+"→"+strings.ReplaceAll(synonym, `"`, ""))
+			label := token
+			if token == "wcontrast" {
+				label = "with contrast"
+			}
+			used = append(used, label+"→"+strings.ReplaceAll(synonym, `"`, ""))
 		}
 	}
 	return used

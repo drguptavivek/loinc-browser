@@ -69,6 +69,7 @@ func (s *Store) HydrateLocalSearchHits(ctx context.Context, hits []LocalSearchHi
 				ShortName:       term.ShortName,
 				Component:       term.Component,
 				Property:        term.Property,
+				TimeAspect:      term.TimeAspect,
 				System:          term.System,
 				Scale:           term.Scale,
 				Method:          term.Method,

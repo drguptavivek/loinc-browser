@@ -103,6 +103,7 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/health", app.health)
 	mux.HandleFunc("GET /api/v1/version", app.version)
 	mux.HandleFunc("GET /api/v1/terms/search", app.v1TermsSearch)
+	mux.HandleFunc("POST /api/v1/terms/match", app.v1TermsMatch)
 	mux.HandleFunc("GET /api/v1/terms/top", app.v1TermsTop)
 	mux.HandleFunc("GET /api/v1/terms/{loincNum}", app.v1Term)
 	mux.HandleFunc("GET /api/v1/terms/{loincNum}/fit", app.v1TermFit)
@@ -213,7 +214,15 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) version(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, version.Get())
+	// loincVersion is the loaded release ("2.82"), for FHIR Coding.version; omitted before an import.
+	response := struct {
+		version.Info
+		LOINCVersion string `json:"loincVersion,omitempty"`
+	}{Info: version.Get()}
+	if store, err := a.currentStore(); err == nil {
+		response.LOINCVersion, _ = store.ReleaseVersion(r.Context())
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *app) search(w http.ResponseWriter, r *http.Request) {
@@ -532,6 +541,39 @@ func (a *app) v1TermsSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// maxMatchNames caps a batch name-match request: each name runs its own term search, so an
+// unbounded batch is an unbounded number of queries per request.
+const maxMatchNames = 1000
+
+type namesMatchRequest struct {
+	Names []string `json:"names"`
+}
+
+// v1TermsMatch maps a batch of lab test master names (e.g. an uploaded order set) to LOINC term
+// candidates, one word search per name with the same list filters as v1TermsSearch.
+func (a *app) v1TermsMatch(w http.ResponseWriter, r *http.Request) {
+	store, err := a.currentStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var request namesMatchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid name match request"))
+		return
+	}
+	if len(request.Names) > maxMatchNames {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("too many names: max %d", maxMatchNames))
+		return
+	}
+	matches, err := store.MatchNames(r.Context(), request.Names, termListParamsFromRequest(r))
+	if err != nil {
+		writeError(w, searchErrorStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"matches": matches, "total": len(matches)})
 }
 
 func (a *app) v1TermsTop(w http.ResponseWriter, r *http.Request) {
@@ -1136,6 +1178,7 @@ func termListParamsFromRequest(r *http.Request) loinc.SearchParams {
 		RankedOnly:         parseBool(query.Get("rankedOnly")),
 		HierarchyNodeID:    firstNonEmpty(query.Get("hierarchyNodeId"), query.Get("hierarchy")),
 		Component:          query.Get("component"),
+		ComponentFamily:    parseBool(query.Get("componentFamily")),
 		PanelContains:      queryValues(query, "contains"),
 		UniversalLabOrders: parseBool(query.Get("universalLabOrders")),
 		CLCI:               parseBool(query.Get("clci")),
