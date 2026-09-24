@@ -23,5 +23,5 @@
     "moduleDetection": "force"
   },
   "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"],
-  "exclude": ["src/lib/copy.check.ts", "src/lib/maplist.check.ts", "src/lib/xlsx.check.ts"]
+  "exclude": ["src/lib/copy.check.ts", "src/lib/maplist.check.ts", "src/lib/xlsx.check.ts", "src/lib/sse.check.ts"]
 }

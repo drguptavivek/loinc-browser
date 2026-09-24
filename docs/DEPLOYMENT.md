@@ -221,6 +221,12 @@ Without any of these, credentials entered in the UI can be saved encrypted in th
 The encryption key sits beside the encrypted file, so this protects against the KV file leaking on
 its own, not against someone who can read the whole data directory.
 
+The agentic search proxy (`/api/v1/agent/*`, see `docs/API.md`) has its own exposure control:
+`LOINC_AGENT_LLM_LOCAL_ONLY` (default `true`) refuses to dial anything but a loopback or private
+LLM endpoint, including at connect time, so a configured endpoint can't be redirected or
+DNS-rebound to an internal or cloud-metadata address. `LOINC_AGENT_DISABLED=true` turns the whole
+feature off.
+
 ## CI/CD
 
 - `.github/workflows/ci.yml` runs `go vet`, `go test`, and the web check and build on every push

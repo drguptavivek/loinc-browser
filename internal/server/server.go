@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	stdhtml "html"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +21,8 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"loinc-browser/internal/fhirhttp"
 	"loinc-browser/internal/loinc"
@@ -60,6 +64,18 @@ type Options struct {
 	// same store-getter-backed Service the HTTP handlers use, rather than building a second one
 	// that would miss store hot-swaps after an upload import.
 	Terminology **terminology.Service
+	// AgentDisabled turns off every /api/v1/agent/* route (403), independent of OfficialDisabled.
+	AgentDisabled bool
+	// AgentLLMBaseURL/_Model/_APIKey seed the agent's OpenAI-compatible chat endpoint settings;
+	// a value saved through PUT /api/v1/agent/settings overrides these for the process lifetime.
+	AgentLLMBaseURL string
+	AgentLLMModel   string
+	AgentLLMAPIKey  string
+	// AgentLLMLocalOnly refuses a non-loopback/private agent base URL (see internal/agent.CheckBaseURL).
+	// Not UI-settable; env only.
+	AgentLLMLocalOnly bool
+	// AgentLLMThinking is the default reasoning switch; a chat request may override it per call.
+	AgentLLMThinking bool
 }
 
 func New(options Options) http.Handler {
@@ -84,6 +100,13 @@ func New(options Options) http.Handler {
 		officialEnv:        options.OfficialEnvCredentials,
 		localSearch:        newLocalSearchService(options.SearchIndexPath),
 		autoRebuildSearch:  strings.TrimSpace(options.SearchIndexPath) != "",
+		agentDisabled:      options.AgentDisabled,
+		agentEnvBaseURL:    strings.TrimSpace(options.AgentLLMBaseURL),
+		agentEnvModel:      strings.TrimSpace(options.AgentLLMModel),
+		agentEnvAPIKey:     options.AgentLLMAPIKey,
+		agentEnvLocalOnly:  options.AgentLLMLocalOnly,
+		agentEnvThinking:   options.AgentLLMThinking,
+		agentSettings:      newAgentSettingsStore(options.AppKeyPath, options.KVPath),
 	}
 	if strings.TrimSpace(options.EmbeddingURL) != "" && strings.TrimSpace(options.EmbeddingsPath) != "" {
 		app.semantic = semantic.NewService(semantic.NewClient(options.EmbeddingURL, options.EmbeddingModel, options.EmbeddingAPIKey), options.EmbeddingsPath)
@@ -133,13 +156,18 @@ func New(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/source-organizations/{id}", app.v1SourceOrganization)
 	mux.HandleFunc("GET /api/v1/accessories", app.accessories)
 	mux.HandleFunc("GET /api/v1/official/credentials/status", app.officialCredentialStatus)
-	mux.HandleFunc("DELETE /api/v1/official/credentials", app.officialGuard(app.deleteOfficialCredentials))
-	mux.HandleFunc("POST /api/v1/official/search", app.officialGuard(app.officialSearch))
+	mux.HandleFunc("DELETE /api/v1/official/credentials", csrfGuard(app.officialGuard(app.deleteOfficialCredentials)))
+	mux.HandleFunc("POST /api/v1/official/search", csrfGuard(app.officialGuard(app.officialSearch)))
 	mux.HandleFunc("GET /api/v1/semantic/status", app.semanticStatus)
 	mux.HandleFunc("POST /api/v1/semantic/rebuild", app.semanticRebuild)
 	mux.HandleFunc("GET /api/v1/local-search/status", app.localSearchStatus)
 	mux.HandleFunc("POST /api/v1/local-search/rebuild", app.rebuildLocalSearch)
 	mux.HandleFunc("POST /api/v1/local-search/query", app.localSearchQuery)
+	mux.HandleFunc("GET /api/v1/agent/settings", csrfGuard(app.agentDisabledGuard(app.getAgentSettings)))
+	mux.HandleFunc("PUT /api/v1/agent/settings", csrfGuard(app.agentGuard(app.putAgentSettings)))
+	mux.HandleFunc("GET /api/v1/agent/models", csrfGuard(app.agentGuard(app.agentModels)))
+	mux.HandleFunc("POST /api/v1/agent/test", csrfGuard(app.agentGuard(app.agentTest)))
+	mux.HandleFunc("POST /api/v1/agent/chat", csrfGuard(app.agentGuard(app.agentChat)))
 	mux.HandleFunc("GET /searchapi/{scope}", app.searchAPI)
 	mux.HandleFunc("GET /api/docs", app.swaggerDocs)
 	mux.HandleFunc("GET /openapi.json", app.openapi)
@@ -157,21 +185,24 @@ func New(options Options) http.Handler {
 	if options.Terminology != nil {
 		*options.Terminology = terminologySvc
 	}
+	// Built once and shared by the HTTP MCP transport (below, when enabled) and the agent's
+	// in-process tool bridge (agent.go), rather than each building its own copy.
+	mcpServer := loincmcp.New(loincmcp.Options{
+		StoreGetter:  app.currentStore,
+		DocsDir:      options.DocsDir,
+		OpenAPIJSON:  OpenAPIJSON,
+		Terminology:  terminologySvc,
+		LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
+		SemanticSearch: func(ctx context.Context, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
+			store, err := app.currentStore()
+			if err != nil {
+				return loinc.SearchResponse{}, err
+			}
+			return app.searchTerms(ctx, store, params, mode)
+		},
+	})
+	app.agentMCPServer = mcpServer
 	if options.EnableMCP {
-		mcpServer := loincmcp.New(loincmcp.Options{
-			StoreGetter:  app.currentStore,
-			DocsDir:      options.DocsDir,
-			OpenAPIJSON:  OpenAPIJSON,
-			Terminology:  terminologySvc,
-			LuceneSearch: NewLuceneSearchFunc(app.localSearch.path, app.currentStore),
-			SemanticSearch: func(ctx context.Context, params loinc.SearchParams, mode string) (loinc.SearchResponse, error) {
-				store, err := app.currentStore()
-				if err != nil {
-					return loinc.SearchResponse{}, err
-				}
-				return app.searchTerms(ctx, store, params, mode)
-			},
-		})
 		mux.Handle(normalizeMCPPath(options.MCPPath), loincmcp.StreamableHTTPHandler(mcpServer))
 	}
 	mux.HandleFunc("/", app.frontend)
@@ -207,6 +238,18 @@ type app struct {
 	// autoRebuildSearch is set when the caller configured an explicit index path, so tests that
 	// leave it empty never write an index into the working directory.
 	autoRebuildSearch bool
+
+	// Agentic search (internal/agent, internal/server/agent.go). agentMCPServer is the same MCP
+	// server instance the HTTP MCP transport uses, connected to per-request over an in-process
+	// transport (see agent.NewToolBridge) rather than a second copy.
+	agentDisabled     bool
+	agentEnvBaseURL   string
+	agentEnvModel     string
+	agentEnvAPIKey    string
+	agentEnvLocalOnly bool
+	agentEnvThinking  bool
+	agentSettings     *agentSettingsStore
+	agentMCPServer    *mcp.Server
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -345,6 +388,56 @@ func (a *app) sourceOrganizations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// csrfGuard rejects a cross-origin request and, on POST/PUT with a body, requires a JSON content
+// type. These routes accept a passphrase header or rely on an app-local session, neither of which
+// stops a same-browser cross-site request (no cookie is involved, but a plain HTML form or
+// fetch("...", {mode: "no-cors"}) from another origin can still hit them); this closes that gap.
+func csrfGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, r.Host) {
+			writeError(w, http.StatusForbidden, errors.New("cross-origin request refused"))
+			return
+		}
+		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.ContentLength != 0 {
+			if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				writeError(w, http.StatusUnsupportedMediaType, errors.New("request body must be application/json"))
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+// sameOrigin reports whether the Origin header's host:port matches the request's Host, or both
+// name a loopback host (so http://localhost:5173 talking to a proxy on 127.0.0.1:8080, as the
+// Vite dev proxy does, is not treated as cross-origin).
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Host == host {
+		return true
+	}
+	return isLoopbackHost(u.Hostname()) && isLoopbackHost(hostOnly(host))
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func hostOnly(hostport string) string {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return hostport
+	}
+	return host
 }
 
 const officialPassphraseHeader = "X-Loinc-Passphrase"

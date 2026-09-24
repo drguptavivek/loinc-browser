@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { Search, Copy, Check, Plus, ShoppingBasket, ListChecks, Settings } from '@lucide/svelte';
+	import { Search, Copy, Check, Plus, ShoppingBasket, ListChecks, Settings, Sparkles } from '@lucide/svelte';
 	import { getVersion, searchTerms, searchPanels, type SearchResponse, type SearchResult } from '$lib/api';
 	import { DOMAINS, domainById, type DomainId } from '$lib/domains';
 	import { basket, addToBasket } from '$lib/basket';
@@ -16,6 +16,7 @@
 		onMapList,
 		onOpenBasket,
 		onOpenSetup,
+		onAsk,
 		initialQuery = '',
 		initialDomain = 'lab',
 		disabled = false,
@@ -25,9 +26,10 @@
 		onMapList: () => void;
 		onOpenBasket: () => void;
 		onOpenSetup: () => void;
+		onAsk: (prefill?: string) => void;
 		initialQuery?: string;
 		initialDomain?: string;
-		// true while a drawer (term card, basket, setup) covers the list: keys belong to the drawer then
+		// true while a drawer (term card, basket, setup, ask) covers the list: keys belong to the drawer then
 		disabled?: boolean;
 		// reports query and domain so App can keep them in the URL (Back, shared links)
 		onStateChange?: (query: string, domain: string) => void;
@@ -67,6 +69,10 @@
 			.join(' · ')
 	);
 	const results = $derived(response?.results ?? []);
+	// Nudge toward Ask AI once the query looks conversational or the exact-match search came up empty.
+	const askSuggestionVisible = $derived(
+		query.trim().length > 0 && (query.trim().split(/\s+/).length >= 4 || (!!response && results.length === 0))
+	);
 	const exampleQueries = $derived(
 		domain.hint
 			.replace(/^e\.g\.\s*/i, '')
@@ -234,6 +240,10 @@
 				<Settings size={14} />
 				{setupSummary || 'Setup'}
 			</Button>
+			<Button variant="outline" size="sm" on:click={() => onAsk()} ariaLabel="Ask AI">
+				<Sparkles size={14} />
+				Ask AI
+			</Button>
 		</div>
 	</div>
 
@@ -267,6 +277,17 @@
 			class="mt-1 h-12 w-full rounded-md border border-zinc-200 bg-white pl-10 pr-3 text-base normal-case tracking-normal text-zinc-800 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
 		/>
 	</div>
+
+	{#if askSuggestionVisible}
+		<button
+			type="button"
+			class="flex w-fit items-center gap-1.5 rounded-full border border-dashed border-zinc-300 bg-zinc-50 px-3 py-1 text-xs text-zinc-600 hover:bg-zinc-100"
+			onclick={() => onAsk(query.trim())}
+		>
+			<Sparkles size={12} />
+			Ask AI about &ldquo;{query.trim()}&rdquo;
+		</button>
+	{/if}
 
 	{#if domainId === 'radiology'}
 		<div class="flex flex-wrap gap-3">

@@ -1,3 +1,5 @@
+import { parseSSEChunk } from './sse';
+
 export type SearchResult = {
 	loincNum: string;
 	longCommonName: string;
@@ -627,6 +629,105 @@ export function localSearchAPI(scope: string, params: LocalSearchAPIParams): Pro
 		if (value !== undefined && value !== '') query.set(key, String(value));
 	}
 	return requestJSON<unknown>(`/searchapi/${encodeURIComponent(scope)}?${query.toString()}`);
+}
+
+export type AgentSettings = {
+	baseUrl: string;
+	model: string;
+	thinking: boolean;
+	apiKeySet: boolean;
+	localOnly: boolean;
+	configured: boolean;
+};
+
+export type AgentSettingsUpdate = {
+	baseUrl?: string;
+	model?: string;
+	thinking?: boolean;
+	apiKey?: string;
+	clearApiKey?: boolean;
+};
+
+export type AgentModel = { id: string };
+
+export type AgentTestResult = {
+	ok: boolean;
+	model: string;
+	latencyMs: number;
+	toolCalls: boolean;
+	error?: string;
+};
+
+export type AgentChatMessage = { role: 'user' | 'assistant'; content: string };
+
+export type AgentChatRequest = { messages: AgentChatMessage[]; thinking?: boolean };
+
+// AgentEvent mirrors the SSE event names the agent chat endpoint emits (docs/API.md).
+export type AgentEvent =
+	| { type: 'thinking'; text: string }
+	| { type: 'text'; text: string }
+	| { type: 'tool-start'; id: string; name: string; args: unknown }
+	| { type: 'tool-end'; id: string; name: string; ok: boolean; chars: number }
+	| { type: 'codes'; codes: { loincNum: string; longCommonName: string; status: string }[] }
+	| { type: 'unverified'; codes: string[] }
+	| { type: 'done'; rounds: number; model: string; elapsedMs: number }
+	| { type: 'error'; message: string };
+
+export function getAgentSettings(): Promise<AgentSettings> {
+	return requestJSON<AgentSettings>('/api/v1/agent/settings');
+}
+
+export function saveAgentSettings(update: AgentSettingsUpdate, passphrase = ''): Promise<AgentSettings> {
+	return requestJSONWithInit<AgentSettings>('/api/v1/agent/settings', {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', ...passphraseHeaders(passphrase) },
+		body: JSON.stringify(update),
+	});
+}
+
+export function listAgentModels(baseUrl?: string): Promise<{ models: AgentModel[] }> {
+	const suffix = baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : '';
+	return requestJSON<{ models: AgentModel[] }>(`/api/v1/agent/models${suffix}`);
+}
+
+export function testAgent(): Promise<AgentTestResult> {
+	return requestJSONWithInit<AgentTestResult>('/api/v1/agent/test', { method: 'POST' });
+}
+
+// streamAgentChat posts the conversation and feeds each parsed SSE event to onEvent as it
+// arrives. Rejects on a non-OK response (before streaming starts) or a network/abort error.
+export async function streamAgentChat(
+	body: AgentChatRequest,
+	onEvent: (event: AgentEvent) => void,
+	signal?: AbortSignal,
+): Promise<void> {
+	const response = await fetch('/api/v1/agent/chat', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body),
+		signal,
+	});
+	if (!response.ok || !response.body) {
+		const errBody = await response.json().catch(() => ({ error: response.statusText }));
+		throw new Error(errBody.error || response.statusText);
+	}
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		const { events, rest } = parseSSEChunk(buffer);
+		buffer = rest;
+		for (const evt of events) {
+			try {
+				onEvent({ type: evt.event, ...JSON.parse(evt.data) } as AgentEvent);
+			} catch {
+				// malformed event line: skip rather than aborting the whole stream
+			}
+		}
+	}
 }
 
 export type ApiConsoleResult = {

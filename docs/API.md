@@ -561,6 +561,53 @@ Supported query syntax includes:
 
 Unsupported or planned fields are returned as warnings in the local-search response.
 
+### Agentic search
+
+An in-app chat that lets a configured OpenAI-compatible LLM (LM Studio, Ollama, vLLM, or a
+hosted API) call the existing read-only LOINC MCP tools to suggest codes. The model never
+invents a code shown to the user: every LOINC number in its final answer is checked against the
+tool results from that run and re-verified with `Store.Term` before it reaches the client
+(see [`AGENT_CHAT_PLAN.md`](AGENT_CHAT_PLAN.md) for the full design; this is the trimmed phase
+A2 of it).
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/agent/settings` | Effective endpoint settings (env, overridden by any saved value). Never returns the API key, only `apiKeySet`. |
+| PUT | `/api/v1/agent/settings` | Save `baseUrl`, `model`, `thinking`, and/or `apiKey`/`clearApiKey`. Guarded by `LOINC_OFFICIAL_PASSPHRASE` when set. |
+| GET | `/api/v1/agent/models` | List chat-capable model ids from `GET {baseUrl}/models` (or `?baseUrl=` to probe another endpoint first). |
+| POST | `/api/v1/agent/test` | One short chat completion with a trivial tool call, to check the endpoint works and supports tools. |
+| POST | `/api/v1/agent/chat` | Stream one agent turn as `text/event-stream`. |
+
+`LOINC_AGENT_DISABLED=true` makes every agent route return 403. `LOINC_AGENT_LLM_LOCAL_ONLY`
+(default `true`) refuses a base URL that doesn't resolve to loopback or a private address and
+blocks link-local/cloud-metadata addresses (e.g. `169.254.169.254`) even at connect time; set it
+to `false` to allow a hosted endpoint (whose provider then receives the chat text and, for tool
+calls, LOINC term text — never LOINC's own licensed data files, and no upload/CSV content). Every
+agent route refuses a cross-origin request (checked against `Origin`, when sent). The saved/env
+API key is only ever sent to the saved base URL; an ad-hoc `?baseUrl=` probe on
+`GET /api/v1/agent/models` gets no key.
+
+```bash
+curl -X PUT 'http://localhost:9005/api/v1/agent/settings' \
+  -H 'content-type: application/json' \
+  -d '{"baseUrl":"http://127.0.0.1:1234/v1","model":"qwen3-8b","thinking":false}'
+
+curl 'http://localhost:9005/api/v1/agent/models'
+
+curl -X POST 'http://localhost:9005/api/v1/agent/test'
+
+curl -N -X POST 'http://localhost:9005/api/v1/agent/chat' \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"serum sodium in mmol/L"}],"thinking":false}'
+```
+
+The chat stream's `data:` payloads are the flat event body — `{"text":"..."}`,
+`{"id":"...","name":"...","args":"..."}`, `{"codes":[{"loincNum":"2951-2","longCommonName":"...","status":"ACTIVE"}]}`,
+`{"rounds":3,"model":"qwen3-8b","elapsedMs":4210}` — framed as
+`event: <type>\ndata: <json>\n\n`, one event type per line: `thinking`, `text`, `tool-start`,
+`tool-end`, `codes` (once, at the end), `unverified` (only if the model mentioned a code that
+never showed up in a tool result), `done`, `error`.
+
 ## EMR form-builder workflows
 
 ### 1. Find a term for a field

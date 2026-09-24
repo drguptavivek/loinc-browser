@@ -48,10 +48,17 @@ type officialCredentialRecord struct {
 	UpdatedAt      string `json:"updatedAt"`
 }
 
+// kvFileMu guards every read-modify-write of the shared KV file (official_credentials.go's
+// officialCredentialsKey and agent.go's agentLLMSettingsKey/agentLLMAPIKeyKey records all live in
+// the same file). OfficialCredentialVault and agentSettingsStore are otherwise independent types
+// with no shared state, so without one mutex between them two concurrent saves (one to each
+// store) could each read the file before the other's write, and one would silently clobber the
+// other's change on write-back.
+var kvFileMu sync.Mutex
+
 type OfficialCredentialVault struct {
 	keyPath string
 	kvPath  string
-	mu      sync.Mutex
 }
 
 func NewOfficialCredentialVault(keyPath string, kvPath string) (*OfficialCredentialVault, error) {
@@ -68,8 +75,8 @@ func NewOfficialCredentialVault(keyPath string, kvPath string) (*OfficialCredent
 }
 
 func (v *OfficialCredentialVault) Status(ctx context.Context) (OfficialCredentialStatus, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	kvFileMu.Lock()
+	defer kvFileMu.Unlock()
 	return v.statusLocked(ctx)
 }
 
@@ -78,8 +85,8 @@ func (v *OfficialCredentialVault) Save(ctx context.Context, credentials Official
 	if credentials.Username == "" || credentials.Password == "" {
 		return errors.New("official API username and password are required")
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	kvFileMu.Lock()
+	defer kvFileMu.Unlock()
 
 	key, err := v.loadOrCreateKey()
 	if err != nil {
@@ -128,14 +135,14 @@ func (v *OfficialCredentialVault) Save(ctx context.Context, credentials Official
 }
 
 func (v *OfficialCredentialVault) Load(ctx context.Context) (OfficialCredentials, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	kvFileMu.Lock()
+	defer kvFileMu.Unlock()
 	return v.loadLocked(ctx)
 }
 
 func (v *OfficialCredentialVault) Delete(ctx context.Context) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	kvFileMu.Lock()
+	defer kvFileMu.Unlock()
 	store, err := readKVFile(v.kvPath)
 	if err != nil {
 		return err
@@ -210,21 +217,39 @@ func (v *OfficialCredentialVault) loadLocked(ctx context.Context) (OfficialCrede
 }
 
 func (v *OfficialCredentialVault) loadOrCreateKey() ([]byte, error) {
-	if key, err := readAppKey(v.keyPath); err == nil {
+	return loadOrCreateAppKey(v.keyPath)
+}
+
+// loadOrCreateAppKey reads the shared 32-byte AES-256-GCM app key at path, generating and
+// persisting one on first use. It backs every encrypted-at-rest secret in the KV file (official
+// API credentials, the agent LLM API key), so they all decrypt with the same key. The create is
+// exclusive (O_EXCL): if two callers race to create the key, the loser's write is refused rather
+// than overwriting the winner's key (which would make every secret already encrypted with it
+// unreadable), and the loser just re-reads the file the winner created.
+func loadOrCreateAppKey(path string) ([]byte, error) {
+	if key, err := readAppKey(path); err == nil {
 		return key, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, fmt.Errorf("generate official API app key: %w", err)
+		return nil, fmt.Errorf("generate app key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(v.keyPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create app key directory: %w", err)
 	}
 	encoded := []byte(base64.StdEncoding.EncodeToString(key) + "\n")
-	if err := os.WriteFile(v.keyPath, encoded, 0o600); err != nil {
-		return nil, fmt.Errorf("write official API app key: %w", err)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return readAppKey(path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create app key: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(encoded); err != nil {
+		return nil, fmt.Errorf("write app key: %w", err)
 	}
 	return key, nil
 }

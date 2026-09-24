@@ -1,6 +1,7 @@
 # In-App LOINC Mapping Agent — Design Plan
 
-Status: **next epic, starting rc7** (scheduled 2026-09-24; see §12). Design only, not implemented.
+Status: A2 (trimmed: agentic search, model picker, thinking switch) implemented; A1/A3/A4
+deferred — Map a list covers batch mapping.
 Drafted 2026-09-23.
 
 ## 1. What it is

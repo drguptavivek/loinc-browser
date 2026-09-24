@@ -351,6 +351,65 @@ var openAPISpec = map[string]any{
 				},
 			},
 		},
+		"/api/v1/agent/settings": map[string]any{
+			"get": map[string]any{
+				"summary":     "Get agentic search LLM settings",
+				"description": "Reports the effective (env, overridden by any saved) endpoint settings. The API key itself is never returned, only apiKeySet.",
+				"responses": map[string]any{
+					"200": response("Agent settings", map[string]any{"type": "object"}),
+				},
+			},
+			"put": map[string]any{
+				"summary":     "Save agentic search LLM settings",
+				"description": "Guarded by the official-API passphrase when LOINC_OFFICIAL_PASSPHRASE is set. Partial updates merge onto the current effective settings.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+				},
+				"responses": map[string]any{
+					"200": response("Agent settings", map[string]any{"type": "object"}),
+					"400": response("Invalid base URL or request body", ref("ErrorResponse")),
+					"401": response("Missing or incorrect passphrase", ref("ErrorResponse")),
+					"403": response("The agent is disabled", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/agent/models": map[string]any{
+			"get": map[string]any{
+				"summary":     "List models the configured LLM endpoint serves",
+				"description": "Calls GET {baseUrl}/models on the effective (or ?baseUrl override) endpoint and filters out obvious embedding models.",
+				"parameters":  []map[string]any{queryParam("baseUrl", "Endpoint base URL to query instead of the saved one")},
+				"responses": map[string]any{
+					"200": response("Model list", map[string]any{"type": "object"}),
+					"400": response("Invalid or non-local base URL", ref("ErrorResponse")),
+					"502": response("The LLM endpoint could not be reached", ref("ErrorResponse")),
+				},
+			},
+		},
+		"/api/v1/agent/test": map[string]any{
+			"post": map[string]any{
+				"summary":     "Test the configured LLM endpoint",
+				"description": "Sends one short chat completion with a trivial tool and reports whether the model called it.",
+				"responses": map[string]any{
+					"200": response("Test result", map[string]any{"type": "object"}),
+				},
+			},
+		},
+		"/api/v1/agent/chat": map[string]any{
+			"post": map[string]any{
+				"summary":     "Run one agentic LOINC-search turn",
+				"description": "Streams text/event-stream events (thinking, text, tool-start, tool-end, codes, unverified, done, error) as the model calls read-only LOINC MCP tools. Every LOINC code shown is re-verified against the local database and the tool results seen this run.",
+				"requestBody": map[string]any{
+					"required": true,
+					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+				},
+				"responses": map[string]any{
+					"200": response("text/event-stream of agent events", map[string]any{"type": "object"}),
+					"400": response("Invalid request", ref("ErrorResponse")),
+					"409": response("The agent is not configured", ref("ErrorResponse")),
+				},
+			},
+		},
 		"/fhir/metadata": map[string]any{
 			"get": map[string]any{
 				"tags":        []string{"FHIR"},

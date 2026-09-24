@@ -37,6 +37,7 @@
 	import * as Resizable from '$lib/components/ui/resizable';
 	import ApiConsole from '$lib/components/ApiConsole.svelte';
 	import FindMode from '$lib/components/FindMode.svelte';
+	import AskPanel from '$lib/components/AskPanel.svelte';
 	import TermCard from '$lib/components/TermCard.svelte';
 	import BasketPanel from '$lib/components/BasketPanel.svelte';
 	import MapList from '$lib/components/MapList.svelte';
@@ -149,6 +150,8 @@
 	let findURLTimer: ReturnType<typeof setTimeout> | undefined;
 	let basketOpen = false;
 	let setupOpen = false;
+	let askOpen = false;
+	let askPrefill = '';
 	let apiConsolePresetId = '';
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
@@ -1100,7 +1103,18 @@
 		findTerm = loincNum;
 		basketOpen = false;
 		setupOpen = false;
+		askOpen = false;
 		updateURL(false);
+	}
+
+	function openAsk(prefill?: string) {
+		askPrefill = prefill ?? '';
+		askOpen = true;
+	}
+
+	function openSetupFromAsk() {
+		askOpen = false;
+		setupOpen = true;
 	}
 
 	function closeFindTerm() {
@@ -1125,6 +1139,7 @@
 		findTerm = '';
 		basketOpen = false;
 		setupOpen = false;
+		askOpen = false;
 		openFacetBrowser();
 		void openTerm(loincNum);
 	}
@@ -1979,11 +1994,12 @@
 			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
 				{#key `${findInitialQuery}|${findInitialDomain}`}
 				<FindMode
-					disabled={!!findTerm || basketOpen || setupOpen}
+					disabled={!!findTerm || basketOpen || setupOpen || askOpen}
 					onOpen={openFindTerm}
 					onMapList={openMap}
 					onOpenBasket={() => (basketOpen = true)}
 					onOpenSetup={() => (setupOpen = true)}
+					onAsk={openAsk}
 					initialQuery={findInitialQuery}
 					initialDomain={findInitialDomain || 'lab'}
 					onStateChange={handleFindState}
@@ -3158,7 +3174,7 @@
 	</div>
 
 	{#if (activeView === 'find' || activeView === 'map') && findTerm}
-		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[640px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="term-card-drawer" tabindex="-1" use:drawerFocus={closeFindTerm}>
 				<TermCard loincNum={findTerm} onOpen={openFindTerm} onClose={closeFindTerm} onOpenInExplorer={openTermInExplorer} />
 			</aside>
@@ -3166,7 +3182,7 @@
 	{/if}
 
 	{#if basketOpen}
-		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="basket-drawer" tabindex="-1" use:drawerFocus={() => (basketOpen = false)}>
 				<BasketPanel onClose={() => (basketOpen = false)} onOpen={openFindTerm} />
 			</aside>
@@ -3174,15 +3190,23 @@
 	{/if}
 
 	{#if setupOpen}
-		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="setup-drawer" tabindex="-1" use:drawerFocus={() => (setupOpen = false)}>
 				<SetupPanel onClose={() => (setupOpen = false)} />
 			</aside>
 		</div>
 	{/if}
 
+	{#if askOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="ask-drawer" tabindex="-1" use:drawerFocus={() => (askOpen = false)}>
+				<AskPanel onOpen={openFindTerm} onClose={() => (askOpen = false)} onOpenSetup={openSetupFromAsk} prefill={askPrefill} />
+			</aside>
+		</div>
+	{/if}
+
 	{#if detailOpen || termLoading}
-		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-[60] flex w-full justify-end" role="presentation">
 			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col border-l border-zinc-200 bg-white shadow-2xl" data-testid="detail-drawer">
 				<div class="flex items-center justify-between border-b border-zinc-200 px-4 py-3 lg:shrink-0">
 					<h2 class="text-sm font-semibold">Term detail</h2>

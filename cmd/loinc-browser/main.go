@@ -235,11 +235,17 @@ func runServe(args []string) error {
 			Username: strings.TrimSpace(os.Getenv("LOINC_OFFICIAL_USERNAME")),
 			Password: os.Getenv("LOINC_OFFICIAL_PASSWORD"),
 		},
-		EmbeddingURL:    os.Getenv("LOINC_EMBEDDING_URL"),
-		EmbeddingModel:  envOr("LOINC_EMBEDDING_MODEL", "text-embedding-qwen3-embedding-0.6b"),
-		EmbeddingAPIKey: os.Getenv("LOINC_EMBEDDING_API_KEY"),
-		EmbeddingsPath:  envOr("LOINC_EMBEDDINGS_PATH", filepath.Join(dataDir(), "loinc-embeddings.sqlite")),
-		Terminology:     &termSvc,
+		EmbeddingURL:      os.Getenv("LOINC_EMBEDDING_URL"),
+		EmbeddingModel:    envOr("LOINC_EMBEDDING_MODEL", "text-embedding-qwen3-embedding-0.6b"),
+		EmbeddingAPIKey:   os.Getenv("LOINC_EMBEDDING_API_KEY"),
+		EmbeddingsPath:    envOr("LOINC_EMBEDDINGS_PATH", filepath.Join(dataDir(), "loinc-embeddings.sqlite")),
+		Terminology:       &termSvc,
+		AgentDisabled:     envBool("LOINC_AGENT_DISABLED"),
+		AgentLLMBaseURL:   os.Getenv("LOINC_AGENT_LLM_BASE_URL"),
+		AgentLLMModel:     os.Getenv("LOINC_AGENT_LLM_MODEL"),
+		AgentLLMAPIKey:    os.Getenv("LOINC_AGENT_LLM_API_KEY"),
+		AgentLLMLocalOnly: agentLLMLocalOnly(),
+		AgentLLMThinking:  envBool("LOINC_AGENT_LLM_THINKING"),
 	})
 	listener, err := listenWithPortPrompt(cfg.Addr, os.Stdin, os.Stdout)
 	if err != nil {
@@ -934,4 +940,18 @@ func envBool(key string) bool {
 		return true
 	}
 	return false
+}
+
+// agentLLMLocalOnly defaults to true (refuse a non-loopback/private agent LLM base URL) unless
+// LOINC_AGENT_LLM_LOCAL_ONLY is explicitly set to false.
+func agentLLMLocalOnly() bool {
+	raw := strings.TrimSpace(os.Getenv("LOINC_AGENT_LLM_LOCAL_ONLY"))
+	if raw == "" {
+		return true
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
 }
