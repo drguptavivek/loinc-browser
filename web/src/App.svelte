@@ -36,6 +36,10 @@
 	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import ApiConsole from '$lib/components/ApiConsole.svelte';
+	import FindMode from '$lib/components/FindMode.svelte';
+	import TermCard from '$lib/components/TermCard.svelte';
+	import BasketPanel from '$lib/components/BasketPanel.svelte';
+	import MapList from '$lib/components/MapList.svelte';
 	import type { PaneAPI } from 'paneforge';
 	import {
 		browseAccessories,
@@ -77,7 +81,7 @@
 		type VersionInfo,
 	} from '$lib/api';
 
-	type BrowseMode = 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced';
+	type BrowseMode = 'find' | 'map' | 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced';
 	type ResultsColumnKey = 'loinc' | 'name' | 'status' | 'rank' | 'axes';
 
 	const emptyFacets: Facets = {
@@ -133,7 +137,12 @@
 	let initialTerm = '';
 	let error = '';
 	let offset = 0;
-	let activeView: 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' | 'apis' = 'browse';
+	let activeView: 'find' | 'map' | 'browse' | 'loader' | 'accessories' | 'hierarchy' | 'official' | 'advanced' | 'apis' = 'find';
+	// Find / Map views: the end-user screens; their term card is separate from the explorer's detail drawer.
+	let findTerm = '';
+	let findInitialQuery = '';
+	let findInitialDomain = '';
+	let basketOpen = false;
 	let apiConsolePresetId = '';
 	let detailOpen = false;
 	let sharedConceptsOpen = false;
@@ -404,7 +413,9 @@
 			void loadOfficialCredentialStatus();
 			void loadLocalLuceneStatus();
 			await loadFacets();
-			if (activeView === 'accessories' || activeView === 'hierarchy') {
+			if (activeView === 'find' || activeView === 'map') {
+				updateURL(true);
+			} else if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
 			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
 				updateURL(true);
@@ -421,6 +432,11 @@
 
 		const handlePopState = async () => {
 			applyURLState();
+			if (activeView === 'find' || activeView === 'map') {
+				selectedTerm = null;
+				detailOpen = false;
+				return;
+			}
 			if (activeView === 'accessories' || activeView === 'hierarchy') {
 				await loadAccessories(accessoryOffset, true);
 			} else if (activeView === 'official' || activeView === 'advanced' || activeView === 'apis') {
@@ -466,7 +482,11 @@
 	}
 
 	$: currentBrowseMode =
-		activeView === 'advanced'
+		activeView === 'find'
+			? 'find'
+			: activeView === 'map'
+			? 'map'
+			: activeView === 'advanced'
 			? 'advanced'
 			: activeView === 'official'
 			? 'official'
@@ -519,7 +539,20 @@
 		const type = params.get('type') ?? '';
 		accessoryOffset = Number(params.get('browseOffset') ?? '0') || 0;
 		accessoryQuery = browse;
-		if (mode === 'hierarchy') {
+		findTerm = '';
+		if (mode === 'find' || (!mode && !hasRouteState)) {
+			activeView = 'find';
+			findInitialQuery = params.get('q') ?? '';
+			findInitialDomain = params.get('domain') ?? '';
+			findTerm = params.get('term') ?? '';
+			initialTerm = '';
+			return;
+		} else if (mode === 'map') {
+			activeView = 'map';
+			findTerm = params.get('term') ?? '';
+			initialTerm = '';
+			return;
+		} else if (mode === 'hierarchy') {
 			accessoryKind = 'hierarchy';
 			if (!hierarchyNodeId && !browse) {
 				hierarchyNodeId = hierarchyHomeNodeId;
@@ -552,6 +585,14 @@
 
 	function updateURL(replace = true) {
 		const params = new URLSearchParams();
+		if (activeView === 'find' || activeView === 'map') {
+			params.set('mode', activeView);
+			if (findTerm) params.set('term', findTerm);
+			const nextURL = `${window.location.pathname}?${params.toString()}`;
+			if (replace) window.history.replaceState(null, '', nextURL);
+			else window.history.pushState(null, '', nextURL);
+			return;
+		}
 		const mode = activeBrowseMode();
 		if (activeView === 'loader') params.set('mode', 'loader');
 		else if (activeView === 'apis') {
@@ -1009,7 +1050,56 @@
 		relationshipsLoaded = false;
 		detailOpen = false;
 		browseDrawerOpen = false;
-		openHierarchyHome(false);
+		openFind();
+	}
+
+	function openFind() {
+		activeView = 'find';
+		findTerm = '';
+		findInitialQuery = '';
+		findInitialDomain = '';
+		detailOpen = false;
+		mobileBrowseMenuOpen = false;
+		updateURL(false);
+	}
+
+	function openMap() {
+		activeView = 'map';
+		findTerm = '';
+		detailOpen = false;
+		mobileBrowseMenuOpen = false;
+		updateURL(false);
+	}
+
+	function openFindTerm(loincNum: string) {
+		findTerm = loincNum;
+		basketOpen = false;
+		updateURL(false);
+	}
+
+	function closeFindTerm() {
+		findTerm = '';
+		updateURL(true);
+	}
+
+	// Drawers over Find take keyboard focus (so keys don't type into the search box behind) and close on Esc.
+	function drawerFocus(node: HTMLElement, onEscape: () => void) {
+		node.focus();
+		const handle = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape') return;
+			// Find's own Esc clears the search; this Esc only closes the drawer.
+			event.stopPropagation();
+			onEscape();
+		};
+		node.addEventListener('keydown', handle);
+		return { destroy: () => node.removeEventListener('keydown', handle) };
+	}
+
+	function openTermInExplorer(loincNum: string) {
+		findTerm = '';
+		basketOpen = false;
+		openFacetBrowser();
+		void openTerm(loincNum);
 	}
 
 	function chooseFacet(kind: 'status' | 'class' | 'system' | 'scale' | 'property' | 'orderObs', value: string) {
@@ -1692,9 +1782,13 @@
 		return node.label || node.code || node.nodeId;
 	}
 
-	function chooseMobileBrowseMode(mode: 'hierarchy' | 'facets' | 'rank' | 'relationships' | 'official' | 'advanced') {
+	function chooseMobileBrowseMode(mode: BrowseMode) {
 		mobileBrowseMenuOpen = false;
-		if (mode === 'hierarchy') {
+		if (mode === 'find') {
+			openFind();
+		} else if (mode === 'map') {
+			openMap();
+		} else if (mode === 'hierarchy') {
 			void openHierarchyBrowser();
 		} else if (mode === 'facets') {
 			openFacetBrowser();
@@ -1765,7 +1859,7 @@
 <main class="min-h-screen bg-zinc-50 pb-12 text-zinc-950 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
 	<header class="border-b border-zinc-200 bg-white lg:shrink-0">
 		<div class="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4 px-5 py-4">
-			<button type="button" class="flex items-center gap-3 rounded-md text-left hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200" aria-label="Go to hierarchy home" on:click={goHome}>
+			<button type="button" class="flex items-center gap-3 rounded-md text-left hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200" aria-label="Go to home" on:click={goHome}>
 				<div class="flex size-10 items-center justify-center rounded-md bg-zinc-950 text-white">
 					<BookOpen size={20} />
 				</div>
@@ -1780,6 +1874,14 @@
 				</Button>
 				{#if mobileBrowseMenuOpen}
 					<div class="absolute right-0 top-10 z-50 flex w-52 max-w-[calc(100vw-1.5rem)] flex-col gap-1 rounded-md border border-zinc-200 bg-white p-1.5 shadow-lg" role="menu" aria-label="Browse mode menu">
+						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'find' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('find')}>
+							<Search size={14} />
+							Find
+						</button>
+						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'map' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('map')}>
+							<Upload size={14} />
+							Map a list
+						</button>
 						<button type="button" class={`flex items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left text-xs ${currentBrowseMode === 'hierarchy' ? 'bg-zinc-950 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`} on:click={() => chooseMobileBrowseMode('hierarchy')}>
 							<Network size={14} />
 							Hierarchy
@@ -1808,6 +1910,15 @@
 				{/if}
 			</div>
 			<div class="hidden flex-wrap gap-2 md:flex" role="tablist" aria-label="Browse mode">
+				<button type="button" class={modeButtonClass('find', currentBrowseMode)} on:click={openFind}>
+					<Search size={14} />
+					Find
+				</button>
+				<button type="button" class={modeButtonClass('map', currentBrowseMode)} on:click={openMap}>
+					<Upload size={14} />
+					Map a list
+				</button>
+				<span class="mx-1 h-8 w-px bg-zinc-200" aria-hidden="true"></span>
 				<button type="button" class={modeButtonClass('hierarchy', currentBrowseMode)} on:click={() => { void openHierarchyBrowser(); }}>
 					<Network size={14} />
 					Hierarchy
@@ -1837,6 +1948,24 @@
 	</header>
 
 	<div class="mx-auto flex w-full max-w-[1500px] flex-col gap-5 px-5 py-5 lg:min-h-0 lg:flex-1 lg:gap-0 lg:overflow-hidden">
+		{#if activeView === 'find'}
+			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
+				{#key `${findInitialQuery}|${findInitialDomain}`}
+				<FindMode
+					disabled={!!findTerm || basketOpen}
+					onOpen={openFindTerm}
+					onMapList={openMap}
+					onOpenBasket={() => (basketOpen = true)}
+					initialQuery={findInitialQuery}
+					initialDomain={findInitialDomain || 'lab'}
+				/>
+				{/key}
+			</div>
+		{:else if activeView === 'map'}
+			<div class="w-full lg:min-h-0 lg:flex-1 lg:overflow-auto">
+				<MapList onOpen={openFindTerm} onClose={openFind} />
+			</div>
+		{:else}
 		<Button variant="outline" size="sm" className="fixed left-3 top-[77px] z-40 w-fit shadow-lg lg:hidden" ariaLabel="Open browse drawer" on:click={openBrowseDrawer}>
 			<PanelLeftOpen size={14} />
 			Browse
@@ -2996,7 +3125,24 @@
 				</section>
 			</Resizable.Pane>
 		</Resizable.PaneGroup>
+		{/if}
 	</div>
+
+	{#if (activeView === 'find' || activeView === 'map') && findTerm}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[640px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="term-card-drawer" tabindex="-1" use:drawerFocus={closeFindTerm}>
+				<TermCard loincNum={findTerm} onOpen={openFindTerm} onClose={closeFindTerm} onOpenInExplorer={openTermInExplorer} />
+			</aside>
+		</div>
+	{/if}
+
+	{#if basketOpen}
+		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">
+			<aside class="pointer-events-auto flex h-full w-full max-w-[560px] flex-col overflow-auto border-l border-zinc-200 bg-white shadow-2xl outline-none" data-testid="basket-drawer" tabindex="-1" use:drawerFocus={() => (basketOpen = false)}>
+				<BasketPanel onClose={() => (basketOpen = false)} onOpen={openFindTerm} />
+			</aside>
+		</div>
+	{/if}
 
 	{#if detailOpen || termLoading}
 		<div class="pointer-events-none fixed inset-y-0 right-0 z-50 flex w-full justify-end" role="presentation">

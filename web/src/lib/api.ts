@@ -4,6 +4,7 @@ export type SearchResult = {
 	shortName: string;
 	component: string;
 	property: string;
+	timeAspect: string;
 	system: string;
 	scale: string;
 	method: string;
@@ -14,6 +15,9 @@ export type SearchResult = {
 	commonOrderRank: number;
 	usageTypes: string[];
 	rank: number;
+	exampleUcum?: string;
+	mapperComment?: string;
+	clciName?: string;
 	_links?: Links;
 };
 
@@ -27,6 +31,10 @@ export type SearchResponse = {
 	relaxed?: boolean;
 	droppedWords?: string[];
 	notice?: string;
+	ignoredWords?: string[];
+	synonyms?: string[];
+	clciMatches?: string[];
+	mode?: string;
 	_links?: Links;
 };
 
@@ -34,6 +42,9 @@ export type Links = Record<string, string>;
 
 export type Term = {
 	loincNum: string;
+	exampleUcum?: string;
+	mapperComment?: string;
+	clciName?: string;
 	longCommonName: string;
 	shortName: string;
 	component: string;
@@ -205,6 +216,8 @@ export type UploadImportResponse = {
 
 export type VersionInfo = {
 	version: string;
+	// loaded LOINC release, e.g. "2.82"
+	loincVersion?: string;
 	commit: string;
 	date?: string;
 	goos: string;
@@ -309,7 +322,7 @@ export type LocalSearchResponse = {
 
 export type SearchParams = {
 	q?: string;
-	class?: string;
+	class?: string | string[];
 	classType?: string;
 	status?: string | string[];
 	system?: string;
@@ -317,6 +330,8 @@ export type SearchParams = {
 	scale?: string | string[];
 	method?: string | string[];
 	property?: string;
+	component?: string;
+	componentFamily?: boolean;
 	orderObs?: string | string[];
 	rankedOnly?: boolean;
 	hierarchyNodeId?: string;
@@ -324,8 +339,79 @@ export type SearchParams = {
 	rankMode?: 'observation' | 'order';
 	sort?: 'relevance' | 'usage' | 'alpha';
 	mode?: 'words' | 'semantic' | 'hybrid';
+	clci?: boolean;
+	universalLabOrders?: boolean;
+	radModality?: string | string[];
+	radSubtype?: string | string[];
+	radRegion?: string | string[];
+	radFocus?: string | string[];
+	radLaterality?: string | string[];
+	radContrast?: string | string[];
+	radView?: string | string[];
 	limit?: number;
 	offset?: number;
+};
+
+export type TermFit = {
+	loincNum: string;
+	status: string;
+	deprecated: boolean;
+	discouraged: boolean;
+	inactive: boolean;
+	orderObs: string;
+	usageTypes: string[];
+	commonTestRank: number;
+	commonOrderRank: number;
+	hasAnswerLists: boolean;
+	hasPanelItems: boolean;
+	hasPanelMemberships: boolean;
+	hasHierarchy: boolean;
+	hasExternalCopyright: boolean;
+	_links?: Links;
+};
+
+export type PageLinks = {
+	self?: string;
+	next?: string;
+	prev?: string;
+};
+
+export type Page<T> = {
+	results: T[];
+	total: number;
+	limit: number;
+	offset: number;
+	hasMore: boolean;
+	_links?: PageLinks;
+};
+
+export type PanelItem = {
+	parentLoincNum: string;
+	childLoincNum: string;
+	sequence: number;
+	itemId: string;
+	displayNameForForm: string;
+	observationRequired: string;
+	entryType: string;
+	dataTypeInForm: string;
+	answerListIdOverride: string;
+	childTerm: TermSummary;
+};
+
+export type NameMatchBucket = 'confident' | 'review' | 'none';
+
+export type NameMatch = {
+	name: string;
+	bucket: NameMatchBucket;
+	candidates: SearchResult[];
+	relaxed?: boolean;
+	synonyms?: string[];
+	clciMatches?: string[];
+};
+
+export type MatchResponse = {
+	matches: NameMatch[];
+	total: number;
 };
 
 export type SemanticStatus = {
@@ -368,7 +454,9 @@ async function requestJSONWithInit<T>(path: string, init: RequestInit): Promise<
 	return response.json() as Promise<T>;
 }
 
-export function searchTerms(params: SearchParams): Promise<SearchResponse> {
+// searchParamsToQuery mirrors the server's termListParamsFromRequest query parsing:
+// repeatable params (class, status, timeAspect, ...) are appended as multiple values.
+function searchParamsToQuery(params: SearchParams): URLSearchParams {
 	const query = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
 		if (Array.isArray(value)) {
@@ -379,7 +467,37 @@ export function searchTerms(params: SearchParams): Promise<SearchResponse> {
 			query.set(key, String(value));
 		}
 	}
-	return requestJSON<SearchResponse>(`/api/v1/terms/search?${query.toString()}`);
+	return query;
+}
+
+export function searchTerms(params: SearchParams): Promise<SearchResponse> {
+	return requestJSON<SearchResponse>(`/api/v1/terms/search?${searchParamsToQuery(params).toString()}`);
+}
+
+export function getTermFit(loincNum: string): Promise<TermFit> {
+	return requestJSON<TermFit>(`/api/v1/terms/${encodeURIComponent(loincNum)}/fit`);
+}
+
+export function getPanelMemberships(loincNum: string): Promise<Page<TermAccessory>> {
+	return requestJSON<Page<TermAccessory>>(`/api/v1/terms/${encodeURIComponent(loincNum)}/panel-memberships`);
+}
+
+export function getPanelItems(loincNum: string): Promise<Page<PanelItem>> {
+	return requestJSON<Page<PanelItem>>(`/api/v1/panels/${encodeURIComponent(loincNum)}/items`);
+}
+
+export function searchPanels(params: SearchParams): Promise<SearchResponse> {
+	return requestJSON<SearchResponse>(`/api/v1/panels/search?${searchParamsToQuery(params).toString()}`);
+}
+
+export function matchNames(names: string[], params: SearchParams = {}): Promise<MatchResponse> {
+	const query = searchParamsToQuery(params).toString();
+	const suffix = query ? `?${query}` : '';
+	return requestJSONWithInit<MatchResponse>(`/api/v1/terms/match${suffix}`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ names }),
+	});
 }
 
 export function getTerm(loincNum: string): Promise<Term> {
