@@ -355,8 +355,8 @@
 	{#if step === 'input'}
 		<div class="flex flex-col gap-4">
 			<div>
-				<label class="text-sm font-medium text-zinc-700">Domain</label>
-				<Select bind:value={domainId} className="max-w-xs">
+				<label class="text-sm font-medium text-zinc-700" for="maplist-domain">Domain</label>
+				<Select id="maplist-domain" bind:value={domainId} className="max-w-xs">
 					{#each DOMAINS as d (d.id)}
 						<option value={d.id}>{d.label}</option>
 					{/each}
@@ -370,7 +370,7 @@
 					class="mt-1 h-40 w-full rounded-md border border-zinc-200 bg-white p-3 text-sm outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
 					placeholder={'S. Sodium\nHbA1c\nCBC'}
 					bind:value={pasteText}
-					on:input={resetInputFile}
+					oninput={resetInputFile}
 				></textarea>
 			</div>
 
@@ -384,7 +384,7 @@
 				<label class="flex w-fit cursor-pointer items-center gap-2 rounded-md border border-dashed border-zinc-300 px-4 py-3 text-sm text-zinc-600 hover:bg-zinc-50">
 					<Upload size={16} />
 					{fileName ?? 'Upload .csv, .tsv, .txt, or .xlsx'}
-					<input type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden" on:change={handleFile} />
+					<input type="file" accept=".csv,.tsv,.txt,.xlsx" class="hidden" onchange={handleFile} />
 				</label>
 				{#if fileError}
 					<p class="mt-2 text-sm text-red-600">{fileError}</p>
@@ -396,16 +396,16 @@
 					<Checkbox checked={hasHeader} on:change={() => { hasHeader = !hasHeader; onHasHeaderToggle(); }} />
 					<span class="-ml-2 text-sm text-zinc-600">First row is a header</span>
 					<div>
-						<label class="text-xs font-medium text-zinc-600">Test name column</label>
-						<Select bind:value={nameColumnIndex} className="w-48">
+						<label class="text-xs font-medium text-zinc-600" for="maplist-name-column">Test name column</label>
+						<Select id="maplist-name-column" bind:value={nameColumnIndex} className="w-48">
 							{#each Array.from({ length: columnCount }) as _, i (i)}
 								<option value={String(i)}>{table.header ? table.header[i] : `Column ${i + 1}`}</option>
 							{/each}
 						</Select>
 					</div>
 					<div>
-						<label class="text-xs font-medium text-zinc-600">Local code column (optional)</label>
-						<Select bind:value={localCodeColumnIndex} className="w-48">
+						<label class="text-xs font-medium text-zinc-600" for="maplist-local-code-column">Local code column (optional)</label>
+						<Select id="maplist-local-code-column" bind:value={localCodeColumnIndex} className="w-48">
 							<option value="-1">None</option>
 							{#each Array.from({ length: columnCount }) as _, i (i)}
 								<option value={String(i)}>{table.header ? table.header[i] : `Column ${i + 1}`}</option>
@@ -458,7 +458,7 @@
 					<button
 						type="button"
 						class="flex w-full items-center justify-between px-4 py-3 text-left"
-						on:click={() => (confidentCollapsed = !confidentCollapsed)}
+						onclick={() => (confidentCollapsed = !confidentCollapsed)}
 					>
 						<span class="text-sm font-semibold text-zinc-950">
 							Confident ({confidentRows.length})
@@ -526,7 +526,7 @@
 												name={`pick-${r.key}`}
 												class="mt-1"
 												checked={picks[r.key] === c.loincNum}
-												on:change={() => pickCandidate(r.key, c.loincNum)}
+												onchange={() => pickCandidate(r.key, c.loincNum)}
 											/>
 											<span class="flex-1">
 												<span class="font-mono text-xs">{c.loincNum}</span>
@@ -541,13 +541,13 @@
 													{/if}
 												</span>
 											</span>
-											<button type="button" class="text-xs text-zinc-400 underline hover:text-zinc-700" on:click={(e) => { e.preventDefault(); onOpen(c.loincNum); }}>
+											<button type="button" class="text-xs text-zinc-400 underline hover:text-zinc-700" onclick={(e) => { e.preventDefault(); onOpen(c.loincNum); }}>
 												details
 											</button>
 										</label>
 									{/each}
 									<label class="flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 p-2 text-sm hover:bg-zinc-50">
-										<input type="radio" name={`pick-${r.key}`} checked={picks[r.key] === 'none'} on:change={() => pickNone(r.key)} />
+										<input type="radio" name={`pick-${r.key}`} checked={picks[r.key] === 'none'} onchange={() => pickNone(r.key)} />
 										None of these
 									</label>
 								</div>

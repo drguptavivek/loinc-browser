@@ -1883,7 +1883,7 @@
 	}
 </script>
 
-<main class="min-h-screen bg-zinc-50 pb-12 text-zinc-950 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
+<main class="min-h-screen bg-zinc-50 text-zinc-950 lg:pb-12 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
 	<header class="border-b border-zinc-200 bg-white lg:shrink-0">
 		<div class="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4 px-5 py-4">
 			<button type="button" class="flex items-center gap-3 rounded-md text-left hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200" aria-label="Go to home" on:click={goHome}>
@@ -3513,7 +3513,7 @@
 			</section>
 		</div>
 	{/if}
-	<footer class="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white shadow-[0_-1px_3px_rgba(24,24,27,0.04)]">
+	<footer class="lg:fixed lg:inset-x-0 lg:bottom-0 lg:z-50 border-t border-zinc-200 bg-white shadow-[0_-1px_3px_rgba(24,24,27,0.04)]">
 		<div class="mx-auto flex max-w-[1500px] flex-col gap-2 px-5 py-2 text-[11px] leading-4 text-zinc-500 lg:flex-row lg:items-center lg:justify-between">
 			<div class="flex flex-wrap items-center gap-2">
 				{#if versionInfo}<span class="font-mono text-zinc-700">v{versionInfo.version}</span><span class="text-zinc-300">|</span>{/if}

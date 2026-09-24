@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { Search, Copy, Check, Plus, ShoppingBasket, ListChecks, Settings } from '@lucide/svelte';
 	import { getVersion, searchTerms, searchPanels, type SearchResponse, type SearchResult } from '$lib/api';
 	import { DOMAINS, domainById, type DomainId } from '$lib/domains';
@@ -32,8 +33,10 @@
 		onStateChange?: (query: string, domain: string) => void;
 	} = $props();
 
-	let query = $state(initialQuery);
-	let domainId = $state<DomainId>(domainById(initialDomain).id);
+	// initialQuery/initialDomain are one-time seeds: App remounts FindMode via {#key} when they
+	// should change, so intentionally capture only the initial value here.
+	let query = $state(untrack(() => initialQuery));
+	let domainId = $state<DomainId>(domainById(untrack(() => initialDomain)).id);
 	let radModality = $state('');
 	let radRegion = $state('');
 	let response = $state<SearchResponse | null>(null);
@@ -50,6 +53,12 @@
 
 	let inputEl: HTMLInputElement | undefined = $state();
 	let rowEls: (HTMLElement | undefined)[] = [];
+
+	// Search box is the page's purpose, so focus it on mount instead of using the autofocus
+	// attribute (flagged by a11y_autofocus).
+	$effect(() => {
+		inputEl?.focus();
+	});
 
 	const domain = $derived(domainById(domainId));
 	const setupSummary = $derived(
@@ -255,7 +264,6 @@
 			aria-label="Search LOINC terms"
 			placeholder={domain.hint}
 			autocomplete="off"
-			autofocus
 			class="mt-1 h-12 w-full rounded-md border border-zinc-200 bg-white pl-10 pr-3 text-base normal-case tracking-normal text-zinc-800 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
 		/>
 	</div>

@@ -5,6 +5,7 @@
 	export let value = '';
 	export let disabled = false;
 	export let className = '';
+	export let id: string | undefined = undefined;
 
 	const dispatch = createEventDispatcher<{ valueChange: string }>();
 
@@ -15,6 +16,7 @@
 </script>
 
 <select
+	{id}
 	bind:value
 	{disabled}
 	class={cn(
